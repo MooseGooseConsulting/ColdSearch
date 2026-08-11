@@ -11,6 +11,7 @@ export const ALLOWED_STATUSES = [
   "fail",
   "blocked_missing_secret",
   "blocked_provider",
+  "not_run",
   "waived_by_user",
 ];
 
@@ -28,6 +29,20 @@ export const REQUIRED_PROVIDER_PATHS = [
   { provider: "serper", path: "search" },
   { provider: "jina", path: "extract" },
   { provider: "searxng", path: "search" },
+];
+
+/**
+ * Catalogued provider-tool rows. These run through the ColdSearch `tool call`
+ * CLI path and are compared against a native HTTP call using the same status
+ * vocabulary as the provider/path rows, so a scoped check triggered by a
+ * generic provider-tool change has a row to run. IDs use the registry keys from
+ * src/registry/tool-profiles.ts (`<provider>.<tool>`).
+ */
+export const REQUIRED_PROVIDER_TOOLS = [
+  { provider: "tavily", tool: "map" },
+  { provider: "brave", tool: "webSearch" },
+  { provider: "exa", tool: "contents" },
+  { provider: "firecrawl", tool: "map" },
 ];
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -71,17 +86,43 @@ class ProviderHttpError extends Error {
   }
 }
 
-export function selectTargets({ provider, path: capabilityPath } = {}) {
+export function selectTargets({ provider, path: capabilityPath, tool } = {}) {
+  if (tool) {
+    const selected = REQUIRED_PROVIDER_TOOLS.filter((target) => {
+      if (provider && target.provider !== provider) return false;
+      return target.tool === tool;
+    });
+    if (selected.length === 0) {
+      const providerPart = provider ? `provider=${provider}` : "provider=*";
+      throw new Error(`No conformance target matches ${providerPart} tool=${tool}`);
+    }
+    return selected.map((target) => ({ ...target, kind: "tool" }));
+  }
+
   const selected = REQUIRED_PROVIDER_PATHS.filter((target) => {
     if (provider && target.provider !== provider) return false;
     if (capabilityPath && target.path !== capabilityPath) return false;
     return true;
   });
 
+  // Provider-only and --all selections also cover the catalogued provider tools
+  // of that provider. A scoped path selection stays path-only.
+  if (!capabilityPath) {
+    for (const toolTarget of REQUIRED_PROVIDER_TOOLS) {
+      if (provider && toolTarget.provider !== provider) continue;
+      selected.push({ ...toolTarget, kind: "tool" });
+    }
+  }
+
   if (selected.length === 0) {
     const providerPart = provider ? `provider=${provider}` : "provider=*";
     const pathPart = capabilityPath ? `path=${capabilityPath}` : "path=*";
-    throw new Error(`No Gate 0 target matches ${providerPart} ${pathPart}`);
+    const hint = capabilityPath && REQUIRED_PROVIDER_TOOLS.some(
+      (target) => target.tool === capabilityPath && (!provider || target.provider === provider)
+    )
+      ? `; a provider tool named '${capabilityPath}' exists — use --tool ${capabilityPath}`
+      : "";
+    throw new Error(`No Gate 0 target matches ${providerPart} ${pathPart}${hint}`);
   }
 
   return selected.map((target) => ({ ...target }));
@@ -92,6 +133,7 @@ function parseArgs(argv) {
     all: false,
     provider: undefined,
     path: undefined,
+    tool: undefined,
     outDir: defaultOutDir,
     waivers: new Set(),
     list: false,
@@ -110,6 +152,9 @@ function parseArgs(argv) {
         break;
       case "--path":
         options.path = requiredValue(argv, ++i, arg);
+        break;
+      case "--tool":
+        options.tool = requiredValue(argv, ++i, arg);
         break;
       case "--out-dir":
         options.outDir = path.resolve(repoRoot, requiredValue(argv, ++i, arg));
@@ -132,12 +177,16 @@ function parseArgs(argv) {
     }
   }
 
-  if (!options.all && !options.provider && !options.path && !options.list && !options.help) {
+  if (!options.all && !options.provider && !options.path && !options.tool && !options.list && !options.help) {
     options.all = true;
   }
 
-  if (options.all && (options.provider || options.path)) {
-    throw new Error("--all cannot be combined with --provider or --path");
+  if (options.all && (options.provider || options.path || options.tool)) {
+    throw new Error("--all cannot be combined with --provider, --path, or --tool");
+  }
+
+  if (options.path && options.tool) {
+    throw new Error("--path and --tool cannot be combined");
   }
 
   return options;
@@ -158,16 +207,21 @@ Usage:
   node scripts/provider-pass-through.mjs --all --overwrite-baseline
   node scripts/provider-pass-through.mjs --provider firecrawl --path search --out-dir <dir>
   node scripts/provider-pass-through.mjs --provider jina --path extract --out-dir <dir>
+  node scripts/provider-pass-through.mjs --provider tavily --tool map --out-dir <dir>
 
 Options:
-  --all                 Run every required provider/path row
-  --provider NAME       Run one provider, or combine with --path
+  --all                 Run every required provider/path and provider-tool row
+  --provider NAME       Run one provider, or combine with --path/--tool
   --path NAME           Run one capability path: search, extract, crawl
+  --tool NAME           Run one catalogued provider tool (e.g. tavily.map
+                        via --tool map); runs through the 'tool call' CLI path
   --out-dir DIR         Evidence output directory (scoped/live runs must use a
                         non-baseline directory; the committed Gate 0 baseline
                         evidence directory is protected)
-  --waive provider:path Mark a row waived_by_user without running it
-  --list                Print the required provider/path matrix as JSON
+  --waive provider:path or provider.tool
+                        Mark a row waived_by_user without running it
+  --list                Print the required provider/path and provider-tool
+                        matrix as JSON
   --overwrite-baseline  Allow writing to the committed Gate 0 baseline evidence
                         directory (requires --all; only for deliberately
                         regenerating the full baseline)
@@ -194,7 +248,17 @@ function extractUrlForTarget(target) {
   return target.provider === "tavily" ? TAVILY_EXTRACT_URL : EXTRACT_URL;
 }
 
+const TOOL_INPUTS = {
+  "tavily.map": () => ({ url: CRAWL_URL, limit: CRAWL_LIMIT }),
+  "brave.webSearch": () => ({ q: SEARCH_QUERY, count: 10 }),
+  "exa.contents": () => ({ urls: [EXTRACT_URL], text: true }),
+  "firecrawl.map": () => ({ url: CRAWL_URL, limit: CRAWL_LIMIT }),
+};
+
 function inputForTarget(target) {
+  if (target.tool) {
+    return TOOL_INPUTS[`${target.provider}.${target.tool}`]();
+  }
   if (target.path === "search") {
     return { query: SEARCH_QUERY };
   }
@@ -262,7 +326,7 @@ function redactString(value) {
     .replace(/(X-Subscription-Token["':\s]+)[A-Za-z0-9._~+/=-]+/gi, "$1REDACTED");
 }
 
-function redact(value) {
+export function redact(value) {
   if (typeof value === "string") return redactString(value);
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (value && typeof value === "object") {
@@ -370,11 +434,30 @@ function sampleFromItems(capabilityPath, items) {
   return capabilityPath === "search" ? sampleSearch(items) : sampleContent(items);
 }
 
+function sampleToolItems(items) {
+  return items.slice(0, 3).map((item) => ({
+    title: truncate(item.title, 160),
+    url: item.url,
+    content_length: textLength(item.content),
+    source: item.source,
+  }));
+}
+
 function makeNativeResult(target, items, metadata = {}) {
   return {
     ok: true,
     result_count: items.length,
     sample: sampleFromItems(target.path, items),
+    items,
+    ...metadata,
+  };
+}
+
+function makeNativeToolResult(target, items, metadata = {}) {
+  return {
+    ok: true,
+    result_count: items.length,
+    sample: sampleToolItems(items),
     items,
     ...metadata,
   };
@@ -692,6 +775,70 @@ async function nativeSearXNG(target) {
   });
 }
 
+async function nativeTavilyMap(target) {
+  const data = await fetchJson(
+    "https://api.tavily.com/map",
+    jsonPost(
+      { url: CRAWL_URL, limit: CRAWL_LIMIT },
+      { Authorization: `Bearer ${providerKey(target)}` }
+    ),
+    "native Tavily map"
+  );
+  const items = (data.urls || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
+  return makeNativeToolResult(target, items, {
+    native_shape: ["urls[]"],
+  });
+}
+
+async function nativeBraveWebSearch(target) {
+  const url = new URL("https://api.search.brave.com/res/v1/web/search");
+  url.searchParams.set("q", SEARCH_QUERY);
+  url.searchParams.set("count", "10");
+  const data = await fetchJson(
+    url.toString(),
+    {
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": providerKey(target),
+      },
+    },
+    "native Brave webSearch"
+  );
+  const items = (data.web?.results || []).map((item, index) => searchItem(item, "brave", index));
+  return makeNativeToolResult(target, items, {
+    native_shape: ["web.results[].title", "web.results[].url", "web.results[].description"],
+  });
+}
+
+async function nativeExaContents(target) {
+  const data = await fetchJson(
+    "https://api.exa.ai/contents",
+    jsonPost({ urls: [EXTRACT_URL], text: true }, { "x-api-key": providerKey(target) }),
+    "native Exa contents"
+  );
+  const items = (data.results || []).map((item) => extractItem(item, "exa", EXTRACT_URL));
+  return makeNativeToolResult(target, items, {
+    native_shape: ["results[].title", "results[].url", "results[].text"],
+  });
+}
+
+async function nativeFirecrawlMap(target) {
+  const data = await fetchJson(
+    "https://api.firecrawl.dev/v2/map",
+    jsonPost({ url: CRAWL_URL, limit: CRAWL_LIMIT }, { Authorization: `Bearer ${providerKey(target)}` }),
+    "native Firecrawl map"
+  );
+  if (data.success === false || data.error) {
+    throw new Error(`native Firecrawl map error: ${data.error || "unknown error"}`);
+  }
+  const links = data.links || data.data || [];
+  const items = links.map((url) => ({ title: "", url, content: "", source: "firecrawl" }));
+  return makeNativeToolResult(target, items, {
+    native_shape: ["links[]"],
+  });
+}
+
 const nativeRunners = {
   tavily: nativeTavily,
   firecrawl: nativeFirecrawl,
@@ -700,6 +847,13 @@ const nativeRunners = {
   serper: nativeSerper,
   jina: nativeJina,
   searxng: nativeSearXNG,
+};
+
+const nativeToolRunners = {
+  "tavily.map": nativeTavilyMap,
+  "brave.webSearch": nativeBraveWebSearch,
+  "exa.contents": nativeExaContents,
+  "firecrawl.map": nativeFirecrawlMap,
 };
 
 function tomlString(value) {
@@ -723,6 +877,24 @@ strategy = "all"
 
 [providers.${target.provider}]
 ${providerOptions}
+[providers.${target.provider}.keyPool]
+keys = ${keys}
+strategy = "round-robin"
+
+[cache]
+enabled = false
+
+[logging.usage]
+path = ${tomlString(usagePath)}
+`.trim();
+}
+
+function buildColdSearchToolConfig(target, usagePath) {
+  const envName = KEY_ENV_BY_PROVIDER[target.provider];
+  const keys = envName ? `["env:${envName}"]` : "[]";
+
+  return `
+[providers.${target.provider}]
 [providers.${target.provider}.keyPool]
 keys = ${keys}
 strategy = "round-robin"
@@ -790,6 +962,82 @@ function runColdSearch(target, outDir) {
   }
 }
 
+function runColdSearchTool(target, outDir) {
+  if (!fs.existsSync(cliPath)) {
+    throw new Error(`dist/cli.js not found at ${cliPath}; run npm run build first`);
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-gate0-"));
+  try {
+    const configPath = path.join(dir, "config.toml");
+    const usagePath = path.join(outDir, "coldsearch-usage.jsonl");
+    fs.writeFileSync(configPath, buildColdSearchToolConfig(target, usagePath), "utf8");
+
+    const args = [
+      cliPath,
+      "tool",
+      "call",
+      `${target.provider}.${target.tool}`,
+      "--json-input",
+      JSON.stringify(inputForTarget(target)),
+      "--config",
+      configPath,
+      "--json",
+      "--no-cache",
+    ];
+
+    const result = spawnSync(process.execPath, args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: process.env,
+      timeout: 120000,
+    });
+
+    if (result.status !== 0) {
+      throw new Error(
+        `ColdSearch tool call exited ${result.status}: ${truncate(redactString(result.stderr || result.stdout || "(no output)"), 1000)}`
+      );
+    }
+
+    try {
+      return makeColdSearchToolResult(target, JSON.parse(result.stdout));
+    } catch {
+      throw new Error(`ColdSearch tool call output was not JSON: ${truncate(result.stdout, 500)}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function toolRawItems(target, raw) {
+  switch (`${target.provider}.${target.tool}`) {
+    case "tavily.map":
+      return (raw.urls || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
+    case "firecrawl.map":
+      return (raw.links || raw.data || []).map((url) => ({ title: "", url, content: "", source: "firecrawl" }));
+    case "brave.webSearch":
+      return (raw.web?.results || []).map((item, index) => searchItem(item, "brave", index));
+    case "exa.contents":
+      return (raw.results || []).map((item) => extractItem(item, "exa", EXTRACT_URL));
+    default:
+      return [];
+  }
+}
+
+function makeColdSearchToolResult(target, output) {
+  const raw = output.raw && typeof output.raw === "object" ? output.raw : {};
+  const items = toolRawItems(target, raw);
+  return {
+    ok: output.ok === true,
+    catalogued: output.catalogued === true,
+    result_count: items.length,
+    sample: sampleToolItems(items),
+    items,
+    provider: output.provider,
+    tool: output.tool,
+  };
+}
+
 function compareTarget(target, nativeResult, coldResult) {
   const checks = [];
   const notes = [];
@@ -841,6 +1089,24 @@ function compareTarget(target, nativeResult, coldResult) {
   return { passed, checks, notes, detail_loss: detailLoss };
 }
 
+function compareToolTarget(target, nativeResult, coldResult) {
+  const checks = [];
+  const notes = [];
+  const detailLoss = [];
+
+  checks.push(check(nativeResult.result_count > 0, "native returned non-empty results"));
+  checks.push(check(coldResult.ok, "ColdSearch tool call succeeded"));
+  checks.push(check(coldResult.result_count > 0, "ColdSearch tool call returned non-empty raw results"));
+  checks.push(check(
+    hasUrlOrTitleOverlap(nativeResult.items, coldResult.items),
+    "native and ColdSearch tool results overlap by URL or title"
+  ));
+  detailLoss.push("ColdSearch tool call output preserves provider raw detail; the tool summary is a lossy derived view.");
+
+  const passed = checks.every((item) => item.pass);
+  return { passed, checks, notes, detail_loss: detailLoss };
+}
+
 function check(pass, label) {
   return { pass: Boolean(pass), label };
 }
@@ -876,15 +1142,37 @@ function classifyNativeError(error) {
   };
 }
 
+/** Stable row id: `provider:path` for path rows, `provider.tool` for tool rows. */
+export function targetId(target) {
+  return target.tool
+    ? `${target.provider}.${target.tool}`
+    : `${target.provider}:${target.path}`;
+}
+
+/** A supported row that this run did not select: visible, disclosed, never a pass. */
+export function notRunRow(target, reason = "not selected by this scoped run") {
+  return {
+    timestamp: new Date().toISOString(),
+    provider: target.provider,
+    ...(target.tool ? { tool: target.tool } : { path: target.path }),
+    status: "not_run",
+    input: inputForTarget(target),
+    native: { skipped: true },
+    coldsearch: { skipped: true },
+    comparison: { passed: false, notes: [reason] },
+  };
+}
+
 async function runTarget(target, options) {
   const timestamp = new Date().toISOString();
+  const isTool = target.kind === "tool";
   const rowBase = {
     timestamp,
     provider: target.provider,
-    path: target.path,
+    ...(isTool ? { tool: target.tool } : { path: target.path }),
     input: inputForTarget(target),
   };
-  const rowKey = `${target.provider}:${target.path}`;
+  const rowKey = targetId(target);
 
   if (options.waivers.has(rowKey)) {
     return {
@@ -910,7 +1198,9 @@ async function runTarget(target, options) {
 
   let nativeResult;
   try {
-    nativeResult = await nativeRunners[target.provider](target);
+    nativeResult = isTool
+      ? await nativeToolRunners[targetId(target)](target)
+      : await nativeRunners[target.provider](target);
   } catch (error) {
     const classified = classifyNativeError(error);
     return {
@@ -924,7 +1214,7 @@ async function runTarget(target, options) {
 
   let coldResult;
   try {
-    coldResult = runColdSearch(target, options.outDir);
+    coldResult = isTool ? runColdSearchTool(target, options.outDir) : runColdSearch(target, options.outDir);
   } catch (error) {
     return {
       ...rowBase,
@@ -935,7 +1225,9 @@ async function runTarget(target, options) {
     };
   }
 
-  const comparison = compareTarget(target, nativeResult, coldResult);
+  const comparison = isTool
+    ? compareToolTarget(target, nativeResult, coldResult)
+    : compareTarget(target, nativeResult, coldResult);
   return {
     ...rowBase,
     status: comparison.passed ? "pass" : "fail",
@@ -984,7 +1276,7 @@ function ensureEvidenceDir(outDir) {
   return samplesDir;
 }
 
-function writeEvidence(outDir, samplesDir, rows) {
+export function writeEvidence(outDir, samplesDir, rows) {
   fs.writeFileSync(
     path.join(outDir, "results.jsonl"),
     rows.map((row) => `${JSON.stringify(redact(row))}\n`).join(""),
@@ -992,13 +1284,13 @@ function writeEvidence(outDir, samplesDir, rows) {
   );
 
   for (const row of rows) {
-    if (row.status === "blocked_missing_secret" || row.status === "waived_by_user") continue;
-    const samplePath = path.join(samplesDir, `${row.provider}-${row.path}.json`);
+    if (row.status === "blocked_missing_secret" || row.status === "waived_by_user" || row.status === "not_run") continue;
+    const samplePath = path.join(samplesDir, `${row.provider}-${row.path || row.tool}.json`);
     fs.writeFileSync(
       samplePath,
       `${JSON.stringify(redact({
         provider: row.provider,
-        path: row.path,
+        path: row.path || row.tool,
         status: row.status,
         native: row.native,
         coldsearch: row.coldsearch,
@@ -1011,7 +1303,7 @@ function writeEvidence(outDir, samplesDir, rows) {
   fs.writeFileSync(path.join(outDir, "summary.md"), renderSummary(rows), "utf8");
 }
 
-function renderSummary(rows) {
+export function renderSummary(rows) {
   const generatedAt = new Date().toISOString();
   const counts = Object.fromEntries(ALLOWED_STATUSES.map((status) => [status, 0]));
   for (const row of rows) counts[row.status] = (counts[row.status] || 0) + 1;
@@ -1023,7 +1315,7 @@ function renderSummary(rows) {
       ...(row.comparison?.checks || []).filter((item) => !item.pass).map((item) => `failed: ${item.label}`),
       row.missing_requirement ? `missing: ${row.missing_requirement}` : null,
     ].filter(Boolean).map((item) => String(item).replace(/\|/g, "\\|")).join("; ");
-    return `| ${row.provider} | ${row.path} | ${row.status} | ${row.native?.result_count ?? "-"} | ${row.coldsearch?.result_count ?? "-"} | ${notes || "-"} |`;
+    return `| ${targetId(row)} | ${row.status} | ${row.native?.result_count ?? "-"} | ${row.coldsearch?.result_count ?? "-"} | ${notes || "-"} |`;
   }).join("\n");
 
   return `# Gate 0 Provider Pass-Through Evidence
@@ -1035,6 +1327,7 @@ Generated: ${generatedAt}
 - Baseline command for this evidence: \`node scripts/provider-pass-through.mjs --all --overwrite-baseline\`
 - Native provider calls use direct HTTP requests.
 - ColdSearch calls use \`node dist/cli.js <path> --providers <provider> --single-provider --json\`.
+- Provider-tool rows use \`node dist/cli.js tool call <provider.tool> --json-input <json> --json\`.
 - Agent mode is not executed by this gate.
 
 ## Inputs
@@ -1044,6 +1337,7 @@ Generated: ${generatedAt}
 | search | \`${SEARCH_QUERY}\` |
 | extract | default \`${EXTRACT_URL}\`; provider fallback recorded in the row input when needed |
 | crawl | \`${CRAWL_URL}\`, limit \`${CRAWL_LIMIT}\` |
+| provider-tool rows | per-tool input recorded in the row input |
 
 ## Status Counts
 
@@ -1053,25 +1347,28 @@ ${ALLOWED_STATUSES.map((status) => `| ${status} | ${counts[status] || 0} |`).joi
 
 ## Results
 
-| Provider | Path | Status | Native Count | ColdSearch Count | Notes |
+| Row | Status | Native Count | ColdSearch Count | Notes |
 |---|---|---|---:|---:|---|
 ${table}
 
 ## Evidence Files
 
-- \`results.jsonl\`: one machine-readable row per required provider/path.
+- \`results.jsonl\`: one machine-readable row per required provider/path and provider-tool row.
 - \`samples/\`: redacted native and ColdSearch samples for rows that ran.
 - \`coldsearch-usage.jsonl\`: usage log emitted by the ColdSearch calls.
 
 Missing credentials or endpoints are recorded as \`blocked_missing_secret\`, not skipped or passed.
+Supported rows that this run did not select are recorded as \`not_run\` — they were not tested and must never be read as passes.
 `;
 }
 
-function verifyAllRows(rows) {
-  const keys = new Set(rows.map((row) => `${row.provider}:${row.path}`));
-  const missing = REQUIRED_PROVIDER_PATHS
-    .map((row) => `${row.provider}:${row.path}`)
-    .filter((key) => !keys.has(key));
+export function verifyAllRows(rows) {
+  const keys = new Set(rows.map(targetId));
+  const required = [
+    ...REQUIRED_PROVIDER_PATHS.map((row) => `${row.provider}:${row.path}`),
+    ...REQUIRED_PROVIDER_TOOLS.map((row) => `${row.provider}.${row.tool}`),
+  ];
+  const missing = required.filter((key) => !keys.has(key));
   if (missing.length > 0) {
     throw new Error(`Harness did not emit rows for: ${missing.join(", ")}`);
   }
@@ -1089,13 +1386,13 @@ async function main() {
     return;
   }
   if (options.list) {
-    console.log(JSON.stringify(REQUIRED_PROVIDER_PATHS, null, 2));
+    console.log(JSON.stringify({ paths: REQUIRED_PROVIDER_PATHS, tools: REQUIRED_PROVIDER_TOOLS }, null, 2));
     return;
   }
 
   const targets = options.all
     ? selectTargets()
-    : selectTargets({ provider: options.provider, path: options.path });
+    : selectTargets({ provider: options.provider, path: options.path, tool: options.tool });
 
   const canonicalBaseline = canonicalize(defaultOutDir);
   const canonicalOutDir = canonicalize(options.outDir);
@@ -1115,21 +1412,31 @@ async function main() {
   const samplesDir = ensureEvidenceDir(options.outDir);
   const rows = [];
   for (const target of targets) {
-    process.stdout.write(`RUN   ${target.provider}:${target.path}\n`);
+    process.stdout.write(`RUN   ${targetId(target)}\n`);
     const row = await runTarget(target, options);
     rows.push(row);
-    process.stdout.write(`${row.status.toUpperCase().padEnd(23)} ${target.provider}:${target.path}\n`);
+    process.stdout.write(`${row.status.toUpperCase().padEnd(23)} ${targetId(target)}\n`);
   }
 
-  if (options.all) {
-    verifyAllRows(rows);
+  // Coverage disclosure: supported rows this run did not select must be visible
+  // in the summary and JSONL as not_run — never silently omitted, never counted
+  // as passes. --all selects the full matrix, so this only adds rows for scoped
+  // selections.
+  const selectedKeys = new Set(rows.map(targetId));
+  for (const target of selectTargets()) {
+    if (!selectedKeys.has(targetId(target))) {
+      rows.push(notRunRow(target));
+    }
   }
+
+  verifyAllRows(rows);
   writeEvidence(options.outDir, samplesDir, rows);
 
   const failed = rows.filter((row) => row.status === "fail").length;
   const blocked = rows.filter((row) => row.status.startsWith("blocked_")).length;
+  const notRun = rows.filter((row) => row.status === "not_run").length;
   console.log(`\nWrote evidence to ${path.relative(repoRoot, options.outDir).replaceAll("\\", "/")}`);
-  console.log(`${rows.length} rows, ${failed} failed, ${blocked} blocked`);
+  console.log(`${rows.length} rows, ${failed} failed, ${blocked} blocked, ${notRun} not_run`);
   process.exitCode = failed > 0 ? 1 : 0;
 }
 

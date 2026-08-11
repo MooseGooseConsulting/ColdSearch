@@ -39,6 +39,24 @@ Do not collapse these into “testing”:
 
 **Live conformance is integration-scoped.** Do not run the full live-provider matrix after unrelated changes. Run the relevant provider/path manually when modifying provider adapters, HTTP/request behavior, authentication, normalization, tool dispatch, or provider-facing routing; otherwise rely on scheduled coverage. Native-vs-ColdSearch comparison is conformance evidence, not benchmarking. See the detailed initial [Gate 0 baseline](../../plans/2026-06-23-gate-0-provider-pass-through-proof.md) and the ongoing [Live Provider Conformance plan](../../plans/2026-08-10-live-provider-conformance.md).
 
+### Manual scoped conformance runs
+
+For a provider-facing change, run only the affected rows and write evidence **outside** the committed Gate 0 baseline. The baseline directory (`plans/evidence/2026-06-23-provider-pass-through/`) is protected: a scoped run must pass `--out-dir` pointing elsewhere, and only a deliberate `--all --overwrite-baseline` full-matrix run may write there.
+
+```bash
+npm run build
+# one capability path
+node scripts/provider-pass-through.mjs --provider <provider> --path <path> \
+  --out-dir /tmp/coldsearch-conformance-<provider>-<path>
+# one catalogued provider tool (runs through the `tool call` CLI path)
+node scripts/provider-pass-through.mjs --provider tavily --tool map \
+  --out-dir /tmp/coldsearch-conformance-tavily-map
+node scripts/provider-pass-through.mjs --provider brave --tool webSearch \
+  --out-dir /tmp/coldsearch-conformance-brave-websearch
+```
+
+The harness emits one machine-readable row per selected row into `results.jsonl` plus a coverage `summary.md`. Supported rows a scoped selection did not include are listed as `not_run` — never counted as passes. Every row is exactly one of `pass`, `fail`, `blocked_missing_secret`, `blocked_provider`, `not_run`, `waived_by_user`. Use `--list` to enumerate the full matrix (paths and tools), `--tool NAME` (optionally with `--provider`) for a tool row, and `--waive <provider:path|provider.tool>` to mark a specific row waived. `--all` remains the deliberate full-matrix baseline selection.
+
 ## Logging / CI output
 
 - Default reporter is **`dot`** (quiet pass, detailed fail).
