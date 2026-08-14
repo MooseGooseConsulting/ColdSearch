@@ -55,7 +55,7 @@ jobs:
 
       - name: Live smoke test
         shell: bash
-        # Publish totals and the smoke-only provider/path coverage table even
+        # PIPESTATUS requires Bash. Publish the smoke coverage summary even
         # when a check fails, while preserving the smoke command's exit status.
         run: |
           set +e

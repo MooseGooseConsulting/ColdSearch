@@ -304,12 +304,13 @@ if (await exists(providerEvidenceDir)) {
   const summary = await read(`${providerEvidenceDir}/summary.md`);
   // The committed baseline is a historical full-matrix snapshot and cannot be
   // regenerated in CI (that would require paid live calls), so it is validated
-  // against the statuses its own evidence uses rather than the current status
-  // vocabulary: statuses added after the baseline was generated (e.g. not_run)
-  // legitimately do not appear in it. New evidence written by the harness's
-  // renderSummary always enumerates the full ALLOWED_STATUSES table.
-  const usedStatuses = [...new Set(rows.map((row) => row.status))];
-  for (const status of usedStatuses) {
+  // against the status vocabulary in effect when it was generated: statuses
+  // added after the baseline (e.g. not_run) legitimately do not appear in it.
+  // Every pre-existing status must still be enumerated even at zero count, so
+  // a baseline that accidentally drops a status cannot hide.
+  const postBaselineStatuses = new Set(["not_run"]);
+  for (const status of ALLOWED_STATUSES) {
+    if (postBaselineStatuses.has(status)) continue;
     if (!summary.includes(status)) {
       fail(`${providerEvidenceDir}/summary.md does not enumerate status ${status}`);
     }

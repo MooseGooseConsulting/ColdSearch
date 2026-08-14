@@ -10,6 +10,7 @@ import {
   ALLOWED_STATUSES,
   REQUIRED_PROVIDER_PATHS,
   REQUIRED_PROVIDER_TOOLS,
+  makeColdSearchToolResult,
   notRunRow,
   redact,
   renderSummary,
@@ -240,6 +241,76 @@ test("secrets and signed URLs are redacted from evidence and summaries", () => {
   }
 });
 
+test("tavily.map parses its result array from raw.results, matching the substrate surface", () => {
+  // Tavily Map returns discovered URLs under `results`; a `urls`-only payload
+  // must not be treated as the endpoint's result array.
+  const tavilyMap = { provider: "tavily", tool: "map", kind: "tool" };
+  const parsed = makeColdSearchToolResult(tavilyMap, {
+    ok: true,
+    catalogued: true,
+    provider: "tavily",
+    tool: "map",
+    raw: { results: ["https://docs.tavily.com", "https://docs.tavily.com/api"], base_url: "docs.tavily.com" },
+  });
+  assert.equal(parsed.result_count, 2);
+  assert.equal(parsed.catalogued, true);
+  assert.equal(parsed.raw_preserved, true);
+
+  const urlsOnly = makeColdSearchToolResult(tavilyMap, {
+    ok: true,
+    catalogued: true,
+    provider: "tavily",
+    tool: "map",
+    raw: { urls: ["https://docs.tavily.com"] },
+  });
+  assert.equal(urlsOnly.result_count, 0, "urls is not the Tavily Map result field");
+});
+
+test("tool-call results disclose whether provider raw detail was preserved", () => {
+  const tavilyMap = { provider: "tavily", tool: "map", kind: "tool" };
+  assert.equal(
+    makeColdSearchToolResult(tavilyMap, {
+      ok: true,
+      catalogued: true,
+      provider: "tavily",
+      tool: "map",
+      raw: { results: ["https://docs.tavily.com"] },
+    }).raw_preserved,
+    true
+  );
+  assert.equal(
+    makeColdSearchToolResult(tavilyMap, {
+      ok: true,
+      catalogued: true,
+      provider: "tavily",
+      tool: "map",
+      raw: {},
+    }).raw_preserved,
+    false,
+    "an empty raw payload is not preserved detail"
+  );
+  assert.equal(
+    makeColdSearchToolResult(tavilyMap, {
+      ok: true,
+      catalogued: true,
+      provider: "tavily",
+      tool: "map",
+    }).raw_preserved,
+    false,
+    "a missing raw payload is not preserved detail"
+  );
+});
+
+test("a catalogued tool row without an input definition fails with a clear error", () => {
+  // notRunRow computes the row input through the same TOOL_INPUTS lookup as a
+  // live run, so a catalogued tool missing its entry surfaces an actionable
+  // error instead of a TypeError.
+  assert.throws(
+    () => notRunRow({ provider: "tavily", tool: "ghost", kind: "tool" }),
+    /No tool input defined for tavily\.ghost/
+  );
+});
+
 test("--list shows the full matrix including provider-tool rows without network", () => {
   const result = runScript(["--list"]);
   assert.equal(result.status, 0, result.stderr);
@@ -263,4 +334,7 @@ test("canary workflow is scheduled/manual-only and never gates PRs", () => {
   assert.match(workflow, /workflow_dispatch:/, "manual dispatch");
   assert.ok(!/pull_request:/.test(workflow), "no PR trigger");
   assert.ok(!/push:/.test(workflow), "no push trigger");
+  // The PIPESTATUS-based run step pins its shell so it cannot silently switch
+  // to a non-Bash shell on a different runner image.
+  assert.match(workflow, /shell: bash/, "PIPESTATUS step pins shell: bash");
 });

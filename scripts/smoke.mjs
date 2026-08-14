@@ -289,6 +289,18 @@ export function renderCoverageTable(checkResults = []) {
   return lines.join("\n");
 }
 
+/**
+ * Totals over the coverage rows, so the published numbers always reconcile with
+ * the table: one row per inventory entry, each smoke status counted once.
+ */
+export function coverageTotals(checkResults = []) {
+  const totals = { pass: 0, skip: 0, fail: 0, "not covered": 0 };
+  for (const entry of buildCoverageRows(checkResults)) {
+    totals[entry.smoke] = (totals[entry.smoke] || 0) + 1;
+  }
+  return totals;
+}
+
 function main() {
   if (!fs.existsSync(cliPath)) {
     console.error(`dist/cli.js not found at ${cliPath} — run "npm run build" first.`);
@@ -325,7 +337,16 @@ function main() {
     }
   }
 
-  console.log(`\n${passed} passed, ${skipped} skipped, ${failed} failed`);
+  // The check counters and the coverage-table totals measure different things:
+  // the agent check has no conformance row, and inventory rows unsupported by
+  // smoke never run. Both are reported so the table reconciles with its totals.
+  const totals = coverageTotals(checkResults);
+  console.log(
+    `\n${passed} passed, ${skipped} skipped, ${failed} failed (checks; the agent check has no coverage row)`
+  );
+  console.log(
+    `Coverage rows: ${totals.pass} passed, ${totals.skip} skipped, ${totals.fail} failed, ${totals["not covered"]} not covered`
+  );
   console.log("");
   console.log(renderCoverageTable(checkResults));
   process.exit(failed > 0 ? 1 : 0);

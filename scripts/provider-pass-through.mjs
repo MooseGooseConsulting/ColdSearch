@@ -257,7 +257,13 @@ const TOOL_INPUTS = {
 
 function inputForTarget(target) {
   if (target.tool) {
-    return TOOL_INPUTS[`${target.provider}.${target.tool}`]();
+    const toolInput = TOOL_INPUTS[`${target.provider}.${target.tool}`];
+    if (!toolInput) {
+      throw new Error(
+        `No tool input defined for ${target.provider}.${target.tool}; add a TOOL_INPUTS entry for it`
+      );
+    }
+    return toolInput();
   }
   if (target.path === "search") {
     return { query: SEARCH_QUERY };
@@ -784,9 +790,11 @@ async function nativeTavilyMap(target) {
     ),
     "native Tavily map"
   );
-  const items = (data.urls || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
+  // Tavily Map returns discovered URLs under `results` (matches the substrate
+  // map summary, which counts raw.results).
+  const items = (data.results || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
   return makeNativeToolResult(target, items, {
-    native_shape: ["urls[]"],
+    native_shape: ["results[]"],
   });
 }
 
@@ -1012,7 +1020,8 @@ function runColdSearchTool(target, outDir) {
 function toolRawItems(target, raw) {
   switch (`${target.provider}.${target.tool}`) {
     case "tavily.map":
-      return (raw.urls || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
+      // Tavily Map puts discovered URLs under `results` (matches substrate).
+      return (raw.results || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
     case "firecrawl.map":
       return (raw.links || raw.data || []).map((url) => ({ title: "", url, content: "", source: "firecrawl" }));
     case "brave.webSearch":
@@ -1024,7 +1033,7 @@ function toolRawItems(target, raw) {
   }
 }
 
-function makeColdSearchToolResult(target, output) {
+export function makeColdSearchToolResult(target, output) {
   const raw = output.raw && typeof output.raw === "object" ? output.raw : {};
   const items = toolRawItems(target, raw);
   return {
@@ -1035,6 +1044,15 @@ function makeColdSearchToolResult(target, output) {
     items,
     provider: output.provider,
     tool: output.tool,
+    // Whether the CLI's tool-call surface actually preserved the provider raw
+    // payload: the substrate returns raw detail in the JSON output, and the
+    // evidence path redacts it; raw_preserved proves the pass-through rather
+    // than assuming it. Full bodies are deliberately not persisted here —
+    // provider raw detail stays at the CLI/redaction boundary, not in evidence.
+    raw_preserved:
+      Boolean(output.raw) &&
+      typeof output.raw === "object" &&
+      Object.keys(output.raw).length > 0,
   };
 }
 
@@ -1101,7 +1119,15 @@ function compareToolTarget(target, nativeResult, coldResult) {
     hasUrlOrTitleOverlap(nativeResult.items, coldResult.items),
     "native and ColdSearch tool results overlap by URL or title"
   ));
-  detailLoss.push("ColdSearch tool call output preserves provider raw detail; the tool summary is a lossy derived view.");
+  checks.push(check(
+    coldResult.raw_preserved,
+    "ColdSearch tool call output preserved provider raw detail"
+  ));
+  checks.push(check(
+    coldResult.catalogued,
+    "ColdSearch tool call row remained catalogued in the registry"
+  ));
+  detailLoss.push("The tool summary is a lossy derived view; provider raw detail stays at the CLI output/redaction boundary and is not re-persisted into evidence.");
 
   const passed = checks.every((item) => item.pass);
   return { passed, checks, notes, detail_loss: detailLoss };
@@ -1198,9 +1224,23 @@ async function runTarget(target, options) {
 
   let nativeResult;
   try {
-    nativeResult = isTool
-      ? await nativeToolRunners[targetId(target)](target)
-      : await nativeRunners[target.provider](target);
+    if (isTool) {
+      const runner = nativeToolRunners[targetId(target)];
+      if (!runner) {
+        throw new Error(
+          `No native runner for tool ${targetId(target)}; add it to nativeToolRunners`
+        );
+      }
+      nativeResult = await runner(target);
+    } else {
+      const runner = nativeRunners[target.provider];
+      if (!runner) {
+        throw new Error(
+          `No native runner for provider ${target.provider}; add it to nativeRunners`
+        );
+      }
+      nativeResult = await runner(target);
+    }
   } catch (error) {
     const classified = classifyNativeError(error);
     return {

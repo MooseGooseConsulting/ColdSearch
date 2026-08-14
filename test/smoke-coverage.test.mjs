@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildCoverageRows,
+  coverageTotals,
   renderCoverageTable,
 } from "../scripts/smoke.mjs";
 import {
@@ -87,4 +88,29 @@ test("renderCoverageTable labels rows smoke-only and never reports a conformance
     dataLines.some((line) => /\| skip \|/.test(line)),
     "skipped keyed checks stay visible in the smoke column"
   );
+});
+
+test("coverage totals reconcile with the rows, one smoke status per inventory entry", () => {
+  const totals = coverageTotals([
+    { coverage: { provider: "tavily", path: "search" }, status: "pass" },
+    { coverage: { provider: "brave", path: "search" }, status: "fail" },
+    { coverage: { provider: "searxng", path: "search" }, status: "skip" },
+    // checks without a conformance row (e.g. agent mode) must not inflate totals
+    { coverage: null, status: "pass" },
+  ]);
+  const rows = buildCoverageRows([
+    { coverage: { provider: "tavily", path: "search" }, status: "pass" },
+    { coverage: { provider: "brave", path: "search" }, status: "fail" },
+    { coverage: { provider: "searxng", path: "search" }, status: "skip" },
+  ]);
+  const sum = totals.pass + totals.skip + totals.fail + totals["not covered"];
+  assert.equal(
+    sum,
+    REQUIRED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length,
+    "totals cover every inventory row exactly once"
+  );
+  assert.equal(totals.pass, rows.filter((r) => r.smoke === "pass").length);
+  assert.equal(totals.skip, rows.filter((r) => r.smoke === "skip").length);
+  assert.equal(totals.fail, rows.filter((r) => r.smoke === "fail").length);
+  assert.equal(totals["not covered"], rows.filter((r) => r.smoke === "not covered").length);
 });
