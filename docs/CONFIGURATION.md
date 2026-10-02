@@ -111,8 +111,44 @@ strategy = "random"
 
 - `providers`: ordered list of providers eligible for the capability
 - `strategy`:
-  - `random`: pick exactly one provider per request
-  - `all`: fan out to all configured providers
+  - `random`: pick one provider initially; account-quota exhaustion enables
+    bounded recovery through the remaining eligible pool
+  - `all`: search fans out in parallel; extract/crawl try providers in order
+    until one succeeds
+
+### Quota recovery
+
+For `random` and `--single-provider`, a successful first attempt makes no calls
+to other providers. If that attempt reports exhausted account credits/quota,
+the runtime tries the remaining eligible providers in configured order, once
+per provider, until one succeeds. Once recovery starts, a failed alternative
+does not prevent trying the next one. If none succeeds, `AllProvidersFailedError`
+retains every attempt and provider error.
+
+Exhaustion detection is provider-independent: HTTP 402 or explicit credit,
+quota, balance, or billing-exhaustion text in an error/HTTP error body (including
+wrapped causes). Generic rate limits, authentication errors, and other failures
+do not initiate this recovery. Existing `all` error isolation/fallback stays in
+effect.
+
+Recovery never changes config or disables a provider. It is scoped to the
+eligible capability pool, or the caller's `--providers` override; an explicit
+singleton such as `--providers firecrawl` has no alternative and fails visibly
+if its account is exhausted. Provider-native `tool call firecrawl.*` requests
+remain explicit and are not translated to another vendor's tool.
+
+Usage log entries and execution-history attempts mark detected exhaustion with
+`quota_exhausted: true`; recovered executions preserve their error map and are
+recorded as `partial`. Error bodies are inspected for detection, not added to
+logs. `--dry-run` lists the initial selection and conditional
+`quota_fallback_providers`, without calling providers or resolving secrets.
+
+This is recovery after a rejection, not a preflight balance probe or persistent
+quota gate. A new invocation can select that account again and recover again.
+Existing installations need the updated runtime; their provider pools and key
+configuration can remain in place. The effective config remains explicit
+`--config`, then `~/.config/coldsearch/config.toml`, then the legacy
+`~/.config/usearch/config.toml` if the primary file does not exist.
 
 ## Provider configuration
 

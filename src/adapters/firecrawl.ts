@@ -1,4 +1,4 @@
-import { fetchJson, HTTPRequestError } from "../http.js";
+import { fetchJson, HTTPRequestError, isQuotaExhausted } from "../http.js";
 import type {
   SearchAdapter,
   ExtractResult,
@@ -210,8 +210,8 @@ export class FirecrawlAdapter implements SearchAdapter {
             error.status === 408 ||
             error.status === 429;
 
-          if (!isTransientStatus) {
-            throw new Error(`Firecrawl crawl poll failed for job ${jobId}: ${error.message}`);
+          if (!isTransientStatus || isQuotaExhausted(error)) {
+            throw new Error(`Firecrawl crawl poll failed for job ${jobId}: ${error.message}`, { cause: error });
           }
 
           continue;

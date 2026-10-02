@@ -29,6 +29,24 @@ export class HTTPRequestError extends Error {
   }
 }
 
+/** Detect account exhaustion without publishing provider response bodies.
+ * HTTP 402 is definitive; other statuses need an explicit quota/balance
+ * message. A generic 429 rate limit is not evidence that credits ran out.
+ */
+export function isQuotaExhausted(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 4) return false;
+  const detail = error as { status?: number; statusCode?: number; message?: unknown; body?: unknown; cause?: unknown };
+  if (detail.status === 402 || detail.statusCode === 402) return true;
+  const text = [detail.message, detail.body]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .replace(/[_-]/g, " ");
+  const account = "(?:credits?|quota|funds?|balance|budget|(?:usage|billing|spending) limit)";
+  const depletion = "(?:insufficient|not enough|does not have enough|out of|no remaining|no available|exhausted|exceed(?:ed|s)?|depleted|used up|too low|reached)";
+  const exhausted = new RegExp(`${depletion}.{0,60}${account}|${account}.{0,60}${depletion}`, "i");
+  return /payment required/i.test(text) || exhausted.test(text) || isQuotaExhausted(detail.cause, depth + 1);
+}
+
 function createAbortError(message: string): Error {
   const error = new Error(message);
   error.name = "AbortError";

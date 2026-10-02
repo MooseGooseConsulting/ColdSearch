@@ -23,6 +23,8 @@ export interface ProviderAttempt {
   tool?: string;
   success: boolean;
   error?: string;
+  /** Account exhaustion observed in this attempt; enables bounded recovery. */
+  quota_exhausted?: boolean;
   duration_ms?: number;
   key_ref?: string;
   result_count?: number;

@@ -447,7 +447,7 @@ Commands:
 Options:
   Mode Selection:
     -a, --agent          Use search agent mode (multi-step research)
-    --single-provider    Use one random provider instead of fanout
+    --single-provider    Use one successful provider (quota failover, no fanout)
     --dry-run            Print execution plan without network calls
     
   Fanout Options (default mode):
@@ -724,16 +724,16 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
 
 function resolveProviderList(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
   const config = loadConfig(options.config);
-  const { providers: selected } = resolveCapabilityProviders(
+  const { providers: selected, quotaFallbackProviders } = resolveCapabilityProviders(
     config,
     capability,
     { providers: options.providers, singleProvider: options.singleProvider }
   );
-  return { config, providers: selected };
+  return { config, providers: selected, quotaFallbackProviders };
 }
 
 function buildExecutionPlan(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
-  const { config, providers } = resolveProviderList(capability, options);
+  const { config, providers, quotaFallbackProviders } = resolveProviderList(capability, options);
 
   const plannedProviders = providers.map((provider) => {
     const pool = config.providers[provider]?.keyPool;
@@ -763,6 +763,7 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
     capability,
     query_or_url: options.query,
     providers: plannedProviders,
+    ...(quotaFallbackProviders?.length ? { quota_fallback_providers: quotaFallbackProviders } : {}),
     estimated_api_calls: plannedProviders.length,
   };
 }
