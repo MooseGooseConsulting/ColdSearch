@@ -14,6 +14,7 @@ export interface UsageLogEntry {
   success: boolean;
   response_time_ms: number;
   error?: string;
+  quota_exhausted?: boolean;
   /** Bright Data only: masked zone suffix (never the full zone — embeds customer ID). */
   zone?: string;
   /** Provider-reported cost in USD where the tool summary extracts it. */

@@ -46,6 +46,13 @@ The current implementation remains local-first, but the runtime is now being org
 | `extract` | Tavily, Exa, Jina, Firecrawl | Manual random pool |
 | `crawl` | Tavily, Firecrawl, Exa | Manual random pool |
 
+Random routing normally uses one provider. If its account credits/quota are
+exhausted, search/extract/crawl try the remaining eligible pool in order until
+one succeeds. Recovery retains failed attempts in usage logs and execution
+history; it does not remove providers or change config. An explicit single
+provider has no alternative to recover through. See
+[quota recovery](docs/CONFIGURATION.md#quota-recovery).
+
 ## Provider Overlap
 
 The core architectural truth is provider overlap, not just three coarse commands.
