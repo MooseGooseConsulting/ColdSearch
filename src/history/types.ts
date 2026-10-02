@@ -25,6 +25,8 @@ export interface ProviderAttempt {
   /** Provider accepted an asynchronous job that has not completed yet. */
   pending?: boolean;
   error?: string;
+  /** Account exhaustion observed in this attempt; enables bounded recovery. */
+  quota_exhausted?: boolean;
   duration_ms?: number;
   key_ref?: string;
   result_count?: number;
