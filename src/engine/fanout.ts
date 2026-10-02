@@ -3,6 +3,7 @@ import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
 import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
 import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
+import { isQuotaExhausted } from "../http.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
 import { HTTPRequestError } from "../http.js";
@@ -67,6 +68,7 @@ interface ProviderResult {
   provider: string;
   results: NormalizedResult[];
   error?: string;
+  quotaExhausted?: boolean;
   durationMs: number;
   keyRef: string;
   /** Resolved credential value used for this call, when any. */
@@ -85,6 +87,7 @@ export interface FanoutAttempt {
   /** Provider accepted the crawl but the async job has not completed. */
   pending?: boolean;
   error?: string;
+  quota_exhausted?: boolean;
   duration_ms?: number;
   key_ref?: string;
   result_count?: number;
@@ -179,13 +182,12 @@ export class FanoutEngine {
   private getProvidersForCapability(
     capability: CapabilityName,
     options: FanoutOptions
-  ): string[] {
-    const { providers } = resolveCapabilityProviders(
+  ): ReturnType<typeof resolveCapabilityProviders> {
+    return resolveCapabilityProviders(
       this.config,
       capability,
       { providers: options.providers, singleProvider: options.singleProvider }
     );
-    return providers;
   }
 
   /**
@@ -208,16 +210,32 @@ export class FanoutEngine {
     secretsUsed: string[];
   }> {
     // Get providers to use
-    const providers = this.getProvidersForCapability("search", options);
+    const plan = this.getProvidersForCapability("search", options);
+    const providers: string[] = [];
+    const results: PromiseSettledResult<ProviderResult>[] = [];
     // Keep the output cap separate from provider-specific configured counts.
     // A CLI default of 10 should cap merged results without overriding each
     // provider's configured upstream count.
     const providerLimit = options.limitSet === false ? undefined : options.limit;
 
-    // Execute searches in parallel
-    const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query, providerLimit))
-    );
+    if (plan.quotaFallbackProviders !== undefined) {
+      // Random/single-provider: stop after one success. Account exhaustion
+      // tries each remaining eligible provider at most once, sequentially.
+      let recoveringQuota = false;
+      for (const provider of [...plan.providers, ...plan.quotaFallbackProviders]) {
+        const value = await this.searchProvider(provider, query, providerLimit);
+        providers.push(provider);
+        results.push({ status: "fulfilled", value });
+        if (!value.error) break;
+        recoveringQuota ||= value.quotaExhausted === true;
+        if (!recoveringQuota) break;
+      }
+    } else {
+      providers.push(...plan.providers);
+      results.push(...await Promise.allSettled(
+        providers.map((provider) => this.searchProvider(provider, query, providerLimit))
+      ));
+    }
 
     // Collect results and errors
     const resultsByProvider = new Map<string, NormalizedResult[]>();
@@ -240,6 +258,7 @@ export class FanoutEngine {
             provider,
             success: false,
             error: value.error,
+            ...(value.quotaExhausted ? { quota_exhausted: true } : {}),
             duration_ms: value.durationMs,
             key_ref: value.keyRef,
           });
@@ -299,14 +318,15 @@ export class FanoutEngine {
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
-    const providers = this.getProvidersForCapability("extract", options);
+    const { providers, quotaFallbackProviders } = this.getProvidersForCapability("extract", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
+    let recoveringQuota = false;
 
-    // Try providers in order (or single random provider)
-    for (const provider of providers) {
+    // Random mode unlocks the remaining pool only after quota exhaustion.
+    for (const provider of [...providers, ...(quotaFallbackProviders ?? [])]) {
       const start = performance.now();
       let keyRef = "none";
       try {
@@ -360,6 +380,8 @@ export class FanoutEngine {
         };
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
+        const quotaExhausted = isQuotaExhausted(error);
+        recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
         if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
         this.usageLogger.write({
@@ -370,6 +392,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
         attempts.push({
           provider,
@@ -377,7 +400,9 @@ export class FanoutEngine {
           error: (error as Error).message,
           duration_ms: durationMs,
           key_ref: keyRef,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
+        if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
     }
 
@@ -403,6 +428,7 @@ export class FanoutEngine {
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
+    let recoveringQuota = false;
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
@@ -444,7 +470,8 @@ export class FanoutEngine {
       resumeProviders.add(job.provider);
     }
 
-    const selectedProviders = this.getProvidersForCapability("crawl", options);
+    const { providers: selectedProviders, quotaFallbackProviders } =
+      this.getProvidersForCapability("crawl", options);
     const resumeJobsToPoll = resumePendingJobs.splice(0);
     let completedResumeProvider: string | undefined;
     const completedResumeResults: CrawlResult[] = [];
@@ -609,10 +636,13 @@ export class FanoutEngine {
     }
 
     const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
+    const quotaProviders = (quotaFallbackProviders ?? []).filter(
+      (provider) => !resumeProviders.has(provider)
+    );
     const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
 
-    // Try providers in order (or single random provider)
-    for (const provider of providers) {
+    // Random mode unlocks the remaining pool only after quota exhaustion.
+    for (const provider of [...providers, ...quotaProviders]) {
       const start = performance.now();
       let keyRef = "none";
       try {
@@ -716,6 +746,8 @@ export class FanoutEngine {
         };
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
+        const quotaExhausted = isQuotaExhausted(error);
+        recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
         const httpError = findHttpRequestError(error);
         if (httpError) providerHttpErrors[provider] = httpError;
@@ -727,6 +759,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
         attempts.push({
           provider,
@@ -734,7 +767,9 @@ export class FanoutEngine {
           error: (error as Error).message,
           duration_ms: durationMs,
           key_ref: keyRef,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
+        if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
     }
 
@@ -814,6 +849,7 @@ export class FanoutEngine {
       };
     } catch (error) {
       const durationMs = Math.round(performance.now() - start);
+      const quotaExhausted = isQuotaExhausted(error);
       this.usageLogger.write({
         timestamp: new Date().toISOString(),
         provider,
@@ -822,12 +858,14 @@ export class FanoutEngine {
         success: false,
         response_time_ms: durationMs,
         error: (error as Error).message,
+        ...(quotaExhausted ? { quota_exhausted: true } : {}),
       });
       return {
         provider,
         results: [],
         error: (error as Error).message,
         ...(error instanceof HTTPRequestError ? { httpError: error } : {}),
+        quotaExhausted,
         durationMs,
         keyRef,
         // The secret may have resolved before the call failed; the error

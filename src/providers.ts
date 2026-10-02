@@ -104,20 +104,21 @@ export function createRegisteredAdapter(provider: string): SearchAdapter {
 
 /**
  * Shared provider resolution logic used by both CLI dry-run and FanoutEngine.
- * Validates config/capability and applies strategy (all vs random).
+ * Validates config/capability and applies strategy (all vs random), including
+ * the conditional quota-recovery scope for random/single-provider execution.
  *
  * When `requireFeatures` is supplied, routing becomes requirement-aware: the
  * selected providers are narrowed to those whose wired tool for the capability
  * actually sets every requested feature predicate (see
  * `src/registry/tool-profiles.ts`). This prevents picking a provider that
- * "claims the category" but cannot honor the requested feature. With no
- * `requireFeatures`, behavior is unchanged.
+ * "claims the category" but cannot honor the requested feature. The same
+ * eligibility filter applies to both initial selection and quota alternatives.
  */
 export function resolveCapabilityProviders(
   config: Config,
   capability: CapabilityName,
   options: { providers?: string[]; singleProvider?: boolean; requireFeatures?: string[] }
-): { providers: string[] } {
+): { providers: string[]; quotaFallbackProviders?: string[] } {
   const capConfig = config.capabilities[capability];
   if (!capConfig) {
     throw new Error(`No configuration found for capability: ${capability}`);
@@ -160,5 +161,12 @@ export function resolveCapabilityProviders(
   if (!useSingleProvider) return { providers: eligible };
 
   const randomIndex = Math.floor(Math.random() * eligible.length);
-  return { providers: [eligible[randomIndex]] };
+  const first = eligible[randomIndex];
+  return {
+    providers: [first],
+    // Keep normal random execution to one provider. Only an account-quota
+    // rejection unlocks these alternatives; never leave the eligible scope or
+    // revisit the selected provider (including duplicate pool entries).
+    quotaFallbackProviders: [...new Set(eligible.filter((provider) => provider !== first))],
+  };
 }

@@ -186,6 +186,29 @@ keys = ["k"]
   assert.equal(out.capability, "search");
 });
 
+test("dry-run discloses conditional quota alternatives separately from the initial random selection", () => {
+  const result = withTempDir((dir) => {
+    const configPath = writeConfig(dir, `
+[capabilities.extract]
+providers = ["firecrawl", "tavily", "exa"]
+strategy = "random"
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+[providers.tavily.keyPool]
+keys = ["env:TAVILY_API_KEY"]
+[providers.exa.keyPool]
+keys = ["env:EXA_API_KEY"]
+`);
+    return runCli(["extract", "--config", configPath, "--dry-run", "--json", "https://x.example"]);
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.providers.length, 1);
+  assert.equal(out.estimated_api_calls, 1);
+  assert.equal(out.quota_fallback_providers.length, 2);
+  assert.deepEqual(new Set([out.providers[0].provider, ...out.quota_fallback_providers]), new Set(["firecrawl", "tavily", "exa"]));
+});
+
 test("flags after the query positional are still parsed", () => {
   const result = withTempDir((dir) => {
     const configPath = writeConfig(
