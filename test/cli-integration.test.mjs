@@ -386,6 +386,18 @@ keys = ["sk-literal-secret-abc123"]
   assert.doesNotMatch(result.stdout + result.stderr, /sk-literal-secret-abc123/);
 });
 
+test("missing --llm-key-ref is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--llm-key-ref"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): --llm-key-ref requires/);
+});
+
+test("invalid --reasoning-effort is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--reasoning-effort", "turbo", "query"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): Invalid reasoning effort/);
+});
+
 test("status --json includes the config path", () => {
   const { result, configPath } = withTempDir((dir) => {
     const usagePath = path.join(dir, "usage.jsonl").replaceAll("\\", "/");

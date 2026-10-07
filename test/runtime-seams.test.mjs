@@ -104,6 +104,18 @@ test("LLM provider errors classify as config", () => {
   }
 });
 
+test("invalid agent reasoning and key-ref settings classify as config", () => {
+  for (const message of [
+    "Invalid reasoning effort. Supported: none, minimal, low, medium, high, xhigh, max",
+    "Invalid agent LLM reasoning effort",
+    "Agent LLM key_ref must be an env: or doppler: secret name",
+    "[agent.llm] reasoning_effort is not supported for the configured provider",
+    "[agent.llm] key_ref must be an env: or doppler: secret name",
+  ]) {
+    assert.equal(classifyError(new Error(message)).category, "config", message);
+  }
+});
+
 test("missing execution id classifies as config", () => {
   const { category, message } = classifyError(
     new Error("No execution found with id 'abc-123'.")

@@ -30,7 +30,7 @@ jobs:
   canary:
     runs-on: ubuntu-latest
     env:
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+      HAS_DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN != '' }}
     steps:
       # Actions pinned to commit SHAs (supply-chain hardening); trailing comment tracks the tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -50,7 +50,7 @@ jobs:
         run: npm run build
 
       - name: Install Doppler CLI when a service token is configured
-        if: env.DOPPLER_TOKEN != ''
+        if: env.HAS_DOPPLER_TOKEN == 'true'
         uses: DopplerHQ/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
 
       - name: Live smoke test
@@ -61,6 +61,7 @@ jobs:
             node scripts/smoke.mjs
           fi
         env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}

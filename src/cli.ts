@@ -53,6 +53,8 @@ interface ExtendedCLIOptions extends CLIOptions {
   model?: string;
   /** LLM base URL override */
   llmBaseUrl?: string;
+  /** LLM credential reference override (env:NAME or doppler:NAME) */
+  llmKeyRef?: string;
   reasoningEffort?: ReasoningEffort;
   /** Maximum agent steps */
   maxSteps?: number;
@@ -349,6 +351,14 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.llmBaseUrl = args[i];
         break;
 
+      case "--llm-key-ref":
+        i++;
+        if (!args[i] || args[i].startsWith("-")) {
+          throw new Error("--llm-key-ref requires an env:NAME or doppler:NAME reference");
+        }
+        options.llmKeyRef = args[i];
+        break;
+
       case "--max-steps":
         i++;
         options.maxSteps = parseInt(args[i], 10);
@@ -466,8 +476,9 @@ Options:
   Agent Options (requires --agent):
     --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai|isoquant (default: isoquant)
     --model MODEL        LLM model name
-    --reasoning-effort N none|low|medium|high|max (Isoquant default: medium)
+    --reasoning-effort N none|minimal|low|medium|high|xhigh|max (Isoquant default: medium)
     --llm-base-url URL   Override OpenAI-compatible API base URL
+    --llm-key-ref REF    Override credential reference (env:NAME or doppler:NAME)
     --max-steps N        Maximum research steps (default: 5)
     --max-sources N      Maximum sources to collect (default: 5)
     
@@ -700,7 +711,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   // inside createLLMClient).
   const config = loadConfig(options.config);
   const llm = resolveLlmConfig(
-    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl, reasoningEffort: options.reasoningEffort },
+    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl, keyRef: options.llmKeyRef, reasoningEffort: options.reasoningEffort },
     config.agent?.llm as
       | LLMEndpointConfig
       | undefined

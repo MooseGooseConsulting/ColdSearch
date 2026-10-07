@@ -5,14 +5,24 @@
 import { KeyPoolManager } from "../engine/keypool.js";
 import { APP_USER_AGENT } from "../app.js";
 import { fetchJson } from "../http.js";
+import { parseAgentKeyRef } from "./key-ref.js";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-export const REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+const LEGACY_REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
+export const OPENROUTER_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export function isValidReasoningEffort(provider: LLMProvider | undefined, value: unknown): value is ReasoningEffort {
+  if (provider === "openrouter") {
+    return (OPENROUTER_REASONING_EFFORTS as readonly unknown[]).includes(value);
+  }
+  return (LEGACY_REASONING_EFFORTS as readonly unknown[]).includes(value);
+}
 
 export interface LLMOptions {
   reasoningEffort?: ReasoningEffort;
@@ -67,12 +77,20 @@ export function resolveLlmConfig(
   cli: LLMEndpointConfig,
   toml?: LLMEndpointConfig
 ): LLMEndpointConfig {
+  // A provider is an endpoint identity: its model, URL, key reference, and
+  // reasoning protocol belong together. Treat an omitted TOML provider as the
+  // application default (Isoquant), so a CLI provider switch cannot inherit
+  // any endpoint or credential settings from that default.
+  const provider = cli.provider ?? toml?.provider ?? "isoquant";
+  const tomlProvider = toml?.provider ?? "isoquant";
+  const sameProvider = provider === tomlProvider;
+
   return {
-    provider: cli.provider ?? toml?.provider,
-    model: cli.model ?? toml?.model,
-    baseUrl: cli.baseUrl ?? toml?.baseUrl,
-    reasoningEffort: cli.reasoningEffort ?? toml?.reasoningEffort,
-    keyRef: cli.keyRef ?? toml?.keyRef,
+    provider,
+    model: cli.model ?? (sameProvider ? toml?.model : undefined),
+    baseUrl: cli.baseUrl ?? (sameProvider ? toml?.baseUrl : undefined),
+    reasoningEffort: cli.reasoningEffort ?? (sameProvider ? toml?.reasoningEffort : undefined),
+    keyRef: cli.keyRef ?? (sameProvider ? toml?.keyRef : undefined),
   };
 }
 
@@ -125,13 +143,13 @@ export class OpenAIClient implements LLMClient {
   constructor(apiKey: string, model = "gpt-4o", baseUrl = "https://api.openai.com/v1", settings: LLMEndpointConfig = {}) {
     this.settings = settings;
     if (settings.keyRef !== undefined) {
-      if (!/^(env:|doppler:)[A-Za-z_][A-Za-z0-9_]*$/.test(settings.keyRef)) {
+      if (!parseAgentKeyRef(settings.keyRef)) {
         throw new Error("Agent LLM key_ref must be an env: or doppler: secret name");
       }
       this.keyPool = new KeyPoolManager();
       this.keyPool.register("agent-llm", { keys: [settings.keyRef] });
     }
-    if (settings.reasoningEffort !== undefined && !REASONING_EFFORTS.includes(settings.reasoningEffort)) {
+    if (settings.reasoningEffort !== undefined && !isValidReasoningEffort(settings.provider, settings.reasoningEffort)) {
       throw new Error("Invalid agent LLM reasoning effort");
     }
     this.apiKey = apiKey;
@@ -156,6 +174,9 @@ export class OpenAIClient implements LLMClient {
     const injectedKey = ref?.startsWith("doppler:") ? process.env[ref.slice(8)] : undefined;
     const apiKey = this.keyPool ? (injectedKey || await this.keyPool.getNextKey("agent-llm")) : this.apiKey;
     const effort = options.reasoningEffort ?? this.settings.reasoningEffort;
+    if (effort !== undefined && !isValidReasoningEffort(this.settings.provider, effort)) {
+      throw new Error("Invalid agent LLM reasoning effort");
+    }
     const reasoning = effort === undefined ? {} : this.settings.provider === "openrouter"
       ? { reasoning: { effort } }
       : { reasoning_effort: effort };
