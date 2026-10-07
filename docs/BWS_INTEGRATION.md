@@ -2,6 +2,10 @@
 
 Bitwarden Secrets Manager runtime support has been removed.
 
+The unused Bitwarden SDK and resolver module have also been removed. Existing
+`bws:` configuration still fails with explicit migration guidance; no supported
+runtime command resolves Bitwarden credentials.
+
 ColdSearch now resolves secrets via Doppler.
 
 ## Migration
@@ -37,3 +41,7 @@ strategy = "random"
 
 - Development: `doppler login`
 - CI / production: `doppler run --token="$DOPPLER_TOKEN" -- ...`
+
+For a provider key injected by `doppler run`, set `keys = ["env:SECRET_NAME"]`.
+The provider key-pool's `doppler:` references currently invoke the Doppler CLI
+even when an environment variable with the same name exists.

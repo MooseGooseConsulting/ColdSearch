@@ -30,9 +30,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@bitwarden/sdk-napi": "^1.0.0",
-    "@iarna/toml": "^2.2.5",
-    "@tavily/core": "^0.7.2"
+    "@iarna/toml": "^2.2.5"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
