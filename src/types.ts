@@ -123,6 +123,8 @@ export interface CLIOptions {
   json: boolean;
   config?: string;
   singleProvider?: boolean;
+  /** Explicit agent run ID (agent mode only); generated when absent. */
+  runId?: string;
   /** `coldsearch batch` resumable JSONL runner options. */
   batch?: {
     input?: string;

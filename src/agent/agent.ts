@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
+import { randomBytes } from "node:crypto";
 import { APP_USER_AGENT } from "../app.js";
 import {
   LocalExecutionBackend,
@@ -34,6 +35,25 @@ export interface AgentOptions {
   llm?: LLMClient;
   /** Bypass the result cache for the agent's internal searches */
   noCache?: boolean;
+  /**
+   * Explicit run ID for this agent run (e.g. `run_20260622T173012Z_7f3a9c`).
+   * Generated via createRunId() when absent; empty/whitespace-only values are
+   * rejected.
+   */
+  runId?: string;
+}
+
+/**
+ * Generate a log-friendly agent run ID: UTC timestamp plus 3 random bytes,
+ * e.g. `run_20260622T173012Z_7f3a9c`. The same ID correlates one agent run
+ * across its output, steps, execution history, and usage-log entries.
+ */
+export function createRunId(now: Date = new Date()): string {
+  const stamp = now
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z");
+  return `run_${stamp}_${randomBytes(3).toString("hex")}`;
 }
 
 interface ValidatedFetchTarget {
@@ -152,6 +172,8 @@ function isBlockedHostname(hostname: string): boolean {
  */
 export interface AgentResult {
   answer: string;
+  /** Run ID correlating this run across output, steps, and usage logs. */
+  run_id: string;
   sources: Array<{
     url: string;
     title: string;
@@ -161,6 +183,7 @@ export interface AgentResult {
     type: string;
     description: string;
     timestamp: Date;
+    run_id?: string;
   }>;
 }
 
@@ -171,6 +194,8 @@ export class SearchAgent {
   private llm: LLMClient;
   private backend: ExecutionBackend;
   private noCache: boolean;
+  /** Run ID fallback from construction; research() options override it. */
+  private runId?: string;
 
   constructor(options: AgentOptions = {}) {
     this.llm =
@@ -184,6 +209,7 @@ export class SearchAgent {
     this.backend =
       options.executionBackend ?? new LocalExecutionBackend(options.configPath);
     this.noCache = options.noCache ?? false;
+    this.runId = options.runId;
   }
 
   /**
@@ -192,8 +218,18 @@ export class SearchAgent {
   async research(goal: string, options: AgentOptions = {}): Promise<AgentResult> {
     const maxSteps = options.maxSteps || 5;
     const maxSources = options.maxSources || 5;
-    
-    const context = new ResearchContext(goal, maxSources);
+
+    // An explicit run ID must be non-empty; the CLI rejects it early, but the
+    // agent boundary enforces it too so library callers can't slip one through.
+    const explicitRunId = options.runId ?? this.runId;
+    if (explicitRunId !== undefined && explicitRunId.trim() === "") {
+      throw new Error("Explicit run ID must not be empty or whitespace-only");
+    }
+    // Trim surrounding whitespace so the canonical ID is stable for
+    // correlation; a padded value would mismatch across logs and output.
+    const runId = explicitRunId?.trim() ?? createRunId();
+
+    const context = new ResearchContext(goal, maxSources, runId);
     context.currentQuery = goal;
 
     const systemPrompt = `You are a research assistant that helps users find information. You have access to these tools:
@@ -244,6 +280,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
         const result = context.generateResponse(payload.answer);
         return {
           answer: result.answer,
+          run_id: runId,
           sources: result.sources,
           steps: result.steps,
         };
@@ -269,6 +306,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
             limit: 5,
             rerankStrategy: "rrf",
             noCache: this.noCache,
+            runId,
           });
           // Track sources
           result.results.forEach((r) => context.addSource(r));
@@ -317,6 +355,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
     const result = context.generateResponse(answer);
     return {
       answer: result.answer,
+      run_id: runId,
       sources: result.sources,
       steps: result.steps,
     };

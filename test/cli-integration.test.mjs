@@ -464,3 +464,279 @@ path = "${usagePath}"
   assert.equal(out.cache.path, cachePath);
   assert.equal(out.usage_log, usagePath);
 });
+
+// ---------------------------------------------------------------------------
+// agent mode: run IDs (PR 5)
+// ---------------------------------------------------------------------------
+
+/** Start a mock OpenAI-compatible /chat/completions server with canned replies. */
+function startLlmServer(responses) {
+  let callCount = 0;
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || !req.url?.includes("/chat/completions")) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const content = responses[Math.min(callCount, responses.length - 1)];
+      callCount += 1;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") return reject(new Error("no address"));
+      resolve({ server, baseUrl: `http://127.0.0.1:${addr.port}` });
+    });
+  });
+}
+
+/** Start a mock SearXNG JSON endpoint. */
+function startSearxngServer() {
+  const server = http.createServer((req, res) => {
+    if (!req.url?.startsWith("/search")) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+    const payload = {
+      results: [
+        { title: "Result A", url: "https://a.example", content: "content a", score: 0.9 },
+        { title: "Result B", url: "https://b.example", content: "content b", score: 0.7 },
+      ],
+    };
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(payload));
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") return reject(new Error("no address"));
+      resolve({ server, baseUrl: `http://127.0.0.1:${addr.port}` });
+    });
+  });
+}
+
+test("agent mode: --run-id threads through output, usage log, and history", async () => {
+  const llm = await startLlmServer([
+    JSON.stringify({ type: "tool", tool: "search", args: ["test research goal"] }),
+    JSON.stringify({ type: "final", answer: "research complete" }),
+  ]);
+  const searxng = await startSearxngServer();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-"));
+  try {
+    const usagePath = path.join(dir, "usage.jsonl");
+    const configPath = writeConfig(
+      dir,
+      `
+[capabilities.search]
+providers = ["searxng"]
+
+[providers.searxng]
+[providers.searxng.keyPool]
+keys = []
+
+[providers.searxng.options]
+baseUrl = "${searxng.baseUrl}"
+
+[cache]
+enabled = false
+
+[logging.usage]
+path = "${usagePath.replaceAll("\\", "/")}"
+`.trim()
+    );
+
+    const env = { ...process.env, OPENAI_API_KEY: "fake-openai-key-pr5" };
+    const result = await runCliAsync(
+      [
+        "--agent",
+        "--run-id",
+        "  run_cli_test_123  ",
+        "--llm-base-url",
+        llm.baseUrl,
+        "--config",
+        configPath,
+        "--json",
+        "test research goal",
+      ],
+      env
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.mode, "agent");
+    assert.equal(out.run_id, "run_cli_test_123");
+    // Steps stay a count in CLI JSON output; step-level run_id correlation is
+    // at the AgentResult level (see agent-mode tests).
+    assert.equal(typeof out.steps, "number");
+
+    const usageLines = fs
+      .readFileSync(usagePath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    assert.ok(usageLines.length > 0, "agent-triggered search wrote usage entries");
+    for (const line of usageLines) {
+      const entry = JSON.parse(line);
+      assert.equal(entry.run_id, "run_cli_test_123");
+      // Safe agent/tool-flow metadata: provider, capability, timing, outcome.
+      assert.equal(entry.provider, "searxng");
+      assert.equal(entry.capability, "search");
+      assert.equal(typeof entry.response_time_ms, "number");
+      assert.equal(typeof entry.success, "boolean");
+      assert.equal(entry.key, "searxng:keyless");
+    }
+
+    const historyLines = fs
+      .readFileSync(path.join(dir, "history.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    assert.ok(historyLines.length > 0, "agent-triggered search wrote history records");
+    for (const line of historyLines) {
+      const record = JSON.parse(line);
+      assert.equal(record.run_id, "run_cli_test_123");
+      // Reconstructable provider/routing/cache/timing flow from history too.
+      assert.equal(record.source, "live");
+      assert.equal(typeof record.duration_ms, "number");
+      assert.deepEqual(record.routing.providers_attempted, ["searxng"]);
+    }
+
+    // No raw credential value anywhere in output or logs.
+    const allOutput = result.stdout + result.stderr + fs.readFileSync(usagePath, "utf8");
+    assert.doesNotMatch(allOutput, /fake-openai-key-pr5/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    llm.server.close();
+    searxng.server.close();
+  }
+});
+
+test("agent mode: generated run_id when --run-id is absent", async () => {
+  const llm = await startLlmServer([
+    JSON.stringify({ type: "tool", tool: "search", args: ["goal"] }),
+    JSON.stringify({ type: "final", answer: "done" }),
+  ]);
+  const searxng = await startSearxngServer();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-"));
+  try {
+    const configPath = writeConfig(
+      dir,
+      `
+[capabilities.search]
+providers = ["searxng"]
+
+[providers.searxng]
+[providers.searxng.keyPool]
+keys = []
+
+[providers.searxng.options]
+baseUrl = "${searxng.baseUrl}"
+
+[cache]
+enabled = false
+`.trim()
+    );
+
+    const env = { ...process.env, OPENAI_API_KEY: "fake-openai-key-pr5" };
+    const result = await runCliAsync(
+      ["--agent", "--llm-base-url", llm.baseUrl, "--config", configPath, "--json", "goal"],
+      env
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    assert.match(out.run_id, /^run_\d{8}T\d{6}Z_[0-9a-f]{6}$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    llm.server.close();
+    searxng.server.close();
+  }
+});
+
+test("non-agent usage entries remain valid without run_id", async () => {
+  const searxng = await startSearxngServer();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-"));
+  try {
+    const usagePath = path.join(dir, "usage.jsonl");
+    const configPath = writeConfig(
+      dir,
+      `
+[capabilities.search]
+providers = ["searxng"]
+
+[providers.searxng]
+[providers.searxng.keyPool]
+keys = []
+
+[providers.searxng.options]
+baseUrl = "${searxng.baseUrl}"
+
+[cache]
+enabled = false
+
+[logging.usage]
+path = "${usagePath.replaceAll("\\", "/")}"
+`.trim()
+    );
+
+    const result = await runCliAsync(["search", "--config", configPath, "--json", "hello"]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    // Non-agent output contract unchanged.
+    assert.equal(out.command, "search");
+    assert.ok(Array.isArray(out.results));
+    assert.deepEqual(out.providers_used, ["searxng"]);
+    assert.equal(out.run_id, undefined);
+
+    const usageLines = fs
+      .readFileSync(usagePath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    assert.ok(usageLines.length > 0);
+    for (const line of usageLines) {
+      const entry = JSON.parse(line);
+      assert.equal(entry.run_id, undefined, "non-agent usage entry has no run_id");
+      assert.equal(typeof entry.response_time_ms, "number");
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    searxng.server.close();
+  }
+});
+
+test("--run-id rejects empty and whitespace-only values early", () => {
+  const whitespace = runCli(["--agent", "--run-id", "   ", "--json", "goal"]);
+  assert.equal(whitespace.status, 1);
+  assert.match(whitespace.stderr, /invalid --run-id/i);
+
+  // A flag-looking token after --run-id means the value was omitted.
+  const flagAsValue = runCli(["--agent", "--run-id", "--json", "goal"]);
+  assert.equal(flagAsValue.status, 1);
+  assert.match(flagAsValue.stderr, /invalid --run-id/i);
+
+  const missing = runCli(["--agent", "--run-id"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /invalid --run-id/i);
+});
+
+test("--run-id is rejected outside agent mode", () => {
+  // Run IDs are agent-mode only; non-agent commands silently ignore the ID,
+  // so accepting it there would mislead scripts into trusting correlation
+  // that never happens.
+  for (const args of [
+    ["--run-id", "run_non_agent", "--json", "goal"],
+    ["search", "--run-id", "run_non_agent", "--json", "goal"],
+  ]) {
+    const result = runCli(args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--run-id requires --agent/i);
+  }
+});

@@ -17,6 +17,8 @@ export interface ResearchStep {
   type: "search" | "fetch" | "refine" | "synthesize";
   description: string;
   timestamp: Date;
+  /** Run ID this step belongs to (present for agent-run steps). */
+  run_id?: string;
 }
 
 /**
@@ -29,10 +31,13 @@ export class ResearchContext {
   /** Tracked so tools can reference the active query */
   currentQuery: string = "";
   maxSources: number;
+  /** Agent run ID correlated across steps and agent-triggered usage entries. */
+  runId?: string;
 
-  constructor(goal: string, maxSources: number = 5) {
+  constructor(goal: string, maxSources: number = 5, runId?: string) {
     this.goal = goal;
     this.maxSources = maxSources;
+    this.runId = runId;
   }
 
   /**
@@ -61,6 +66,7 @@ export class ResearchContext {
       type,
       description,
       timestamp: new Date(),
+      ...(this.runId ? { run_id: this.runId } : {}),
     });
   }
 

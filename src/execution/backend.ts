@@ -240,6 +240,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "search",
+            ...(options.runId ? { run_id: options.runId } : {}),
             input: redactSensitive(query),
             options: this.requestOptions(options),
             routing: this.routingInfo("search", options, [], reranker),
@@ -269,6 +270,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           id,
           timestamp: new Date().toISOString(),
           command: "search",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(query, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -336,6 +338,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "extract",
+            ...(options.runId ? { run_id: options.runId } : {}),
             input: redactSensitive(url),
             options: this.requestOptions(options),
             routing: this.routingInfo("extract", options, []),
@@ -366,6 +369,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           id,
           timestamp: new Date().toISOString(),
           command: "extract",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(url, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -425,6 +429,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           id: newExecutionId(),
           timestamp: new Date().toISOString(),
           command: "crawl",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(url, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -474,6 +479,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       id: newExecutionId(),
       timestamp: new Date().toISOString(),
       command,
+      ...(options.runId ? { run_id: options.runId } : {}),
       input: redactSensitive(input, secrets),
       options: redactSensitive(this.requestOptions(options), secrets),
       routing: this.routingInfo(

@@ -49,6 +49,13 @@ export interface ExecutionRecord {
   timestamp: string;
   command: ExecutionCommand;
   /**
+   * Agent run ID this execution belongs to, when the invocation was triggered
+   * by an agent run. Present only then; non-agent executions stay valid
+   * without it. `run_id` never replaces `id` — every execution keeps its own
+   * PR 2 execution ID.
+   */
+  run_id?: string;
+  /**
    * Original query or URL (`provider.tool` for tool calls), already redacted
    * of signed-URL tokens and credential values before persistence.
    */

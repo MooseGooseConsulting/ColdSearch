@@ -42,6 +42,12 @@ export interface FanoutOptions {
    * ignores this flag.
    */
   freshness?: string;
+  /**
+   * Agent run ID for usage-log correlation. Present only when an agent run
+   * triggered this call; non-agent calls stay valid without it. `run_id`
+   * never replaces the per-execution `execution_id`.
+   */
+  runId?: string;
 }
 
 /**
@@ -167,7 +173,7 @@ export class FanoutEngine {
 
     // Execute searches in parallel
     const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query))
+      providers.map((provider) => this.searchProvider(provider, query, options.runId))
     );
 
     // Collect results and errors
@@ -284,6 +290,7 @@ export class FanoutEngine {
           key: keyRef,
           success: true,
           response_time_ms: durationMs,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -309,6 +316,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -374,6 +382,7 @@ export class FanoutEngine {
           key: keyRef,
           success: true,
           response_time_ms: durationMs,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -400,6 +409,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -419,7 +429,8 @@ export class FanoutEngine {
    */
   private async searchProvider(
     provider: string,
-    query: string
+    query: string,
+    runId?: string
   ): Promise<ProviderResult> {
     const start = performance.now();
     let keyRef = "none";
@@ -442,6 +453,7 @@ export class FanoutEngine {
         key: keyRef,
         success: true,
         response_time_ms: durationMs,
+        ...(runId ? { run_id: runId } : {}),
       });
 
       return {
@@ -461,6 +473,7 @@ export class FanoutEngine {
         success: false,
         response_time_ms: durationMs,
         error: (error as Error).message,
+        ...(runId ? { run_id: runId } : {}),
       });
       return {
         provider,
