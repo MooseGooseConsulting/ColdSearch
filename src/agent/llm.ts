@@ -105,7 +105,9 @@ const PROVIDER_ALIASES: Record<
   },
   xai: {
     baseUrl: "https://api.x.ai/v1",
-    defaultModel: "grok-3",
+    // Grok 3 is a retired alias that currently redirects. Use its documented
+    // replacement directly when a caller explicitly selects xAI.
+    defaultModel: "grok-4.3",
     envKey: "XAI_GROK_API_KEY",
   },
 };

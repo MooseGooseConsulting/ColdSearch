@@ -1,0 +1,227 @@
+# Example configuration for coldsearch
+# Copy to ~/.config/coldsearch/config.toml and customize
+# The runtime also falls back to ~/.config/usearch/config.toml for compatibility.
+
+# ============================================
+# CAPABILITY CONFIGURATION
+# ============================================
+# Each capability maps to one or more providers.
+# strategy = "random"  → Pick one random provider per request
+# strategy = "all"     → Fan out to all providers (for search with reranking)
+#
+# Bright Data is intentionally NOT in these default pools yet. Configure it
+# below, then select it explicitly with --providers brightdata until measured
+# quality/cost justify broader routing.
+
+[capabilities.search]
+# Search across the web - 5 default providers with random selection
+providers = ["searxng", "tavily", "exa", "brave", "serper"]
+strategy = "random"
+
+[capabilities.extract]
+# Extract content from URLs - 3 default providers with random selection
+providers = ["tavily", "exa", "jina"]
+strategy = "random"
+
+[capabilities.crawl]
+# Crawl websites - random selection (use strategy = "all" for sequential failover)
+providers = ["tavily", "firecrawl", "exa"]
+strategy = "random"
+
+# ============================================
+# PROVIDER CONFIGURATION
+# ============================================
+# Each provider has its own key pool.
+# strategy = "random"      → Pick random key per request
+# strategy = "round-robin" → Cycle through keys (default)
+#
+# Key reference formats (preferred to least preferred):
+#   doppler:SECRET_NAME   → Doppler secret (preferred — use this)
+#   env:VAR_NAME          → Environment variable (fallback)
+#   bws:SECRET_NAME       → REMOVED — Bitwarden refs now raise an error; migrate to doppler:/env:
+#
+# DOPPLER AUTHENTICATION:
+#   Dev machine:     Run `doppler login` once — tokens stored in OS keyring by Doppler CLI.
+#   CI/Production:   Set DOPPLER_TOKEN env var (from a Doppler service token, dp.st.xxx).
+#   Never export DOPPLER_TOKEN to disk — inject at runtime via `doppler run -- <cmd>`.
+
+[providers.searxng]
+[providers.searxng.keyPool]
+# SearXNG is self-hosted / operator-managed and doesn't require an API key.
+keys = []
+strategy = "round-robin"
+
+[providers.searxng.options]
+# Required unless SEARXNG_BASE_URL is provided in the environment.
+# Do not assume localhost on this machine.
+baseUrl = "https://search.example.internal"
+
+[providers.tavily]
+[providers.tavily.keyPool]
+# Doppler (preferred):
+keys = ["doppler:TAVILY_API_KEY_1", "doppler:TAVILY_API_KEY_2"]
+strategy = "random"
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["doppler:EXA_API_KEY"]
+
+# Exa-specific options (config-driven, never CLI flags)
+[providers.exa.options]
+# highlights = true          # Token-efficient excerpts (10x token reduction for agents)
+# category = "company"       # Specialized index: company, people
+
+[providers.brave]
+[providers.brave.keyPool]
+keys = ["doppler:BRAVE_API_KEY"]
+
+# Bright Data is implemented but remains explicit-only initially. Add the key
+# reference and zone names, then use `--providers brightdata` deliberately.
+# Structured Web Scraper API tools use dataset IDs and do not require a zone.
+[providers.brightdata]
+[providers.brightdata.keyPool]
+keys = ["doppler:BRIGHTDATA_API_KEY"]
+strategy = "round-robin"
+
+[providers.brightdata.options]
+# Required for normalized Bright Data SERP search unless BRIGHTDATA_SERP_ZONE is set.
+serpZone = "your_serp_zone"
+# Required for normalized Bright Data Web Unlocker extraction unless
+# BRIGHTDATA_UNLOCKER_ZONE is set.
+unlockerZone = "your_unlocker_zone"
+searchEngine = "google"
+searchCountry = "us"
+# Hard safety bound for site-specific structured scraper input arrays. Bright
+# Data documents up to 20 inputs for synchronous scraper requests; keep the same
+# conservative default for direct structured calls. Increase deliberately for
+# larger async paid runs.
+maxStructuredInputsPerCall = 20
+# Web Unlocker timeout in milliseconds. JS-rendered pages routinely exceed the
+# default 10s fetch timeout; raise this for slower pages.
+# unlockerTimeoutMs = 30000
+# Hard safety bound for async discovery jobs: `limit_per_input` multiplies every
+# input record into a large paid run, so one trigger/crawl request could defeat
+# the input cap above. Same conservative default as maxStructuredInputsPerCall;
+# raise deliberately for larger paid runs.
+maxDiscoveryResultsPerInput = 20
+
+[providers.serper]
+[providers.serper.keyPool]
+keys = ["doppler:SERPER_API_KEY"]
+
+[providers.jina]
+[providers.jina.keyPool]
+# Jina AI Reader doesn't require an API key for basic usage
+keys = []
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["doppler:FIRECRAWL_API_KEY"]
+
+# ============================================
+# DOPPLER SETUP (remove BWS section below)
+# ============================================
+# 1. Authenticate: doppler login
+# 2. In Doppler, create secrets matching the names above (e.g., TAVILY_API_KEY_1)
+# 3. Never set secrets in the config file — only store secret NAMES, not values
+#
+# For CI, create a Doppler service token and pass via DOPPLER_TOKEN env var:
+#   doppler configs tokens create ci-token --project coldsearch --config prd --plain
+#
+# Run locally with secrets injected:
+#   doppler run -- coldsearch search "query"
+#
+# Or set token in environment (CI pattern):
+#   DOPPLER_TOKEN=dp.st.xxx coldsearch search "query"
+
+# ============================================
+# BITWARDEN SECRETS MANAGER (REMOVED)
+# ============================================
+# Bitwarden Secrets Manager support has been removed. A `bws:` key reference now
+# raises an error at resolution time instead of being honored.
+# Migrate each `bws:` ref to a `doppler:` or `env:` ref:
+#   doppler:SECRET_NAME   (preferred)   or   env:VAR_NAME
+
+# ============================================
+# USAGE EXAMPLES
+# ============================================
+#
+# Search (random provider from default pool):
+#   coldsearch search "machine learning"
+#
+# Explicit Bright Data SERP search (paid/configured provider):
+#   coldsearch search --providers brightdata "machine learning"
+#
+# Extract (random provider from default pool):
+#   coldsearch extract "https://example.com/article"
+#
+# Explicit Bright Data Web Unlocker extraction:
+#   coldsearch extract --providers brightdata "https://example.com/article"
+#
+# Discover Bright Data structured scrapers, then invoke one deliberately:
+#   coldsearch tool call brightdata.datasetsList --json-input '{}'
+#   coldsearch tool call brightdata.datasetMetadata --json-input '{"dataset_id":"gd_..."}'
+#   coldsearch tool call brightdata.scrape --json-input '{"dataset_id":"gd_...","input":{"url":"https://..."}}'
+#
+# Crawl (random provider from default pool):
+#   coldsearch crawl "https://docs.example.com"
+#
+# Force specific provider:
+#   coldsearch search --providers tavily "query"
+#
+# Force single provider mode explicitly:
+#   coldsearch search --single-provider "query"
+
+# ============================================
+# USAGE LOGGING (OPTIONAL)
+# ============================================
+# Usage logs are written as JSONL for operational visibility.
+# Default: ~/.config/coldsearch/usage.jsonl
+#
+#[logging.usage]
+#path = "~/.config/coldsearch/usage.jsonl"
+
+# ============================================
+# RESULT CACHE (OPTIONAL)
+# ============================================
+# Read-through exact-replay cache for `search` and `extract`, plus provider
+# tools with an explicit replay-safe policy. On by default; a hit serves
+# without calling any provider. Bypass per-call with --no-cache, override the
+# TTL per-call with --freshness <duration> (e.g. --freshness 30m), or disable
+# entirely with enabled = false. Crawl is never cached in A2.
+# `coldsearch cache stats` describes this storage; `coldsearch cache clear`
+# empties it (history records are never touched).
+# Default storage path: ~/.config/coldsearch/cache
+[cache]
+enabled = true
+search_ttl = "6h"
+extract_ttl = "24h"
+# TTL for explicitly replay-safe provider-tool results (tool call).
+tool_ttl = "6h"
+# path = "~/.config/coldsearch/cache"
+
+# ============================================
+# EXECUTION HISTORY (OPTIONAL)
+# ============================================
+# Durable record of every search/extract/crawl/tool-call invocation (JSONL).
+# History is independent of the replay cache: cache expiry and `cache clear`
+# never erase it, and it is only deleted explicitly via
+# `coldsearch history clear --all`. Browse it with `coldsearch history recent`,
+# `history search <query>`, and `history show <execution-id>`.
+# Default path: ~/.config/coldsearch/history.jsonl
+#[history]
+#path = "~/.config/coldsearch/history.jsonl"
+
+# ============================================
+# AGENT LLM ENDPOINT
+# ============================================
+# Full config preset: Isoquant production default.
+# Copy this file to ~/.config/coldsearch/config.toml, then configure secrets
+# in the named secret manager/environment. Never put key values in TOML.
+[agent.llm]
+provider = "isoquant"
+model = "glm-5.3-flash"
+base_url = "https://api.isoquant.ai/v1"
+reasoning_effort = "medium"
+key_ref = "doppler:ISOQUANT_API_KEY"
+# ISOQUANT_API_KEY is a proposed secret name; replace it with the actual Doppler secret name if different.

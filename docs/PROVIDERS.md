@@ -230,5 +230,7 @@ These endpoints power `--agent`; they are separate from the search provider matr
 The default is Isoquant `glm-5.3-flash`, `reasoning_effort = "medium"`, with
 `doppler:ISOQUANT_API_KEY` (rename the reference to match the actual secret).
 OpenRouter defaults to `openrouter/free` and powers the routine live LLM canary.
-OpenAI, Groq, Cerebras and explicit xAI overrides remain available.
+OpenAI, Groq, Cerebras and explicit xAI overrides remain available. Explicit
+`--llm xai` currently defaults to `grok-4.3`; it is never selected by the agent
+or canary defaults.
 See `docs/CONFIGURATION.md` for secret injection and migration details.

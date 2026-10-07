@@ -338,9 +338,8 @@ key_ref = "doppler:ISOQUANT_API_KEY"
 
 Environment fallbacks: `OPENAI_API_KEY` (and provider-specific keys such as
 `GROQ_API_KEY`). `OPENAI_BASE_URL` overrides the base URL for
-`provider = "openai"` only — the alias providers (groq, openrouter, cerebras,
-xai, isoquant) always use their own fixed base URLs, and a TOML/CLI `base_url` takes
-precedence over the environment fallback.
+`provider = "openai"`; a TOML/CLI `base_url` can override an alias provider's
+base URL when needed for a compatible gateway.
 
 This is separate from provider key resolution in `config.toml`.
 
@@ -374,6 +373,34 @@ OpenRouter uses `reasoning: { effort: ... }` when effort is explicitly set;
 free-router tests leave effort unset because available free models differ.
 The search/extract/crawl pools remain independent of the synthesis LLM.
 
+Two full, ready-to-copy configurations preserve the standard search/extract/
+crawl pools and differ only in their active agent endpoint:
+
+- [`config.isoquant.example.toml`](../config.isoquant.example.toml) selects Isoquant
+  GLM 5.3 Flash at medium reasoning and references `doppler:ISOQUANT_API_KEY`.
+  That is a proposed secret name; replace it if the existing Doppler secret uses
+  another name.
+- [`config.openrouter-free.example.toml`](../config.openrouter-free.example.toml)
+  selects `openrouter/free` and reads `OPENROUTER_API_KEY` from the environment.
+
+Copy exactly one preset to the normal config path. The Isoquant preset can use a
+Doppler login or a Doppler service token; the OpenRouter preset works with
+`OPENROUTER_API_KEY` directly or injected by Doppler under that same environment
+name:
+
+```sh
+mkdir -p ~/.config/coldsearch
+cp config.isoquant.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+
+# For a test run, replace the config with the separate free-router preset:
+cp config.openrouter-free.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+```
+
+Do not paste credentials into either TOML file. Use a local environment
+variable, Doppler injection, or a scoped GitHub Actions secret.
+
 The scheduled canary uses OpenRouter free. Manual dispatch can additionally
 select `isoquant_conformance` to test the paid production endpoint. CI may use
 either a scoped GitHub Actions `DOPPLER_TOKEN` secret (Doppler injects API keys),
@@ -382,7 +409,8 @@ coexist; Doppler values take precedence when injected. These are Actions
 secrets, not GitHub App credentials. Never install real provider secrets into
 pull-request workflows that execute untrusted code.
 
-After the PR lands, update deployed TOML/CLI wrappers that set `xai` or a Grok
-model to the Isoquant config above; editing this repository alone cannot modify
-existing operator config files. Explicit `--llm xai` remains supported for
-compatibility, but no default or test path selects Grok.
+Update deployed TOML/CLI wrappers that set `xai` or a Grok model to the Isoquant
+production config above; editing this repository alone cannot modify existing
+operator config files. The supported xAI compatibility path now selects the
+documented `grok-4.3` model when explicitly requested; agent mode's default and
+the routine test path use Isoquant and OpenRouter free, respectively.

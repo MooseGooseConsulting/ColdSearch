@@ -81,6 +81,17 @@ test("OpenRouter free is the default model and uses its own reasoning schema", a
   });
 });
 
+test("explicit xAI compatibility uses the documented Grok 4.3 model, not retired Grok 3", async () => {
+  await withEnv("XAI_GROK_API_KEY", "xai-contract-key", async () => {
+    await withServer(async (baseUrl, requests) => {
+      const client = createLLMClient("xai", undefined, baseUrl);
+      await client.complete([{ role: "user", content: "Hi" }]);
+      assert.equal(requests[0].auth, "Bearer xai-contract-key");
+      assert.equal(requests[0].body.model, "grok-4.3");
+    });
+  });
+});
+
 test("agent carries medium through research and forced final synthesis", async () => {
   await withEnv("ISOQUANT_API_KEY", "local-contract-key", async () => {
     await withServer(async (baseUrl, requests) => {
