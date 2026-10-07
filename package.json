@@ -30,7 +30,6 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@bitwarden/sdk-napi": "^1.0.0",
     "smol-toml": "^1.9.0"
   },
   "devDependencies": {
