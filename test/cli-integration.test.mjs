@@ -204,7 +204,7 @@ keys = ["k"]
     delete env.OPENAI_API_KEY;
 
     return runCli(
-      ["search", "--config", configPath, "topic", "--agent"],
+      ["search", "--config", configPath, "topic", "--agent", "--llm", "openai"],
       env
     );
   });
@@ -384,6 +384,18 @@ keys = ["sk-literal-secret-abc123"]
   assert.match(warnings, /raw literal/);
   // …but the secret VALUE is never echoed anywhere.
   assert.doesNotMatch(result.stdout + result.stderr, /sk-literal-secret-abc123/);
+});
+
+test("missing --llm-key-ref is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--llm-key-ref"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): --llm-key-ref requires/);
+});
+
+test("invalid --reasoning-effort is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--reasoning-effort", "turbo", "query"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): Invalid reasoning effort/);
 });
 
 test("status --json includes the config path", () => {

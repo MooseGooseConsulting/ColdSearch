@@ -22,7 +22,8 @@ import {
   listRegisteredProviders,
   providerSupportsCapability,
 } from "./providers.js";
-import { LLM_PROVIDERS } from "./agent/llm.js";
+import { LLM_PROVIDERS, isValidReasoningEffort } from "./agent/llm.js";
+import { parseAgentKeyRef } from "./agent/key-ref.js";
 
 /**
  * Status and `config doctor` output builders.
@@ -147,6 +148,14 @@ export function collectMissingEnvVars(
           missing.push({ provider, var: varName });
         }
       }
+    }
+  }
+  const llm = (config.agent as { llm?: unknown } | undefined)?.llm;
+  if (llm !== null && typeof llm === "object" && !Array.isArray(llm)) {
+    const keyRef = (llm as Record<string, unknown>).keyRef ?? (llm as Record<string, unknown>).key_ref;
+    const parsed = parseAgentKeyRef(keyRef);
+    if (parsed?.kind === "env" && !process.env[parsed.name]) {
+      missing.push({ provider: "agent.llm", var: parsed.name });
     }
   }
   return missing;
@@ -531,6 +540,19 @@ export function buildDoctorReport(config: Config, configPath: string): DoctorRep
             category: "config",
             message: `[agent.llm] provider must be one of: ${LLM_PROVIDERS.join(", ")}`,
           });
+        }
+      }
+      const effort = llmCfg.reasoningEffort ?? llmCfg.reasoning_effort;
+      if (effort !== undefined && !isValidReasoningEffort(typeof llmCfg.provider === "string" ? llmCfg.provider as typeof LLM_PROVIDERS[number] : undefined, effort)) {
+        errors.push({ category: "config", message: `[agent.llm] reasoning_effort is not supported for the configured provider` });
+      }
+      const keyRef = llmCfg.keyRef ?? llmCfg.key_ref;
+      if (keyRef !== undefined && !parseAgentKeyRef(keyRef)) {
+        errors.push({ category: "config", message: "[agent.llm] key_ref must be an env: or doppler: secret name" });
+      } else {
+        const parsedKeyRef = parseAgentKeyRef(keyRef);
+        if (parsedKeyRef?.kind === "env" && !process.env[parsedKeyRef.name]) {
+          warnings.push({ category: "credentials", message: `[agent.llm] references unset environment variable ${parsedKeyRef.name}` });
         }
       }
       const baseUrlValue = llmCfg.baseUrl ?? llmCfg.base_url;

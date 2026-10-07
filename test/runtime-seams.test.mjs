@@ -95,11 +95,23 @@ test("legacy-config refusal is classified as config", () => {
 
 test("LLM provider errors classify as config", () => {
   const messages = [
-    "Invalid LLM provider: foo. Supported: openai, groq, openrouter, cerebras, xai (Anthropic API is not used).",
-    'Unsupported LLM provider "foo". Supported: openai, groq, openrouter, cerebras, xai.',
+    "Invalid LLM provider: foo. Supported: openai, groq, openrouter, cerebras, xai, isoquant (Anthropic API is not used).",
+    'Unsupported LLM provider "foo". Supported: openai, groq, openrouter, cerebras, xai, isoquant.',
     "Unknown LLM provider 'foo'",
   ];
   for (const message of messages) {
+    assert.equal(classifyError(new Error(message)).category, "config", message);
+  }
+});
+
+test("invalid agent reasoning and key-ref settings classify as config", () => {
+  for (const message of [
+    "Invalid reasoning effort. Supported: none, minimal, low, medium, high, xhigh, max",
+    "Invalid agent LLM reasoning effort",
+    "Agent LLM key_ref must be an env: or doppler: secret name",
+    "[agent.llm] reasoning_effort is not supported for the configured provider",
+    "[agent.llm] key_ref must be an env: or doppler: secret name",
+  ]) {
     assert.equal(classifyError(new Error(message)).category, "config", message);
   }
 });

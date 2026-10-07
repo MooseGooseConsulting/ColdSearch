@@ -12,7 +12,7 @@
  * - Keyed checks run only when their API key env var is present; otherwise they
  *   are skipped (not failed), so the canary is green with zero secrets.
  * - Coverage: search (tavily/brave/exa/serper), extract (jina keyless +
- *   tavily/exa/firecrawl), crawl (tavily), and agent mode (groq).
+ *   tavily/exa/firecrawl), crawl (tavily), and agent mode (OpenRouter free; optional Isoquant conformance).
  *
  * Exit code is non-zero only when a check that actually ran fails.
  *
@@ -67,7 +67,10 @@ enabled = false
   extractCheck("exa", "EXA_API_KEY"),
   extractCheck("firecrawl", "FIRECRAWL_API_KEY"),
   crawlCheck("tavily", "TAVILY_API_KEY"),
-  agentCheck("groq", "GROQ_API_KEY"),
+  agentCheck("openrouter", "OPENROUTER_API_KEY", "openrouter/free"),
+  ...(process.env.COLDSEARCH_SMOKE_ISOQUANT === "true"
+    ? [agentCheck("isoquant", "ISOQUANT_API_KEY", "glm-5.3-flash", "medium")]
+    : []),
 ];
 
 function searchCheck(provider, envVar) {
@@ -158,13 +161,13 @@ enabled = false
   };
 }
 
-function agentCheck(provider, envVar) {
+function agentCheck(provider, envVar, model, reasoningEffort) {
   return {
     name: `agent research (${provider})`,
     // Requires both the LLM key and TAVILY_API_KEY (the agent's search tool uses tavily).
     requiredEnv: [envVar, "TAVILY_API_KEY"],
     timeoutMs: 120000,
-    // Explicit model: the built-in groq default (llama-3.1-70b-versatile) is decommissioned.
+    // Free router is the routine LLM canary; Isoquant is explicit conformance.
     config: `
 [capabilities.search]
 providers = ["tavily"]
@@ -177,7 +180,7 @@ keys = ["env:TAVILY_API_KEY"]
 [cache]
 enabled = false
 `,
-    args: (cfg) => ["--agent", "--llm", provider, "--model", "llama-3.1-8b-instant", "--config", cfg, "--json", "--max-steps", "2", "--max-sources", "2", "what is the capital of France"],
+    args: (cfg) => ["--agent", "--llm", provider, "--model", model, ...(reasoningEffort ? ["--reasoning-effort", reasoningEffort] : []), "--config", cfg, "--json", "--max-steps", "2", "--max-sources", "2", "what is the capital of France"],
     assert: (out) => {
       assertEqual(out.mode, "agent", "mode");
       assertOk(typeof out.answer === "string" && out.answer.length > 0, "answer is non-empty");

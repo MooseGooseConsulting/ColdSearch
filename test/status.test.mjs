@@ -338,6 +338,71 @@ test("doctor validates [agent.llm]: provider, base_url, and model", () => {
   assert.match(errorMessages(withLlm({ model: "" })), /\[agent\.llm\] model must be a non-empty string/);
 });
 
+test("agent LLM env refs appear in doctor warnings and status missing_env_vars", (t) => {
+  const varName = "COLDSEARCH_AGENT_TEST_MISSING_KEY";
+  const previous = process.env[varName];
+  delete process.env[varName];
+  t.after(() => {
+    if (previous === undefined) delete process.env[varName];
+    else process.env[varName] = previous;
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-agent-env-ref-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const config = {
+    ...representativeConfig(dir),
+    agent: { llm: { provider: "isoquant", keyRef: `env:${varName}`, reasoningEffort: "medium" } },
+  };
+  const report = buildDoctorReport(config, "/tmp/config.toml");
+  assert.equal(report.valid, true);
+  assert.ok(report.warnings.some((warning) => warning.category === "credentials" && warning.message.includes(varName)));
+  const status = buildStatus(config, "/tmp/config.toml");
+  assert.ok(status.missing_env_vars.some((entry) => entry.provider === "agent.llm" && entry.var === varName));
+});
+
+test("doctor classifies invalid agent reasoning and key refs as config errors", () => {
+  const base = representativeConfig("/tmp");
+  const report = buildDoctorReport({
+    ...base,
+    agent: { llm: { provider: "openrouter", reasoningEffort: "max", keyRef: "env:invalid-name" } },
+  }, "/tmp/config.toml");
+  assert.equal(report.valid, false);
+  assert.ok(report.errors.some((error) => error.category === "config" && /key_ref/.test(error.message)));
+  // `max` is a valid value for OpenRouter according to its current API guide.
+  assert.ok(!report.errors.some((error) => /reasoning_effort/.test(error.message)));
+  const unsupported = buildDoctorReport({
+    ...base,
+    agent: { llm: { provider: "isoquant", reasoningEffort: "xhigh" } },
+  }, "/tmp/config.toml");
+  assert.ok(unsupported.errors.some((error) => error.category === "config" && /reasoning_effort/.test(error.message)));
+});
+
+test("doctor validates TOML snake-case agent fields and Doppler Permissive references", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-agent-toml-"));
+  try {
+    const configPath = path.join(dir, "config.toml");
+    fs.writeFileSync(configPath, `
+[capabilities.search]
+providers = ["searxng"]
+[capabilities.extract]
+providers = []
+[capabilities.crawl]
+providers = []
+[providers.searxng.options]
+baseUrl = "https://search.example.internal"
+[agent.llm]
+provider = "openrouter"
+reasoning_effort = "xhigh"
+key_ref = "doppler:project/isoquant.api-key:prod-v2"
+`);
+    const config = loadConfig(configPath);
+    const report = buildDoctorReport(config, configPath);
+    assert.equal(report.valid, true, JSON.stringify(report.errors));
+    assert.deepEqual(report.errors, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig survives a non-table [agent.llm] and doctor flags it", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-status-"));
   try {

@@ -82,7 +82,7 @@ provider calls. JSON fields:
 - `cache` — `enabled` flag and on-disk replay-cache path
 - `usage_log` — usage JSONL path (see Operational logging)
 - `recent_usage_summary_7d` — last-7-days per-provider call/success summary
-- `missing_env_vars` — `env:` key references whose variable is not set
+- `missing_env_vars` — `env:` key references whose variable is not set, including `[agent.llm].key_ref`
 - `provider_capabilities` — adapter-backed capability surface per registered
   provider, with a `configured` flag
 - `tool_coverage` — provider-tool registry state: counts of tool profiles by
@@ -323,21 +323,119 @@ Behavior:
 Agent mode (`--agent`) uses an OpenAI-compatible chat completions endpoint.
 The endpoint can be configured in three layers, in precedence order:
 
-1. CLI flags: `--llm` / `--model` / `--llm-base-url`
+1. CLI flags: `--llm` / `--model` / `--llm-base-url` / `--llm-key-ref` / `--reasoning-effort`
 2. TOML `[agent.llm]`
 3. Environment fallback and code defaults
 
+Provider selection keeps endpoint settings isolated. When `--llm` selects a
+provider different from `[agent.llm].provider`, that TOML provider's model,
+base URL, key reference, and reasoning effort are discarded. An omitted TOML
+provider is treated as the default Isoquant provider. Explicit CLI values still
+apply to the selected provider; for example, `--llm openrouter --llm-base-url
+http://localhost:9000/v1 --llm-key-ref env:OPENROUTER_API_KEY` uses that endpoint
+and credential while ignoring Isoquant-specific TOML settings. When the
+provider matches, unset CLI fields continue to inherit field by field from
+TOML.
+
 ```toml
 [agent.llm]
-provider = "openai"
-model = "gpt-4o"
-base_url = "https://api.openai.com/v1"
+provider = "isoquant"
+model = "glm-5.3-flash"
+base_url = "https://api.isoquant.ai/v1"
+reasoning_effort = "medium"
+key_ref = "doppler:ISOQUANT_API_KEY"
 ```
 
 Environment fallbacks: `OPENAI_API_KEY` (and provider-specific keys such as
 `GROQ_API_KEY`). `OPENAI_BASE_URL` overrides the base URL for
-`provider = "openai"` only — the alias providers (groq, openrouter, cerebras,
-xai) always use their own fixed base URLs, and a TOML/CLI `base_url` takes
-precedence over the environment fallback.
+`provider = "openai"`; a TOML/CLI `base_url` can override an alias provider's
+base URL when needed for a compatible gateway.
 
-This is separate from provider key resolution in `config.toml`.
+This is separate from provider key resolution in `config.toml`. Use
+`--llm-key-ref env:NAME` or `--llm-key-ref doppler:NAME` when an invocation
+needs to supply an explicit credential reference.
+
+
+### Isoquant production and free-router testing
+
+Agent mode now defaults to Isoquant `glm-5.3-flash` with `medium` reasoning.
+The client sends `reasoning_effort: "medium"` to Isoquant on every completion,
+including synthesis; `--reasoning-effort` overrides the TOML setting. Isoquant's
+accessible API sample confirms the endpoint/model but does not document effort
+semantics. The paid conformance check verifies an actual request completes;
+confirm effective medium behavior from the provider rather than equating HTTP
+success with proof the setting was honored.
+
+ColdSearch accepts `none`, `low`, `medium`, `high`, and `max` for Isoquant. OpenRouter's
+current [`reasoning.effort` documentation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+lists `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, and `none`. ColdSearch
+passes these values through unchanged; model-specific support can still vary.
+
+`key_ref` accepts `env:NAME` with a shell-compatible variable name, or
+`doppler:NAME`. Doppler references accept its documented [Permissive secret
+names](https://docs.doppler.com/docs/secrets#permissive-naming):
+characters (`A-Z`, `a-z`, digits, `_`, `/`, `:`, `.`, and `-`; up to 200
+characters), subject to Doppler's reserved-name restrictions. This permits
+references such as `doppler:project/isoquant.api-key` without allowing a
+literal credential. `ISOQUANT_API_KEY` is the
+proposed standard name, not a discovered secret in the operator's Doppler.
+Set `key_ref` to the actual name once located. Doppler references first use the
+matching injected environment variable, otherwise the existing Doppler CLI
+resolver. No secret values belong in TOML.
+
+For routine live tests use a separate test config with:
+
+```toml
+[agent.llm]
+provider = "openrouter"
+model = "openrouter/free"
+key_ref = "env:OPENROUTER_API_KEY"
+```
+
+OpenRouter uses `reasoning: { effort: ... }` when effort is explicitly set;
+free-router tests leave effort unset because available free models differ.
+The search/extract/crawl pools remain independent of the synthesis LLM.
+
+Two full, ready-to-copy configurations preserve the standard search/extract/
+crawl pools and differ only in their active agent endpoint:
+
+- [`config.isoquant.example.toml`](../config.isoquant.example.toml) selects Isoquant
+  GLM 5.3 Flash at medium reasoning and references `doppler:ISOQUANT_API_KEY`.
+  That is a proposed secret name; replace it if the existing Doppler secret uses
+  another name.
+- [`config.openrouter-free.example.toml`](../config.openrouter-free.example.toml)
+  selects `openrouter/free` and reads `OPENROUTER_API_KEY` from the environment.
+
+Copy exactly one preset to the normal config path. The Isoquant preset can use a
+Doppler login or a Doppler service token; the OpenRouter preset works with
+`OPENROUTER_API_KEY` directly or injected by Doppler under that same environment
+name:
+
+```sh
+mkdir -p ~/.config/coldsearch
+cp config.isoquant.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+
+# For a test run, replace the config with the separate free-router preset:
+cp config.openrouter-free.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+```
+
+Do not paste credentials into either TOML file. Use a local environment
+variable, Doppler injection, or a scoped GitHub Actions secret.
+
+The scheduled canary uses OpenRouter free. Manual dispatch can additionally
+select `isoquant_conformance` to test the paid production endpoint. CI may use
+either a scoped GitHub Actions `DOPPLER_TOKEN` secret (Doppler injects API keys),
+or direct Actions secrets `OPENROUTER_API_KEY` and `ISOQUANT_API_KEY`. The
+Doppler token is exposed only to the live smoke step, never dependency
+installation or builds. Both credential options may
+coexist; Doppler values take precedence when injected. These are Actions
+secrets, not GitHub App credentials. Never install real provider secrets into
+pull-request workflows that execute untrusted code.
+
+Update deployed TOML/CLI wrappers that set `xai` or a Grok model to the Isoquant
+production config above; editing this repository alone cannot modify existing
+operator config files. The supported xAI compatibility path now selects the
+documented `grok-4.3` model when explicitly requested; agent mode's default and
+the routine test path use Isoquant and OpenRouter free, respectively.

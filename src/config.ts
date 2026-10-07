@@ -95,7 +95,10 @@ export function loadConfig(configPath?: string): Config {
     typeof llm === "object" &&
     !Array.isArray(llm)
   ) {
-    const llmCfg = llm as { base_url?: string; baseUrl?: string };
+    const llmCfg = llm as Record<string, unknown>;
+    for (const [snake, camel] of [["reasoning_effort", "reasoningEffort"], ["key_ref", "keyRef"]]) {
+      if (llmCfg[snake] !== undefined && llmCfg[camel] === undefined) llmCfg[camel] = llmCfg[snake];
+    }
     if (llmCfg.base_url !== undefined && llmCfg.baseUrl === undefined) {
       llmCfg.baseUrl = llmCfg.base_url;
     }
@@ -173,7 +176,9 @@ strategy = "random"
 # Agent LLM endpoint (optional): OpenAI-compatible chat completions.
 # CLI flags --llm / --model / --llm-base-url override these values.
 # [agent.llm]
-# provider = "openai"
-# model = "gpt-4o"
-# base_url = "https://api.openai.com/v1"
+# provider = "isoquant"
+# model = "glm-5.3-flash"
+# base_url = "https://api.isoquant.ai/v1"
+# reasoning_effort = "medium"
+# key_ref = "doppler:ISOQUANT_API_KEY"
 `;

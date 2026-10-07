@@ -2,7 +2,7 @@
 
 import { APP_NAME, LEGACY_APP_NAME, formatVersionString } from "./app.js";
 import { SearchAgent } from "./agent/agent.js";
-import { resolveLlmConfig, type LLMProvider } from "./agent/llm.js";
+import { resolveLlmConfig, LLM_PROVIDERS, REASONING_EFFORTS, type ReasoningEffort, type LLMEndpointConfig, type LLMProvider } from "./agent/llm.js";
 import { LocalExecutionBackend } from "./execution/backend.js";
 import {
   DEFAULT_CONFIG_PATH,
@@ -53,6 +53,9 @@ interface ExtendedCLIOptions extends CLIOptions {
   model?: string;
   /** LLM base URL override */
   llmBaseUrl?: string;
+  /** LLM credential reference override (env:NAME or doppler:NAME) */
+  llmKeyRef?: string;
+  reasoningEffort?: ReasoningEffort;
   /** Maximum agent steps */
   maxSteps?: number;
   /** Maximum sources for agent */
@@ -322,9 +325,9 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
       case "--llm":
         i++;
         const llm = args[i];
-        if (!["openai", "groq", "openrouter", "cerebras", "xai"].includes(llm)) {
+        if (!(LLM_PROVIDERS as readonly string[]).includes(llm)) {
           throw new Error(
-            `Invalid LLM provider: ${llm}. Supported: openai, groq, openrouter, cerebras, xai (Anthropic API is not used).`
+            `Invalid LLM provider: ${llm}. Supported: ${LLM_PROVIDERS.join(", ")} (Anthropic API is not used).`
           );
         }
         options.llmProvider = llm as LLMProvider;
@@ -335,9 +338,25 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.model = args[i];
         break;
 
+      case "--reasoning-effort":
+        i++;
+        if (!(REASONING_EFFORTS as readonly string[]).includes(args[i])) {
+          throw new Error(`Invalid reasoning effort. Supported: ${REASONING_EFFORTS.join(", ")}`);
+        }
+        options.reasoningEffort = args[i] as ReasoningEffort;
+        break;
+
       case "--llm-base-url":
         i++;
         options.llmBaseUrl = args[i];
+        break;
+
+      case "--llm-key-ref":
+        i++;
+        if (!args[i] || args[i].startsWith("-")) {
+          throw new Error("--llm-key-ref requires an env:NAME or doppler:NAME reference");
+        }
+        options.llmKeyRef = args[i];
         break;
 
       case "--max-steps":
@@ -455,9 +474,11 @@ Options:
     --rerank STRATEGY    Reranker: rrf|score|none (default: rrf)
     
   Agent Options (requires --agent):
-    --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai (default: openai)
+    --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai|isoquant (default: isoquant)
     --model MODEL        LLM model name
+    --reasoning-effort N none|minimal|low|medium|high|xhigh|max (Isoquant default: medium)
     --llm-base-url URL   Override OpenAI-compatible API base URL
+    --llm-key-ref REF    Override credential reference (env:NAME or doppler:NAME)
     --max-steps N        Maximum research steps (default: 5)
     --max-sources N      Maximum sources to collect (default: 5)
     
@@ -690,9 +711,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   // inside createLLMClient).
   const config = loadConfig(options.config);
   const llm = resolveLlmConfig(
-    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl },
+    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl, keyRef: options.llmKeyRef, reasoningEffort: options.reasoningEffort },
     config.agent?.llm as
-      | { provider?: LLMProvider; model?: string; baseUrl?: string }
+      | LLMEndpointConfig
       | undefined
   );
 
@@ -701,6 +722,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     llmProvider: llm.provider,
     model: llm.model,
     llmBaseUrl: llm.baseUrl,
+    llmSettings: llm,
     maxSteps: options.maxSteps,
     maxSources: options.maxSources,
     noCache: options.noCache,

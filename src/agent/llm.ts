@@ -2,15 +2,30 @@
  * LLM client interface for the search agent.
  * OpenAI-compatible HTTP only — ColdSearch does not call the Anthropic API.
  */
+import { KeyPoolManager } from "../engine/keypool.js";
 import { APP_USER_AGENT } from "../app.js";
 import { fetchJson } from "../http.js";
+import { parseAgentKeyRef } from "./key-ref.js";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
+export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+const LEGACY_REASONING_EFFORTS = ["none", "low", "medium", "high", "max"] as const;
+export const OPENROUTER_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export function isValidReasoningEffort(provider: LLMProvider | undefined, value: unknown): value is ReasoningEffort {
+  if (provider === "openrouter") {
+    return (OPENROUTER_REASONING_EFFORTS as readonly unknown[]).includes(value);
+  }
+  return (LEGACY_REASONING_EFFORTS as readonly unknown[]).includes(value);
+}
+
 export interface LLMOptions {
+  reasoningEffort?: ReasoningEffort;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -36,7 +51,7 @@ export interface LLMClient {
  * Supported OpenAI-compatible LLM providers. Single source of truth for the
  * accepted `--llm` / `[agent.llm] provider` values.
  */
-export const LLM_PROVIDERS = ["openai", "groq", "openrouter", "cerebras", "xai"] as const;
+export const LLM_PROVIDERS = ["openai", "groq", "openrouter", "cerebras", "xai", "isoquant"] as const;
 export type LLMProvider = (typeof LLM_PROVIDERS)[number];
 
 /** OpenAI-compatible LLM endpoint settings; subset of `[agent.llm]` in TOML. */
@@ -44,6 +59,9 @@ export interface LLMEndpointConfig {
   provider?: LLMProvider;
   model?: string;
   baseUrl?: string;
+  reasoningEffort?: ReasoningEffort;
+  /** Secret NAME reference, never a literal credential. */
+  keyRef?: string;
 }
 
 /**
@@ -57,12 +75,22 @@ export interface LLMEndpointConfig {
  */
 export function resolveLlmConfig(
   cli: LLMEndpointConfig,
-  toml?: Pick<LLMEndpointConfig, "provider" | "model" | "baseUrl">
+  toml?: LLMEndpointConfig
 ): LLMEndpointConfig {
+  // A provider is an endpoint identity: its model, URL, key reference, and
+  // reasoning protocol belong together. Treat an omitted TOML provider as the
+  // application default (Isoquant), so a CLI provider switch cannot inherit
+  // any endpoint or credential settings from that default.
+  const provider = cli.provider ?? toml?.provider ?? "isoquant";
+  const tomlProvider = toml?.provider ?? "isoquant";
+  const sameProvider = provider === tomlProvider;
+
   return {
-    provider: cli.provider ?? toml?.provider,
-    model: cli.model ?? toml?.model,
-    baseUrl: cli.baseUrl ?? toml?.baseUrl,
+    provider,
+    model: cli.model ?? (sameProvider ? toml?.model : undefined),
+    baseUrl: cli.baseUrl ?? (sameProvider ? toml?.baseUrl : undefined),
+    reasoningEffort: cli.reasoningEffort ?? (sameProvider ? toml?.reasoningEffort : undefined),
+    keyRef: cli.keyRef ?? (sameProvider ? toml?.keyRef : undefined),
   };
 }
 
@@ -78,7 +106,7 @@ const PROVIDER_ALIASES: Record<
   },
   openrouter: {
     baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "openai/gpt-4o",
+    defaultModel: "openrouter/free",
     envKey: "OPENROUTER_API_KEY",
   },
   cerebras: {
@@ -88,9 +116,16 @@ const PROVIDER_ALIASES: Record<
     defaultModel: "gpt-oss-120b",
     envKey: "CEREBRAS_API_KEY",
   },
+  isoquant: {
+    baseUrl: "https://api.isoquant.ai/v1",
+    defaultModel: "glm-5.3-flash",
+    envKey: "ISOQUANT_API_KEY",
+  },
   xai: {
     baseUrl: "https://api.x.ai/v1",
-    defaultModel: "grok-3",
+    // Grok 3 is a retired alias that currently redirects. Use its documented
+    // replacement directly when a caller explicitly selects xAI.
+    defaultModel: "grok-4.3",
     envKey: "XAI_GROK_API_KEY",
   },
 };
@@ -102,8 +137,21 @@ export class OpenAIClient implements LLMClient {
   private apiKey: string;
   private defaultModel: string;
   private baseUrl: string;
+  private keyPool?: KeyPoolManager;
+  private settings: LLMEndpointConfig;
 
-  constructor(apiKey: string, model = "gpt-4o", baseUrl = "https://api.openai.com/v1") {
+  constructor(apiKey: string, model = "gpt-4o", baseUrl = "https://api.openai.com/v1", settings: LLMEndpointConfig = {}) {
+    this.settings = settings;
+    if (settings.keyRef !== undefined) {
+      if (!parseAgentKeyRef(settings.keyRef)) {
+        throw new Error("Agent LLM key_ref must be an env: or doppler: secret name");
+      }
+      this.keyPool = new KeyPoolManager();
+      this.keyPool.register("agent-llm", { keys: [settings.keyRef] });
+    }
+    if (settings.reasoningEffort !== undefined && !isValidReasoningEffort(settings.provider, settings.reasoningEffort)) {
+      throw new Error("Invalid agent LLM reasoning effort");
+    }
     this.apiKey = apiKey;
     this.defaultModel = model;
     this.baseUrl = baseUrl.replace(/\/$/, "");
@@ -121,6 +169,17 @@ export class OpenAIClient implements LLMClient {
     messages: LLMMessage[],
     options: LLMOptions = {}
   ): Promise<LLMResponse> {
+    // Doppler-injected env values also work without the Doppler CLI on CI.
+    const ref = this.settings.keyRef;
+    const injectedKey = ref?.startsWith("doppler:") ? process.env[ref.slice(8)] : undefined;
+    const apiKey = this.keyPool ? (injectedKey || await this.keyPool.getNextKey("agent-llm")) : this.apiKey;
+    const effort = options.reasoningEffort ?? this.settings.reasoningEffort;
+    if (effort !== undefined && !isValidReasoningEffort(this.settings.provider, effort)) {
+      throw new Error("Invalid agent LLM reasoning effort");
+    }
+    const reasoning = effort === undefined ? {} : this.settings.provider === "openrouter"
+      ? { reasoning: { effort } }
+      : { reasoning_effort: effort };
     const data = await fetchJson<{
       choices?: Array<{ message?: { content?: string } }>;
       usage?: {
@@ -133,9 +192,10 @@ export class OpenAIClient implements LLMClient {
         headers: {
           "Content-Type": "application/json",
           "User-Agent": APP_USER_AGENT,
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
+          ...reasoning,
           model: options.model || this.defaultModel,
           messages,
           temperature: options.temperature ?? 0.2,
@@ -176,32 +236,35 @@ function resolveOpenAiBaseUrl(baseUrl?: string): string {
  * Anthropic is intentionally unsupported — do not add api.anthropic.com calls here.
  */
 export function createLLMClient(
-  provider: LLMProvider = "openai",
+  provider: LLMProvider = "isoquant",
   model?: string,
-  baseUrl?: string
+  baseUrl?: string,
+  settings: LLMEndpointConfig = {}
 ): LLMClient {
   if (provider === "openai") {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    if (!apiKey && !settings.keyRef) {
       throw new Error("OPENAI_API_KEY environment variable not set");
     }
-    return new OpenAIClient(apiKey, model, resolveOpenAiBaseUrl(baseUrl));
+    return new OpenAIClient(apiKey || "", model, resolveOpenAiBaseUrl(baseUrl), { ...settings, provider });
   }
 
   const alias = PROVIDER_ALIASES[provider as Exclude<LLMProvider, "openai">];
   if (!alias) {
     throw new Error(
-      `Unsupported LLM provider "${provider}". Supported: openai, groq, openrouter, cerebras, xai.`
+      `Unsupported LLM provider "${provider}". Supported: ${LLM_PROVIDERS.join(", ")}.`
     );
   }
 
   const apiKey = process.env[alias.envKey];
-  if (!apiKey) {
+  const keyRef = settings.keyRef ?? (provider === "isoquant" ? "doppler:ISOQUANT_API_KEY" : undefined);
+  if (!apiKey && !keyRef) {
     throw new Error(`${alias.envKey} environment variable not set`);
   }
   return new OpenAIClient(
-    apiKey,
+    apiKey || "",
     model || alias.defaultModel,
-    baseUrl || alias.baseUrl
+    baseUrl || alias.baseUrl,
+    { ...settings, provider, keyRef, reasoningEffort: settings.reasoningEffort ?? (provider === "isoquant" ? "medium" : undefined) }
   );
 }

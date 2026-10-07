@@ -213,15 +213,13 @@ tool_ttl = "6h"
 #path = "~/.config/coldsearch/history.jsonl"
 
 # ============================================
-# AGENT LLM ENDPOINT (OPTIONAL)
+# AGENT LLM ENDPOINT
 # ============================================
-# Agent mode (`--agent`) uses an OpenAI-compatible chat completions endpoint.
-# These TOML values act as defaults; CLI flags --llm / --model /
-# --llm-base-url take precedence, and OPENAI_BASE_URL (or the provider's own
-# environment variable) remains the fallback below TOML.
-#[agent.llm]
-#provider = "isoquant"
-#model = "glm-5.3-flash"
-#base_url = "https://api.isoquant.ai/v1"
-#reasoning_effort = "medium"
-#key_ref = "doppler:ISOQUANT_API_KEY"
+# Full config preset: OpenRouter free-router testing.
+# Copy this file to ~/.config/coldsearch/config.toml, then configure secrets
+# in the named secret manager/environment. Never put key values in TOML.
+[agent.llm]
+provider = "openrouter"
+model = "openrouter/free"
+key_ref = "env:OPENROUTER_API_KEY"
+# Set OPENROUTER_API_KEY in the process environment (or inject it with Doppler before running ColdSearch).
