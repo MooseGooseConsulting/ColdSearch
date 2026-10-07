@@ -30,7 +30,7 @@ Normalized capabilities (`search`, `extract`, `crawl`) are **category views** ov
 | Provider-tool profile registry | Current | `ProviderToolProfile` per native tool; `tool list`/`tool info`; feature-predicate routing |
 | Provider-tool call execution | Current | Networked `tool call <provider>.<tool>` over the profile registry |
 | Config-driven routing | Current | `~/.config/coldsearch/config.toml`; provider pools per capability |
-| Key and secret resolution | Current | Doppler-injected environment variables preferred; env refs, optional BWS refs, and keyless providers supported; per-process pools |
+| Key and secret resolution | Current | Env refs, Doppler CLI refs/defaults, and keyless providers supported; per-process pools; BWS refs rejected with migration guidance |
 | Basic cache store | Current | Read-through file cache for search/extract |
 | Search history / research memory | Current | Durable execution records; recent/search/show exploration; stored fanout inspection and related prior work |
 | Usage and audit logging | Current | JSONL usage log; richer flow logs and trace correlation Planned |
@@ -82,7 +82,7 @@ Normalized capabilities (`search`, `extract`, `crawl`) are **category views** ov
 - Resolved: provider tools are modeled as profiles backing ColdSearch category views, discoverable via `coldsearch tool <list|info>`, with networked `tool call` execution implemented (`docs/ADRs/005-provider-tool-profiles.md`). The next active product work is searchable result memory/cache operations, followed by batch execution, operator UX, and agent trace correlation.
 - Which entrypoint ships first after CLI: HTTP API, MCP server, or both?
 - What cache freshness defaults balance hits vs stale results in agent loops?
-- Should Doppler become documented as the default bootstrap path in `docs/CONFIGURATION.md` and `docs/KEY_MANAGEMENT.md`, with BWS retained as an optional explicit resolver?
+- Resolved: Doppler is the documented default in `docs/CONFIGURATION.md` and `docs/KEY_MANAGEMENT.md`. BWS runtime support has been removed; `bws:` references fail with migration guidance. Shared injected-environment support across provider and LLM key resolution remains a follow-up.
 
 ## Links
 
