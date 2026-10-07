@@ -204,7 +204,7 @@ keys = ["k"]
     delete env.OPENAI_API_KEY;
 
     return runCli(
-      ["search", "--config", configPath, "topic", "--agent"],
+      ["search", "--config", configPath, "topic", "--agent", "--llm", "openai"],
       env
     );
   });

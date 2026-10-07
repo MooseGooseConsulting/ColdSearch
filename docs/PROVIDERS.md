@@ -223,3 +223,12 @@ See `docs/contributing/adding-a-provider.md`. In short: implement the
 per tool, add a row to the **Dual Matrix** above, and add tests. `npm run test:docs`
 enforces that the Dual Matrix stays in sync with the registry and adapter method
 surfaces.
+
+## Agent synthesis LLMs
+
+These endpoints power `--agent`; they are separate from the search provider matrix.
+The default is Isoquant `glm-5.3-flash`, `reasoning_effort = "medium"`, with
+`doppler:ISOQUANT_API_KEY` (rename the reference to match the actual secret).
+OpenRouter defaults to `openrouter/free` and powers the routine live LLM canary.
+OpenAI, Groq, Cerebras and explicit xAI overrides remain available.
+See `docs/CONFIGURATION.md` for secret injection and migration details.

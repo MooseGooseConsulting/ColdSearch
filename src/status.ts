@@ -22,7 +22,7 @@ import {
   listRegisteredProviders,
   providerSupportsCapability,
 } from "./providers.js";
-import { LLM_PROVIDERS } from "./agent/llm.js";
+import { LLM_PROVIDERS, REASONING_EFFORTS } from "./agent/llm.js";
 
 /**
  * Status and `config doctor` output builders.
@@ -532,6 +532,14 @@ export function buildDoctorReport(config: Config, configPath: string): DoctorRep
             message: `[agent.llm] provider must be one of: ${LLM_PROVIDERS.join(", ")}`,
           });
         }
+      }
+      const effort = llmCfg.reasoningEffort ?? llmCfg.reasoning_effort;
+      if (effort !== undefined && !(REASONING_EFFORTS as readonly unknown[]).includes(effort)) {
+        errors.push({ category: "config", message: `[agent.llm] reasoning_effort must be one of: ${REASONING_EFFORTS.join(", ")}` });
+      }
+      const keyRef = llmCfg.keyRef ?? llmCfg.key_ref;
+      if (keyRef !== undefined && (typeof keyRef !== "string" || !/^(env:|doppler:)[A-Za-z_][A-Za-z0-9_]*$/.test(keyRef))) {
+        errors.push({ category: "config", message: "[agent.llm] key_ref must be an env: or doppler: secret name" });
       }
       const baseUrlValue = llmCfg.baseUrl ?? llmCfg.base_url;
       if (baseUrlValue !== undefined) {

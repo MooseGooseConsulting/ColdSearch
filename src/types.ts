@@ -96,6 +96,8 @@ export interface Config {
       provider?: string;
       model?: string;
       baseUrl?: string;
+      reasoningEffort?: import("./agent/llm.js").ReasoningEffort;
+      keyRef?: string;
     };
   };
 }

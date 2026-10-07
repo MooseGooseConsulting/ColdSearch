@@ -329,15 +329,60 @@ The endpoint can be configured in three layers, in precedence order:
 
 ```toml
 [agent.llm]
-provider = "openai"
-model = "gpt-4o"
-base_url = "https://api.openai.com/v1"
+provider = "isoquant"
+model = "glm-5.3-flash"
+base_url = "https://api.isoquant.ai/v1"
+reasoning_effort = "medium"
+key_ref = "doppler:ISOQUANT_API_KEY"
 ```
 
 Environment fallbacks: `OPENAI_API_KEY` (and provider-specific keys such as
 `GROQ_API_KEY`). `OPENAI_BASE_URL` overrides the base URL for
 `provider = "openai"` only — the alias providers (groq, openrouter, cerebras,
-xai) always use their own fixed base URLs, and a TOML/CLI `base_url` takes
+xai, isoquant) always use their own fixed base URLs, and a TOML/CLI `base_url` takes
 precedence over the environment fallback.
 
 This is separate from provider key resolution in `config.toml`.
+
+
+### Isoquant production and free-router testing
+
+Agent mode now defaults to Isoquant `glm-5.3-flash` with `medium` reasoning.
+The client sends `reasoning_effort: "medium"` to Isoquant on every completion,
+including synthesis; `--reasoning-effort` overrides the TOML setting. Isoquant's
+accessible API sample confirms the endpoint/model but does not document effort
+semantics. The paid conformance check verifies an actual request completes;
+confirm effective medium behavior from the provider rather than equating HTTP
+success with proof the setting was honored.
+
+`key_ref` accepts `doppler:NAME` or `env:NAME` only. `ISOQUANT_API_KEY` is the
+proposed standard name, not a discovered secret in the operator's Doppler.
+Set `key_ref` to the actual name once located. Doppler references first use the
+matching injected environment variable, otherwise the existing Doppler CLI
+resolver. No secret values belong in TOML.
+
+For routine live tests use a separate test config with:
+
+```toml
+[agent.llm]
+provider = "openrouter"
+model = "openrouter/free"
+key_ref = "env:OPENROUTER_API_KEY"
+```
+
+OpenRouter uses `reasoning: { effort: ... }` when effort is explicitly set;
+free-router tests leave effort unset because available free models differ.
+The search/extract/crawl pools remain independent of the synthesis LLM.
+
+The scheduled canary uses OpenRouter free. Manual dispatch can additionally
+select `isoquant_conformance` to test the paid production endpoint. CI may use
+either a scoped GitHub Actions `DOPPLER_TOKEN` secret (Doppler injects API keys),
+or direct Actions secrets `OPENROUTER_API_KEY` and `ISOQUANT_API_KEY`. Both may
+coexist; Doppler values take precedence when injected. These are Actions
+secrets, not GitHub App credentials. Never install real provider secrets into
+pull-request workflows that execute untrusted code.
+
+After the PR lands, update deployed TOML/CLI wrappers that set `xai` or a Grok
+model to the Isoquant config above; editing this repository alone cannot modify
+existing operator config files. Explicit `--llm xai` remains supported for
+compatibility, but no default or test path selects Grok.

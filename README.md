@@ -145,3 +145,12 @@ architecture, provider matrix, code, or current GitHub state.
 - Add agent run IDs and step-level trace correlation
 - Finish guided configuration/status UX and normalized error classification
 - Keep remote/hybrid execution deferred until the local audit and workflow surfaces are trustworthy
+
+
+### Agent LLM configuration
+
+Agent synthesis defaults to Isoquant GLM 5.3 Flash at medium reasoning. Inject
+`ISOQUANT_API_KEY` with Doppler, or configure `[agent.llm] key_ref` to the actual
+`doppler:SECRET_NAME`. Routine live LLM tests use OpenRouter's `openrouter/free`.
+See [configuration](docs/CONFIGURATION.md#isoquant-production-and-free-router-testing)
+for the deployed config migration, CLI overrides and CI credential options.

@@ -95,8 +95,8 @@ test("legacy-config refusal is classified as config", () => {
 
 test("LLM provider errors classify as config", () => {
   const messages = [
-    "Invalid LLM provider: foo. Supported: openai, groq, openrouter, cerebras, xai (Anthropic API is not used).",
-    'Unsupported LLM provider "foo". Supported: openai, groq, openrouter, cerebras, xai.',
+    "Invalid LLM provider: foo. Supported: openai, groq, openrouter, cerebras, xai, isoquant (Anthropic API is not used).",
+    'Unsupported LLM provider "foo". Supported: openai, groq, openrouter, cerebras, xai, isoquant.',
     "Unknown LLM provider 'foo'",
   ];
   for (const message of messages) {

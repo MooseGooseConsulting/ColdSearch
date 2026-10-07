@@ -12,6 +12,11 @@ on:
   schedule:
     - cron: "0 6 * * *" # daily at 06:00 UTC
   workflow_dispatch:
+    inputs:
+      isoquant_conformance:
+        description: "Also test Isoquant GLM 5.3 Flash medium (paid)"
+        type: boolean
+        default: false
 
 # Prevent overlapping scheduled/manual runs from generating redundant provider traffic.
 concurrency:
@@ -24,6 +29,8 @@ permissions:
 jobs:
   canary:
     runs-on: ubuntu-latest
+    env:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
       # Actions pinned to commit SHAs (supply-chain hardening); trailing comment tracks the tag.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -42,12 +49,23 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install Doppler CLI when a service token is configured
+        if: env.DOPPLER_TOKEN != ''
+        uses: DopplerHQ/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+
       - name: Live smoke test
-        run: node scripts/smoke.mjs
+        run: |
+          if [ -n "$DOPPLER_TOKEN" ]; then
+            doppler run -- node scripts/smoke.mjs
+          else
+            node scripts/smoke.mjs
+          fi
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ISOQUANT_API_KEY: ${{ secrets.ISOQUANT_API_KEY }}
+          COLDSEARCH_SMOKE_ISOQUANT: ${{ inputs.isoquant_conformance || 'false' }}
