@@ -551,7 +551,7 @@ async function nativeExa(target) {
     const data = await fetchJson(
       "https://api.exa.ai/search",
       jsonPost(
-        { query: SEARCH_QUERY, numResults: 10, useAutoprompt: true, contents: { text: true } },
+        { query: SEARCH_QUERY, numResults: 10, type: "auto", contents: { text: true } },
         headers
       ),
       "native Exa search"
@@ -579,7 +579,7 @@ async function nativeExa(target) {
   const searchData = await fetchJson(
     "https://api.exa.ai/search",
     jsonPost(
-      { query: `site:${domain}`, numResults: CRAWL_LIMIT, useAutoprompt: false },
+      { query: `site:${domain}`, numResults: CRAWL_LIMIT, type: "fast" },
       headers
     ),
     "native Exa crawl discover"

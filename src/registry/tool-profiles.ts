@@ -22,6 +22,8 @@ import type {
  */
 
 const VERIFIED = "2026-06-26";
+/** Profiles re-verified against current provider docs on 2026-10-07. */
+const REVERIFIED = "2026-10-07";
 
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
@@ -31,7 +33,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /search",
     categories: ["search", "research"],
     description:
-      "Neural/keyword web search behind one endpoint. The `type` knob spans " +
+      "Unified web search behind one endpoint. The `type` knob spans " +
       "instant/fast/auto/deep-lite/deep/deep-reasoning, so the same tool covers " +
       "fast retrieval and research-grade reasoning. Content can be attached " +
       "directly via `contents`.",
@@ -103,7 +105,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -160,7 +162,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -312,7 +314,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -353,7 +355,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "crawl",
   },

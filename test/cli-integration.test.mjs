@@ -321,7 +321,9 @@ test("config doctor does not leak TOML parse-error source excerpts", () => {
   assert.equal(result.status, 1);
   const output = result.stdout + result.stderr;
   assert.doesNotMatch(output, /sk-fake-secret-xyz/);
-  assert.match(output, /row 3/);
+  // Position survives sanitization (line of the malformed entry) without the
+  // source excerpt.
+  assert.match(output, /line 3/);
 });
 
 test("config doctor --json reports valid config success", () => {

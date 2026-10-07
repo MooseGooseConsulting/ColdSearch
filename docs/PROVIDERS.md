@@ -174,11 +174,10 @@ they go stale fast and are intentionally not mirrored here.
   - **Config-driven options** (set in `config.toml` under `[providers.exa.options]`):
     - `highlights` — token-efficient excerpts (~10x reduction for agents)
     - `category` — specialized indexes: `company`, `people`, `research paper`, `news`, `personal site`, `financial report`
-    - `searchType` — `auto`, `keyword`, `neural`, `fast`, `instant`, `deep-lite`, `deep`
+    - `searchType` — `auto`, `fast`, `instant`, `deep-lite`, `deep`, `deep-reasoning`
     - `maxAgeHours` — `0` = always livecrawl, `-1` = never livecrawl
     - `includeDomains` / `excludeDomains` — domain filters
     - `numResults` — result count (default: 10)
-    - `useAutoprompt` — query enhancement (default: true)
     - `maxCharacters` — text length cap (default: 15000)
 - `POST /contents` (with livecrawl) → **extract** ✅ and backs synthesized **crawl** ✅
 - `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI)

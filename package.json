@@ -27,15 +27,14 @@
   "author": "Patrick MacLyman",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@bitwarden/sdk-napi": "^1.0.0",
-    "@iarna/toml": "^2.2.5",
-    "@tavily/core": "^0.7.2"
+    "smol-toml": "^1.9.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.3.0"
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
   }
 }
