@@ -12,6 +12,8 @@ test("exa crawl discovers then fetches contents", async () => {
       searchCalled++;
       const body = JSON.parse(init.body);
       assert.match(body.query, /^site:/);
+      // `useAutoprompt` was retired upstream; `type` selects the mode.
+      assert.equal("useAutoprompt" in body, false);
       return jsonResponse({
         results: [{ url: "https://x.example/a", title: "A" }],
       });
@@ -20,6 +22,10 @@ test("exa crawl discovers then fetches contents", async () => {
       contentsCalled++;
       const body = JSON.parse(init.body);
       assert.ok(Array.isArray(body.urls));
+      // Exa's field is camelCase `livecrawlTimeout`; the snake_case spelling is
+      // silently ignored upstream and must not come back.
+      assert.equal(body.livecrawlTimeout, 10000);
+      assert.equal("livecrawl_timeout" in body, false);
       return jsonResponse({
         results: [
           { url: "https://x.example", title: "Root", text: "r" },

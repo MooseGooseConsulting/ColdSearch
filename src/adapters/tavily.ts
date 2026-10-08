@@ -143,7 +143,9 @@ export class TavilyAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          max_results: limit,
+          // Tavily's crawl cap is `limit` (total links processed); the legacy
+          // `max_results` name is silently ignored upstream.
+          limit,
           extract_depth: "basic",
         }),
       },
