@@ -32,11 +32,19 @@ function stableStringify(value: unknown): string {
 /**
  * Compute a provider-agnostic cache key for a capability call.
  *
- * The key intentionally excludes provider / singleProvider / noCache so a cache
- * entry serves a hit regardless of which provider would have run. Callers must
- * pass only the request-shaping options that affect the returned payload:
- *   - search:  { limit, rerankStrategy }  (default rerankStrategy to "rrf")
- *   - extract: {}                         (the URL alone identifies the request)
+ * The key intentionally excludes the invocation-level provider scope
+ * (singleProvider / per-call providers / noCache): choosing a different
+ * provider WITHIN the same configured pool still serves the cached entry.
+ * What DOES invalidate the entry is the config that decides which upstream
+ * answers — the capability's configured provider pool, its routing strategy,
+ * and endpoint-identity material for the pooled providers (endpoint-ish
+ * option names plus `<PROVIDER>_BASE_URL` env, via capabilityCacheIdentity in
+ * src/contracts/endpoint-identity.ts). Callers must pass only the
+ * request-shaping options that affect the returned payload:
+ *   - search:  { limit, rerankStrategy, ...capabilityCacheIdentity(config, "search") }
+ *              (default rerankStrategy to "rrf")
+ *   - extract: { ...capabilityCacheIdentity(config, "extract") }
+ *              (the URL alone identifies the request payload)
  *
  * @returns sha256 hex digest of `capability | queryOrUrl | stableStringify(options)`.
  */
