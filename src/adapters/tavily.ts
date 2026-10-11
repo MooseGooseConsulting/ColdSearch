@@ -65,11 +65,36 @@ export class TavilyAdapter implements SearchAdapter {
     return Math.max(1, Math.floor(limit));
   }
 
+  /** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+  private clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(value)));
+  }
+
   async search(
     query: string,
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const providerOptions = options?.providerOptions ?? {};
+
+    const body: Record<string, unknown> = {
+      query,
+      max_results: this.clampIntegerOption(providerOptions.max_results, 1, 100, 10),
+      search_depth:
+        providerOptions.search_depth === "advanced" ? "advanced" : "basic",
+      include_answer:
+        typeof providerOptions.include_answer === "boolean"
+          ? providerOptions.include_answer
+          : false,
+    };
+    if (typeof providerOptions.topic === "string" && providerOptions.topic.trim()) {
+      body.topic = providerOptions.topic.trim();
+    }
+    if (typeof providerOptions.time_range === "string" && providerOptions.time_range.trim()) {
+      body.time_range = providerOptions.time_range.trim();
+    }
+
     const response = await fetchJson<TavilySearchResponse>(
       `${this.baseUrl}/search`,
       {
@@ -79,10 +104,8 @@ export class TavilyAdapter implements SearchAdapter {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          query,
-          search_depth: "basic",
-          include_answer: false,
-          max_results: this.sanitizeSearchLimit(options?.limit),
+          ...body,
+          max_results: this.sanitizeSearchLimit(options?.limit ?? providerOptions.max_results),
         }),
       },
       { label: "Tavily search" }
@@ -104,6 +127,19 @@ export class TavilyAdapter implements SearchAdapter {
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<ExtractResult> {
+    const providerOptions = options?.providerOptions ?? {};
+
+    const body: Record<string, unknown> = {
+      urls: [url],
+      include_images: false,
+    };
+    if (providerOptions.format === "markdown" || providerOptions.format === "text") {
+      body.format = providerOptions.format;
+    }
+    if (providerOptions.extract_depth === "basic" || providerOptions.extract_depth === "advanced") {
+      body.extract_depth = providerOptions.extract_depth;
+    }
+
     const response = await fetchJson<TavilyExtractResponse>(
       `${this.baseUrl}/extract`,
       {
@@ -113,9 +149,13 @@ export class TavilyAdapter implements SearchAdapter {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          urls: [url],
-          include_images: false,
-          format: options?.format ?? "markdown",
+          ...body,
+          format:
+            options?.format === "text" || options?.format === "markdown"
+              ? options.format
+              : providerOptions.format === "text"
+                ? "text"
+                : "markdown",
         }),
       },
       { label: "Tavily extract" }
