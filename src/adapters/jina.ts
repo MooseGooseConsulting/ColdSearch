@@ -36,12 +36,23 @@ export class JinaAdapter implements SearchAdapter {
       normalizedUrl = `https://${normalizedUrl}`;
     }
 
-    // Keep the caller's scheme. r.jina.ai fetches the URL appended after the host.
+    // Jina AI Reader endpoint - preserve the caller's scheme (http or https)
     const jinaUrl = `https://r.jina.ai/${normalizedUrl}`;
+
     const headers: Record<string, string> = {
+      Accept: "text/plain",
       "X-Return-Format": options?.format ?? "markdown",
     };
-    if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey}`;
+    // Keyless usage stays supported; send the key only when one is configured.
+    if (apiKey?.trim()) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    // Jina's Reader surface is controlled via X-* request headers; pass through
+    // any providerOptions entries whose keys start with "X-".
+    for (const [key, value] of Object.entries(options?.providerOptions ?? {})) {
+      if (!key.startsWith("X-") || value === undefined || value === null) continue;
+      headers[key] = String(value);
+    }
 
     const content = await fetchText(jinaUrl, {
       headers,
