@@ -11,7 +11,9 @@ test("exa crawl discovers then fetches contents", async () => {
     "POST https://api.exa.ai/search": async ({ init }) => {
       searchCalled++;
       const body = JSON.parse(init.body);
-      assert.match(body.query, /^site:/);
+      // Domain scoping comes from includeDomains; no redundant `site:` operator.
+      assert.equal(body.query, "x.example");
+      assert.deepEqual(body.includeDomains, ["x.example"]);
       // `useAutoprompt` was retired upstream; `type` selects the mode.
       assert.equal("useAutoprompt" in body, false);
       return jsonResponse({
@@ -22,9 +24,11 @@ test("exa crawl discovers then fetches contents", async () => {
       contentsCalled++;
       const body = JSON.parse(init.body);
       assert.ok(Array.isArray(body.urls));
-      // Exa's field is camelCase `livecrawlTimeout`; the snake_case spelling is
-      // silently ignored upstream and must not come back.
-      assert.equal(body.livecrawlTimeout, 10000);
+      // The deprecated `livecrawl` flag must never be sent, and
+      // `livecrawlTimeout` is only meaningful alongside maxAgeHours — without
+      // maxAgeHours both stay out of the body.
+      assert.equal("livecrawl" in body, false);
+      assert.equal("livecrawlTimeout" in body, false);
       assert.equal("livecrawl_timeout" in body, false);
       return jsonResponse({
         results: [
@@ -114,4 +118,62 @@ test("exa search rejects an invalid searchType before calling upstream", async (
   } finally {
     restore();
   }
+});
+
+test("exa extract never sends livecrawl; sends top-level maxAgeHours only when configured", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/contents": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "T", text: "body" }],
+      });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await adapter.extract("https://x.example", "k");
+    await adapter.extract("https://x.example", "k", {
+      providerOptions: { maxAgeHours: 24 },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.equal("livecrawl" in bodies[0], false);
+  assert.equal("maxAgeHours" in bodies[0], false);
+  assert.equal("livecrawl" in bodies[1], false);
+  assert.equal(bodies[1].maxAgeHours, 24);
+});
+
+test("exa crawl sends livecrawlTimeout only alongside maxAgeHours", async () => {
+  let contentsBody;
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async ({ init }) => {
+      contentsBody = JSON.parse(init.body);
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "Root", text: "r" }],
+      });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await adapter.crawl("https://x.example", "k", {
+      limit: 1,
+      providerOptions: { maxAgeHours: 0 },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.equal("livecrawl" in contentsBody, false);
+  assert.equal(contentsBody.maxAgeHours, 0);
+  // camelCase `livecrawlTimeout`; the snake_case spelling is silently ignored
+  // upstream and must not come back.
+  assert.equal(contentsBody.livecrawlTimeout, 10000);
+  assert.equal("livecrawl_timeout" in contentsBody, false);
 });
