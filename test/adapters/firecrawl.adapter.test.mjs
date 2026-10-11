@@ -186,3 +186,104 @@ test("firecrawl poll errors take precedence over completed response data", async
   }
 });
 
+test("firecrawl extract honors providerOptions formats (default [markdown])", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/scrape": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({
+        success: true,
+        data: { markdown: "c", metadata: { title: "T", sourceURL: "https://x.example" } },
+      });
+    },
+  });
+  try {
+    const adapter = new FirecrawlAdapter();
+    await adapter.extract("https://x.example", "k");
+    await adapter.extract("https://x.example", "k", {
+      providerOptions: { formats: ["markdown", "links"] },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(bodies[0].formats, ["markdown"]);
+  assert.deepEqual(bodies[1].formats, ["markdown", "links"]);
+});
+
+test("firecrawl extract rejects unsupported formats before calling upstream", async () => {
+  let fetchCalled = 0;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/scrape": async () => {
+      fetchCalled++;
+      return jsonResponse({ success: true, data: {} });
+    },
+  });
+  try {
+    const adapter = new FirecrawlAdapter();
+    await assert.rejects(
+      adapter.extract("https://x.example", "k", {
+        providerOptions: { formats: ["pdf"] },
+      }),
+      /Invalid Firecrawl format "pdf"/
+    );
+    assert.equal(fetchCalled, 0, "must fail fast before any upstream call");
+  } finally {
+    restore();
+  }
+});
+
+test("firecrawl search honors providerOptions limit (clamped 1..100) and sources", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/search": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({ success: true, data: { web: [] } });
+    },
+  });
+  try {
+    const adapter = new FirecrawlAdapter();
+    await adapter.search("q", "k");
+    await adapter.search("q", "k", {
+      providerOptions: { limit: 500, sources: ["web", "news"] },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.equal(bodies[0].limit, 10);
+  assert.equal("sources" in bodies[0], false);
+  assert.equal(bodies[1].limit, 100);
+  assert.deepEqual(bodies[1].sources, ["web", "news"]);
+});
+
+test("firecrawl crawl timeout error includes the jobId", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
+  globalThis.clearTimeout = (...args) => originalClearTimeout(...args);
+
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async ({ init }) => {
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body.scrapeOptions.formats, ["html", "markdown"]); // retain normalized content
+      return jsonResponse({ success: true, id: "job-42" });
+    },
+    "GET https://api.firecrawl.dev/v2/crawl/job-42": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+  });
+  try {
+    const adapter = new FirecrawlAdapter();
+    await assert.rejects(
+      adapter.crawl("https://x.example", "k", {
+        limit: 1,
+        providerOptions: { formats: ["html"] },
+      }),
+      /timed out for job job-42/
+    );
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
