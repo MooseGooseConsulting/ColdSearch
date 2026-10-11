@@ -703,6 +703,10 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { url: "url", limit: "limit", depth: "maxDiscoveryDepth" },
         unsupportedCommonOptions: [],
         nativeOptionsWithoutCommonEquivalent: ["webhook", "maxConcurrency", "delay", "scrapeOptions"],
+        notes:
+          "The adapter honors a `formats` array from [providers.firecrawl.options] " +
+          "as scrapeOptions.formats (validated against markdown|html|rawHtml|links|" +
+          "screenshot|json; default [markdown]).",
       },
     ],
     features: { semanticTraversal: false, urlDiscovery: true, integratedContent: true, robotsControl: true },
@@ -940,7 +944,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /search",
     categories: ["search"],
     description: "Google web SERP. Search-only vendor surface in ColdSearch today.",
-    docsUrl: "https://serper.dev/docs",
+    // serper.dev/docs 404s; docs live on the homepage demo + login-gated playground.
+    docsUrl: "https://serper.dev",
     requiredParams: ["q"],
     optionalParams: ["gl", "hl", "num", "page", "tbs", "location", "autocorrect"],
     commonViews: [
@@ -1034,6 +1039,12 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         semanticFit: "direct",
         mapsCommonOptions: { url: "url" },
         unsupportedCommonOptions: ["javascriptActions", "screenshots"],
+        notes:
+          "The adapter passes through any [providers.jina.options] key " +
+          "starting with `X-` as a request header (values stringified, " +
+          "undefined/null skipped) and preserves the caller's http/https " +
+          "scheme. Keyless use is supported; a configured key is sent as " +
+          "Authorization: Bearer.",
       },
     ],
     features: { knownUrl: true, keyless: true, javascriptRendering: true },
