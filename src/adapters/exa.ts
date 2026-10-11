@@ -17,9 +17,10 @@ interface ExaProviderOptions {
   /** Max characters for text content. Default: 15000 */
   maxCharacters?: number;
   /**
-   * Category filter. Exa's first-class categories are space-separated:
-   * "company", "people", "research paper", "news", "personal site",
-   * "financial report". Other strings are accepted as category hints.
+   * Category filter. Exa's first-class categories include "company", "people",
+   * "publication" (formerly "research paper"), "news", "personal site", and
+   * "financial report"; the pdf/github/tweet categories are deprecated.
+   * Other strings are accepted as category hints (pass-through, not validated).
    */
   category?: string;
   /**
@@ -235,10 +236,12 @@ export class ExaAdapter implements SearchAdapter {
     const extractBody: Record<string, unknown> = {
       urls: [normalizedUrl],
       text: { maxCharacters: opts.maxCharacters ?? 15000 },
-      livecrawl: "preferred",
     };
     // Freshness control. On /contents, maxAgeHours is a top-level field
-    // (0 = always livecrawl, -1 = never livecrawl). See https://exa.ai/docs/reference/get-contents.
+    // (0 = always livecrawl, -1 = never livecrawl). The deprecated `livecrawl`
+    // flag must NOT be co-sent with maxAgeHours, so it is omitted entirely;
+    // "use cache when fresh" is now the Exa server default.
+    // See https://exa.ai/docs/reference/get-contents.
     if (opts.maxAgeHours !== undefined) {
       extractBody.maxAgeHours = opts.maxAgeHours;
     }
@@ -302,7 +305,9 @@ export class ExaAdapter implements SearchAdapter {
       includeDomains: [domain],
       excludeDomains: undefined,
     };
-    const body = this.buildSearchBody(`site:${domain}`, searchOpts);
+    // Domain scoping is handled by includeDomains; repeating it as a `site:`
+    // query operator is redundant and not recommended upstream.
+    const body = this.buildSearchBody(domain, searchOpts);
 
     const searchData = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -337,12 +342,13 @@ export class ExaAdapter implements SearchAdapter {
         body: JSON.stringify({
           urls: candidateUrls,
           text: { maxCharacters: opts.maxCharacters ?? 12000 },
-          livecrawl: "preferred",
-          // Exa's field is camelCase `livecrawlTimeout`; the snake_case
-          // spelling is silently ignored upstream.
-          livecrawlTimeout: 10000,
+          // The deprecated `livecrawl` flag must not be co-sent with
+          // maxAgeHours, so it is omitted entirely; "preferred" semantics are
+          // now the Exa server default. `livecrawlTimeout` (camelCase — the
+          // snake_case spelling is silently ignored upstream) is only
+          // meaningful alongside maxAgeHours.
           ...(opts.maxAgeHours !== undefined
-            ? { maxAgeHours: opts.maxAgeHours }
+            ? { maxAgeHours: opts.maxAgeHours, livecrawlTimeout: 10000 }
             : {}),
         }),
       },
