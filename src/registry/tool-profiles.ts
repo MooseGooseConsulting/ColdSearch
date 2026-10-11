@@ -21,9 +21,10 @@ import type {
  * reconciled against the provider docs linked in `docsUrl`.
  */
 
-const VERIFIED = "2026-06-26";
-/** Profiles re-verified against current provider docs on 2026-10-07. */
-const REVERIFIED = "2026-10-07";
+/** Profiles re-inspected against current provider docs on 2026-10-12
+ * (see docs/reviews/2026-10-12-provider-contract-audit.md). This is a
+ * doc-reinspection date, not live verification. */
+const REINSPECTED = "2026-10-12";
 
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
@@ -36,7 +37,11 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "Unified web search behind one endpoint. The `type` knob spans " +
       "instant/fast/auto/deep-lite/deep/deep-reasoning, so the same tool covers " +
       "fast retrieval and research-grade reasoning. Content can be attached " +
-      "directly via `contents`.",
+      "directly via `contents`. Category enum current as of 2026-10: company, " +
+      "people, publication (replaced research paper), news, personal site, " +
+      "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
+      "upstream — maxAgeHours (0=always fetch, -1=cache-only) + livecrawlTimeout " +
+      "are the migration path.",
     docsUrl: "https://exa.ai/docs/reference/search",
     requiredParams: ["query"],
     optionalParams: [
@@ -108,7 +113,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REVERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -167,7 +172,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REVERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -177,8 +182,10 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /findSimilar",
     categories: ["search"],
     description:
-      "Semantic neighbors of a known URL (unique to Exa). Reachable via the " +
-      "adapter method; not yet a CLI category command.",
+      "DEPRECATED upstream (OpenAPI-marked; absent from the current reference " +
+      "sidebar) in favor of describing the source page in /search. Still " +
+      "callable as of 2026-10. Semantic neighbors of a known URL (unique to Exa). " +
+      "Reachable via the adapter method; not yet a CLI category command.",
     docsUrl: "https://exa.ai/docs/reference/find-similar-links",
     requiredParams: ["url"],
     optionalParams: ["numResults", "includeDomains", "excludeDomains", "contents"],
@@ -195,7 +202,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync" },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "findSimilar",
   },
@@ -221,7 +228,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "answer" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
 
@@ -283,7 +290,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -321,7 +328,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REVERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -367,7 +374,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: REVERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "crawl",
   },
@@ -406,7 +413,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
   "tavily.research": {
@@ -446,7 +453,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true, supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "research" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
   "tavily.answer": {
@@ -471,7 +478,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "answer" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
 
@@ -525,7 +532,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -583,7 +590,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -627,7 +634,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true, supportsWait: true, jobIdField: "id" },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "crawl",
   },
@@ -664,7 +671,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
   "firecrawl.extract": {
@@ -703,7 +710,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "research" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
 
@@ -758,19 +765,21 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
   "brave.llmContext": {
     provider: "brave",
     tool: "llmContext",
-    nativeName: "GET /res/v1/summarizer/llm_context",
+    nativeName: "GET /res/v1/llm/context",
     categories: ["search", "research"],
     description:
       "NOT plain SERP search: search plus extracted, relevance-ranked context " +
-      "chunks for LLM grounding. Query-based, not arbitrary known-URL extraction.",
-    docsUrl: "https://api-dashboard.search.brave.com/api-reference/summarizer/llm_context/get",
+      "chunks for LLM grounding. Query-based, not arbitrary known-URL extraction. " +
+      "Moved from /res/v1/summarizer/llm_context (~2026-02 repackaging); ships " +
+      "in the standard Brave Search plan, no longer a separate paid Data-for-AI tier.",
+    docsUrl: "https://api-dashboard.search.brave.com/api-reference/",
     requiredParams: ["q"],
     optionalParams: [
       "country",
@@ -797,7 +806,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "available",
   },
 
@@ -810,7 +819,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description: "Google web SERP. Search-only vendor surface in ColdSearch today.",
     docsUrl: "https://serper.dev/docs",
     requiredParams: ["q"],
-    optionalParams: ["gl", "hl", "num", "page", "tbs", "autocorrect"],
+    optionalParams: ["gl", "hl", "num", "page", "tbs", "location", "autocorrect"],
     commonViews: [
       {
         category: "search",
@@ -827,7 +836,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -838,10 +847,45 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     tool: "reader",
     nativeName: "GET r.jina.ai",
     categories: ["extract"],
-    description: "Keyless Reader extraction of a single URL to clean text/markdown.",
+    description:
+      "Keyless Reader extraction of a single URL to clean text/markdown. " +
+      "X-Respond-With now targets jina-ocr-v1 (~40x output tokens; ReaderLM-v2 " +
+      "de-emphasized). JSON via Accept: application/json; streaming via " +
+      "Accept: text/event-stream; POST accepts local PDF/HTML upload.",
     docsUrl: "https://jina.ai/reader",
     requiredParams: ["url"],
-    optionalParams: ["x-respond-with", "x-target-selector", "x-with-links-summary"],
+    optionalParams: [
+      "X-Engine",
+      "X-Return-Format",
+      "X-Timeout",
+      "X-Token-Budget",
+      "X-Respond-With",
+      "X-Page",
+      "X-Target-Selector",
+      "X-Wait-For-Selector",
+      "X-Remove-Selector",
+      "X-Retain-Images",
+      "X-Retain-Links",
+      "X-With-Links-Summary",
+      "X-With-Images-Summary",
+      "X-Set-Cookie",
+      "X-With-Generated-Alt",
+      "X-Proxy",
+      "X-Proxy-Url",
+      "X-No-Cache",
+      "X-Cache-Tolerance",
+      "X-Respond-Timing",
+      "X-User-Agent",
+      "X-Referer",
+      "X-Keep-Img-Data-Url",
+      "DNT",
+      "X-No-Gfm",
+      "X-Locale",
+      "X-Robots-Txt",
+      "X-With-Iframe",
+      "X-With-Shadow-Dom",
+      "X-Base",
+    ],
     commonViews: [
       {
         category: "extract",
@@ -854,7 +898,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -868,7 +912,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description: "Self-hosted metasearch. Operator-configured `baseUrl`.",
     docsUrl: "https://docs.searxng.org",
     requiredParams: ["q"],
-    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "format"],
+    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "format"],
     commonViews: [
       {
         category: "search",
@@ -876,13 +920,17 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { freshness: "time_range" },
         unsupportedCommonOptions: ["includeDomains", "excludeDomains"],
         nativeOptionsWithoutCommonEquivalent: ["engines", "categories"],
+        notes:
+          "format=json must be enabled in the instance's settings.yml; a " +
+          "disabled format returns 403. `engines` works in practice but is " +
+          "absent from the official params table.",
       },
     ],
     features: { rankedLinks: true, integratedContent: false, selfHosted: true, keyless: true, vertical: true },
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REINSPECTED,
     status: "wired",
     adapterMethod: "search",
   },
