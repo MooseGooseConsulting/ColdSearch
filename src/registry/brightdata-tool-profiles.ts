@@ -29,7 +29,8 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         unsupportedCommonOptions: ["includeDomains", "excludeDomains"],
         nativeOptionsWithoutCommonEquivalent: ["zone", "searchEngine", "country"],
         notes:
-          "Normalized search consumes organic results only. Shopping/local/other SERP blocks remain provider-native detail.",
+          "Normalized search consumes organic results only. Shopping/local/other SERP blocks remain provider-native detail. " +
+          "The adapter also accepts the legacy option keys serpZone (for zone) and searchCountry (for country).",
       },
     ],
     features: {
@@ -56,7 +57,7 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
       "Bright Data Web Unlocker known-URL retrieval for blocked/dynamic public pages. Backs normalized extract without changing agent fetch semantics.",
     docsUrl: "https://docs.brightdata.com/scraping-automation/web-unlocker/introduction",
     requiredParams: ["url"],
-    optionalParams: ["zone", "format", "method", "country", "data_format"],
+    optionalParams: ["zone", "format", "method", "country", "data_format", "unlockerTimeoutMs"],
     commonViews: [
       {
         category: "extract",
@@ -64,6 +65,9 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { url: "url", format: "data_format" },
         unsupportedCommonOptions: ["javascriptActions", "screenshots"],
         nativeOptionsWithoutCommonEquivalent: ["zone", "country"],
+        notes:
+          "unlockerTimeoutMs (milliseconds) raises the extract fetch timeout for JS-rendered pages. " +
+          "The adapter also accepts the legacy option keys unlockerZone (for zone) and searchCountry (for country).",
       },
     ],
     features: {
