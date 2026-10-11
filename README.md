@@ -132,6 +132,7 @@ npm test
 - `docs/PROVIDERS.md` - Capability + tool matrix and per-provider coverage (single source of truth)
 - `docs/CONFIGURATION.md` - Configuration reference and precedence
 - `docs/reviews/2026-07-16-project-review-and-bright-data.md` - Dated project, GitHub, memory, and Bright Data review
+- `docs/reviews/2026-10-12-provider-contract-audit.md` - Dated native-contract audit of all 8 providers for issue #79 (evidence snapshot)
 - `plans/2026-06-22-remaining-implementation-master-plan.md` - Active implementation sequence (informational)
 - `docs/contributing/testing.md` - What to test (and what not to duplicate)
 
