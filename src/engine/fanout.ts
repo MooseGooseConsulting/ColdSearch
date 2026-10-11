@@ -4,6 +4,7 @@ import { rerank, type RerankerOptions } from "./reranker.js";
 import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
 import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { UsageLogger } from "../logging/usage.js";
+import { assertNormalizedResult } from "../contracts/envelope.js";
 import type {
   CapabilityName,
   Config,
@@ -304,6 +305,10 @@ export class FanoutEngine {
           providerOptions: this.config.providers[provider]?.options,
           format: options.format,
         });
+        // Engine-boundary shape guard (issue #79, PR-C): a malformed adapter
+        // normalization throws here (classified as a provider error) instead
+        // of propagating garbage downstream.
+        assertNormalizedResult("extract", provider, result);
 
         const durationMs = Math.round(performance.now() - start);
         this.usageLogger.write({
@@ -602,6 +607,9 @@ export class FanoutEngine {
           depth: options.depth,
           providerOptions: this.config.providers[provider]?.options,
         });
+        // Engine-boundary shape guard (issue #79, PR-C): fail loudly on a
+        // malformed adapter normalization rather than caching/rendering it.
+        assertNormalizedResult("crawl", provider, results);
 
         const durationMs = Math.round(performance.now() - start);
         const pendingResults = results.filter((result) => result.status === "pending");
@@ -749,6 +757,10 @@ export class FanoutEngine {
         ...(limit !== undefined ? { limit } : {}),
         providerOptions: this.config.providers[provider]?.options,
       });
+      // Engine-boundary shape guard (issue #79, PR-C): a malformed adapter
+      // normalization throws here (classified as a provider error) instead of
+      // propagating garbage into rerank/history.
+      assertNormalizedResult("search", provider, results);
 
       const durationMs = Math.round(performance.now() - start);
       this.usageLogger.write({
