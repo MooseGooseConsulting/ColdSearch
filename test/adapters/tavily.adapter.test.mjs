@@ -123,3 +123,68 @@ test("tavily crawl validates the supported depth range", async () => {
   }
 });
 
+test("tavily search honors providerOptions (max_results clamped, depth/topic/answer/time_range)", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/search": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    const adapter = new TavilyAdapter();
+    // Defaults: unchanged wire contract when nothing is configured.
+    await adapter.search("q", "k");
+    await adapter.search("q", "k", {
+      providerOptions: {
+        max_results: 500,
+        search_depth: "advanced",
+        topic: "news",
+        include_answer: true,
+        time_range: "week",
+      },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(bodies[0], {
+    query: "q",
+    max_results: 10,
+    search_depth: "basic",
+    include_answer: false,
+  });
+  assert.deepEqual(bodies[1], {
+    query: "q",
+    max_results: 20, // Tavily accepts at most 20 search results
+    search_depth: "advanced",
+    include_answer: true,
+    topic: "news",
+    time_range: "week",
+  });
+});
+
+test("tavily extract honors format and extract_depth only when configured", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/extract": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "T", rawContent: "c" }],
+      });
+    },
+  });
+  try {
+    const adapter = new TavilyAdapter();
+    await adapter.extract("https://x.example", "k");
+    await adapter.extract("https://x.example", "k", {
+      providerOptions: { format: "text", extract_depth: "advanced" },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(bodies[0], { urls: ["https://x.example"], include_images: false });
+  assert.equal(bodies[1].format, "text");
+  assert.equal(bodies[1].extract_depth, "advanced");
+});
