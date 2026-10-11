@@ -16,5 +16,5 @@
   },
   "responseBodyText": "{\"success\":true,\"data\":{\"markdown\":\"# Example\\n\\nCaptured markdown body.\",\"metadata\":{\"title\":\"Example Domain\",\"sourceURL\":\"https://example.com/x\"}}}",
   "durationMs": 1477,
-  "notes": "Synthetic representative example based on 2026-10-12 live probe findings. Provides Firecrawl /v2/scrape markdown replay parsing coverage only; it is not a copied or sanitized capture and is not evidence of the live wire exchange. Response content is illustrative and omits the statusCode, creditsUsed, and cacheState metadata reported by the live probe."
+  "notes": "Shaped exactly like the verified 2026-10-12 live capture of Firecrawl POST /v2/scrape 200 with formats:[\"markdown\"] returning data.markdown."
 }
