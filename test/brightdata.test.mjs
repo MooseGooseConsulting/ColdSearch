@@ -170,12 +170,65 @@ test("adapter fails closed without configured zones", async () => {
   const adapter = new BrightDataAdapter();
   await assert.rejects(
     () => adapter.search("q", "secret", { providerOptions: {} }),
-    /providers\.brightdata\.options\.serpZone/
+    /providers\.brightdata\.options\.zone \(legacy alias: serpZone\)/
   );
   await assert.rejects(
     () => adapter.extract("https://example.com/page", "secret", { providerOptions: {} }),
-    /providers\.brightdata\.options\.unlockerZone/
+    /providers\.brightdata\.options\.zone \(legacy alias: unlockerZone\)/
   );
+});
+
+test("adapter accepts profile-declared zone/country keys (legacy aliases still work)", async () => {
+  const adapter = new BrightDataAdapter();
+  const bodies = [];
+
+  await withMockFetch(async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ organic: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }, async () => {
+    // Profile-declared keys take precedence over the legacy aliases.
+    await adapter.search("q", "secret", {
+      providerOptions: { zone: "z_new", serpZone: "z_old", country: "de", searchCountry: "us" },
+    });
+    await adapter.search("q", "secret", {
+      providerOptions: { serpZone: "z_old", searchCountry: "us" },
+    });
+  });
+
+  assert.equal(bodies[0].zone, "z_new");
+  assert.equal(bodies[0].country, "de");
+  assert.equal(bodies[1].zone, "z_old");
+  assert.equal(bodies[1].country, "us");
+});
+
+test("unlocker adapter honors format/data_format providerOptions", async () => {
+  const adapter = new BrightDataAdapter();
+  const bodies = [];
+
+  await withMockFetch(async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response("# ok", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+  }, async () => {
+    const options = { providerOptions: config().providers.brightdata.options };
+    await adapter.extract("https://example.com/page", "secret", options);
+    await adapter.extract("https://example.com/page", "secret", {
+      providerOptions: {
+        ...config().providers.brightdata.options,
+        format: "raw",
+        data_format: "html",
+      },
+    });
+  });
+
+  assert.equal(bodies[0].format, "raw");
+  assert.equal(bodies[0].data_format, "markdown");
+  assert.equal(bodies[1].data_format, "html");
 });
 
 test("adapter surfaces non-200 HTTP errors from the SERP endpoint", async () => {
