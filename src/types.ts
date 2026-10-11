@@ -135,6 +135,9 @@ export type ErrorCategory =
   | "credentials"
   | "network"
   | "provider"
+  | "quota"
+  | "rate_limit"
+  | "validation"
   | "unsupported_capability"
   | "unsupported_tool";
 
