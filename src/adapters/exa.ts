@@ -95,6 +95,15 @@ interface ExaFindSimilarResponse {
  * maxAgeHours = 24         # Cache freshness
  * ```
  */
+const EXA_SEARCH_TYPES: readonly string[] = [
+  "auto",
+  "fast",
+  "instant",
+  "deep-lite",
+  "deep",
+  "deep-reasoning",
+];
+
 export class ExaAdapter implements SearchAdapter {
   name = "exa";
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
@@ -113,11 +122,21 @@ export class ExaAdapter implements SearchAdapter {
     query: string,
     opts: ExaProviderOptions
   ): Record<string, unknown> {
+    // `useAutoprompt` was retired upstream; `type` selects the search mode.
+    // searchType arrives from TOML options untyped, so validate it here —
+    // an invalid value would otherwise reach Exa as a rejected request.
+    const searchType = opts.searchType ?? "auto";
+    if (!EXA_SEARCH_TYPES.includes(searchType)) {
+      throw new Error(
+        `Invalid Exa searchType "${String(opts.searchType)}". ` +
+          `Supported values: ${EXA_SEARCH_TYPES.join(", ")}.`
+      );
+    }
+
     const body: Record<string, unknown> = {
       query,
       numResults: opts.numResults ?? 10,
-      // `useAutoprompt` was retired upstream; `type` selects the search mode.
-      type: opts.searchType ?? "auto",
+      type: searchType,
     };
 
     // Category filter

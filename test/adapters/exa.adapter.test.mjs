@@ -79,3 +79,23 @@ test("exa search highlights mode sets contents.highlights and joins highlights i
   }
 });
 
+test("exa search rejects an invalid searchType before calling upstream", async () => {
+  let fetchCalled = 0;
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async () => {
+      fetchCalled++;
+      return jsonResponse({ results: [] });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await assert.rejects(
+      adapter.search("q", "k", { providerOptions: { searchType: "neurl" } }),
+      /Invalid Exa searchType "neurl"/
+    );
+    assert.equal(fetchCalled, 0, "must fail fast before any upstream call");
+  } finally {
+    restore();
+  }
+});

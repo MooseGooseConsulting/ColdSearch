@@ -446,7 +446,7 @@ async function nativeTavily(target) {
 
   const data = await fetchJson(
     "https://api.tavily.com/crawl",
-    jsonPost({ url: CRAWL_URL, max_results: CRAWL_LIMIT, extract_depth: "basic" }, headers),
+    jsonPost({ url: CRAWL_URL, limit: CRAWL_LIMIT, extract_depth: "basic" }, headers),
     "native Tavily crawl",
     120000
   );
@@ -579,7 +579,7 @@ async function nativeExa(target) {
   const searchData = await fetchJson(
     "https://api.exa.ai/search",
     jsonPost(
-      { query: `site:${domain}`, numResults: CRAWL_LIMIT, type: "fast" },
+      { query: `site:${domain}`, numResults: CRAWL_LIMIT, type: "auto" },
       headers
     ),
     "native Exa crawl discover"
