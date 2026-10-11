@@ -87,6 +87,9 @@ ColdSearch columns = what the adapter actually implements today.
 The legacy provider set was last broadly verified **2026-05-28** against real
 provider APIs via `scripts/smoke.mjs` and ad-hoc probes. `✅⚡` = live-verified
 end-to-end · `✅` = implemented but not yet live-checked · `—` = not applicable.
+Native schemas were re-inspected against official docs on **2026-10-12**
+(`docs/reviews/2026-10-12-provider-contract-audit.md`); doc inspection does
+not advance live-verification status.
 
 | Provider | search | extract | crawl |
 |----------|:------:|:-------:|:-----:|
@@ -119,8 +122,8 @@ quality, cost, and usage observability justify broader routing.
 | Dataset/scraper discovery + metadata | Provider-native tools | Catalogued; lets agents discover account-available scraper IDs/schemas |
 | Web Scraper synchronous scrape | Provider-native tool | Structured records; never flattened into generic `extract` |
 | Web Scraper async trigger + snapshot results | Provider-native tools | Explicit lifecycle for discovery/batch/longer collection |
-| Crawl API | Provider-native candidate | Do not claim normalized `crawl` until polling/output/spend mapping is proven |
-| Discover API | Provider-native candidate | Keep distinct from ordinary `search` |
+| Crawl API | Provider-native candidate | Triggering is `POST /datasets/v3/trigger` with a crawl `dataset_id` (no separate REST namespace); do not claim normalized `crawl` until polling/output/spend mapping is proven |
+| Discover API | Provider-native candidate | `POST /discover` → `task_id` → poll; keep distinct from ordinary `search` |
 | Browser/proxy and marketplace purchase workflows | High-cost/stateful surfaces | Not part of the initial implementation |
 
 The dated account/adoption assessment remains in
@@ -156,8 +159,8 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /extract` → **extract** ✅
 - `POST /crawl` → **crawl** ✅
 - `POST /map` (URL discovery) ❌
-- `POST /answer` (one-shot answer + citations) ❌
-- `POST /research` (multi-search report) ❌
+- Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-12) ❌
+- `POST /research` (async multi-search report; `request_id` + GET poll) ❌
 
 ### Firecrawl — `src/adapters/firecrawl.ts` · [docs](https://docs.firecrawl.dev)
 - `POST /search` → **search** ✅
@@ -173,35 +176,37 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅
   - **Config-driven options** (set in `config.toml` under `[providers.exa.options]`):
     - `highlights` — token-efficient excerpts (~10x reduction for agents)
-    - `category` — specialized indexes: `company`, `people`, `research paper`, `news`, `personal site`, `financial report`
+    - `category` — specialized indexes: `company`, `people`, `publication` (replaced `research paper`), `news`, `personal site`, `financial report`; `pdf`/`github`/`tweet` deprecated
     - `searchType` — `auto`, `fast`, `instant`, `deep-lite`, `deep`, `deep-reasoning`
     - `maxAgeHours` — `0` = always livecrawl, `-1` = never livecrawl
     - `includeDomains` / `excludeDomains` — domain filters
     - `numResults` — result count (default: 10)
     - `maxCharacters` — text length cap (default: 15000)
-- `POST /contents` (with livecrawl) → **extract** ✅ and backs synthesized **crawl** ✅
-- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI)
+- `POST /contents` → **extract** ✅ and backs synthesized **crawl** ✅ (`livecrawl` is deprecated upstream — `maxAgeHours` + `livecrawlTimeout` are the migration path)
+- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI; **deprecated upstream** as of 2026 — still callable)
 - `POST /answer` ❌
-- `POST /research` (async) ❌
+- `POST /research` — **retired 2026-05-01**; use `/search` with `type: deep-reasoning` (or the Agent API `/agent/runs`) instead
 - `POST /chat/completions` (web-grounded chat) ❌
 
 ### Brave — `src/adapters/brave.ts` · [docs](https://api.search.brave.com/app/documentation/)
-- `GET /res/v1/web/search` → **search** ✅
+- `GET /res/v1/web/search` → **search** ✅ (rate-limit headers `X-RateLimit-*` on every response)
 - `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` ❌
-- `/suggest` (autocomplete), `/spellcheck` ❌
-- Data-for-AI LLM context (paid) ❌
+- `/suggest` (autocomplete), `/spellcheck` ❌ (separate prepaid add-on plans)
+- LLM Context `GET/POST /res/v1/llm/context` — repackaged ~2026-02; now included in the standard Search plan ❌
+- Answers `POST /res/v1/chat/completions` (OpenAI-compatible, models `brave-pro`/`brave`) — separate Answers plan ❌
 
-### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev/docs)
-- `POST /search` (Google web) → **search** ✅
-- `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews` ❌ — **10 Google verticals unused**
+### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev) (`serper.dev/docs` now 404s — docs live on the homepage demo + login-gated playground)
+- `POST /search` (Google web) → **search** ✅ (also accepts a `location` param, backed by the unauthenticated `GET api.serper.dev/locations` geo list)
+- `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews`, `/lens` ❌ — **11 Google verticals unused**
+- `scrape.serper.dev` `/webpage` + `/shots` (page scraping) ❌
 
 ### Jina — `src/adapters/jina.ts` · [docs](https://jina.ai)
-- `r.jina.ai` Reader → **extract** ✅ (keyless)
-- `s.jina.ai` search ❌
-- deep-search, `/v1/embeddings`, `/v1/rerank`, summarize ❌
+- `r.jina.ai` Reader → **extract** ✅ (keyless: 20 RPM no key / 500 RPM free key; rich `X-*` header surface — see registry profile)
+- `s.jina.ai` search ❌ (live but now key-gated)
+- deep-search (`deepsearch.jina.ai`), `/v1/embeddings` (v5), `/v1/rerank` (v3.5) ❌ — no standalone `summarize` endpoint exists; DeepSearch covers it
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
-- `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`)
+- `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
 - category variants (news / images / …) ❌
 
 ## Unexposed surface worth considering
@@ -209,10 +214,10 @@ they go stale fast and are intentionally not mirrored here.
 These are design choices, not bugs — the adapters expose the common denominator and
 skip vendor specialties. Highest-leverage gaps:
 
-- **Serper** — 10 Google verticals (news, scholar, images, shopping, maps, patents…); only plain web is wired.
-- **Jina** — `embeddings` + `rerank` could back ColdSearch's own reranking step; plus a free `search`.
-- **Tavily `answer`/`research`** and **Exa `answer`/`research`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`).
-- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`).
+- **Serper** — 11 Google verticals (news, scholar, images, shopping, maps, patents, lens…); only plain web is wired.
+- **Jina** — `embeddings` (v5) + `rerank` (v3.5) could back ColdSearch's own reranking step; `s.jina.ai` search is live but key-gated.
+- **Tavily `answer`/`research`** and **Exa `answer`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`); Exa's standalone `/research` was retired 2026-05-01 (deep modes live on `/search`).
+- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-12 audit.
 - **Bright Data** Crawl/Discover/Browser/Marketplace expansion should be driven by concrete workflows and spend controls, not by surface-area completion.
 
 ## Adding a provider
