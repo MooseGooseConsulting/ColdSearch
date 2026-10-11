@@ -119,7 +119,7 @@ keys = []
 keys = ["doppler:FIRECRAWL_API_KEY"]
 
 # ============================================
-# DOPPLER SETUP (remove BWS section below)
+# DOPPLER SETUP
 # ============================================
 # 1. Authenticate: doppler login
 # 2. In Doppler, create secrets matching the names above (e.g., TAVILY_API_KEY_1)
@@ -134,12 +134,8 @@ keys = ["doppler:FIRECRAWL_API_KEY"]
 # Or set token in environment (CI pattern):
 #   DOPPLER_TOKEN=dp.st.xxx coldsearch search "query"
 
-# ============================================
-# BITWARDEN SECRETS MANAGER (REMOVED)
-# ============================================
-# Bitwarden Secrets Manager support has been removed. A `bws:` key reference now
-# raises an error at resolution time instead of being honored.
-# Migrate each `bws:` ref to a `doppler:` or `env:` ref:
+# Bitwarden Secrets Manager support was removed. A `bws:` key reference raises
+# an error at resolution time — migrate each `bws:` ref to `doppler:` or `env:`.
 #   doppler:SECRET_NAME   (preferred)   or   env:VAR_NAME
 
 # ============================================
