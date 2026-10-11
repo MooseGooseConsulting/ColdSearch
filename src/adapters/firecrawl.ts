@@ -37,6 +37,61 @@ function firecrawlScrapeFormat(format?: AdapterCallOptions["format"]): "markdown
   return "markdown";
 }
 
+const FIRECRAWL_FORMATS: readonly string[] = [
+  "markdown",
+  "html",
+  "rawHtml",
+  "links",
+  "screenshot",
+  "json",
+];
+
+const FIRECRAWL_SOURCES: readonly string[] = ["web", "news", "images"];
+
+/** Validate a configured `formats` array against Firecrawl's supported values. */
+function sanitizeFormats(value: unknown): string[] {
+  if (value === undefined) return ["markdown"];
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Invalid Firecrawl formats: expected an array of ${FIRECRAWL_FORMATS.join(", ")}.`
+    );
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || !FIRECRAWL_FORMATS.includes(entry)) {
+      throw new Error(
+        `Invalid Firecrawl format "${String(entry)}". ` +
+          `Supported values: ${FIRECRAWL_FORMATS.join(", ")}.`
+      );
+    }
+  }
+  return value.length > 0 ? [...value] : ["markdown"];
+}
+
+/** Validate a configured `sources` array against Firecrawl's supported values. */
+function sanitizeSources(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Invalid Firecrawl sources: expected an array of ${FIRECRAWL_SOURCES.join(", ")}.`
+    );
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || !FIRECRAWL_SOURCES.includes(entry)) {
+      throw new Error(
+        `Invalid Firecrawl source "${String(entry)}". ` +
+          `Supported values: ${FIRECRAWL_SOURCES.join(", ")}.`
+      );
+    }
+  }
+  return value.length > 0 ? [...value] : undefined;
+}
+
+/** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+function clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 /**
  * Firecrawl adapter.
  * Provides extract (scrape) and crawl capabilities.
@@ -52,6 +107,18 @@ export class FirecrawlAdapter implements SearchAdapter {
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const providerOptions = options?.providerOptions ?? {};
+    const body: Record<string, unknown> = {
+      query,
+      limit: clampIntegerOption(options?.limit ?? providerOptions.limit, 1, 100, 10),
+      scrapeOptions: {
+        formats: ["markdown"],
+      },
+    };
+    const sources = sanitizeSources(providerOptions.sources);
+    if (sources) {
+      body.sources = sources;
+    }
     const data = await fetchJson<{
       success?: boolean;
       data?: {
@@ -77,15 +144,7 @@ export class FirecrawlAdapter implements SearchAdapter {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          query,
-          limit: typeof options?.limit === "number" && Number.isFinite(options.limit)
-            ? Math.min(100, Math.max(1, Math.floor(options.limit)))
-            : 10,
-          scrapeOptions: {
-            formats: ["markdown"],
-          },
-        }),
+        body: JSON.stringify(body),
       },
       { label: "Firecrawl search" }
     );
@@ -122,6 +181,10 @@ export class FirecrawlAdapter implements SearchAdapter {
     }
 
     const normalizedUrl = url.trim();
+    const formats =
+      options?.format !== undefined
+        ? [firecrawlScrapeFormat(options.format)]
+        : sanitizeFormats(options?.providerOptions?.formats);
 
     const data = await fetchJson<{
       success?: boolean;
@@ -139,9 +202,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-        body: JSON.stringify({
+      body: JSON.stringify({
         url: normalizedUrl,
-        formats: [firecrawlScrapeFormat(options?.format)],
+        formats,
       }),
     }, {
       label: "Firecrawl extract",
@@ -175,6 +238,10 @@ export class FirecrawlAdapter implements SearchAdapter {
       typeof rawLimit === "number" && Number.isFinite(rawLimit)
         ? Math.max(1, Math.floor(rawLimit))
         : 10;
+    const formats =
+      options?.format !== undefined
+        ? [firecrawlScrapeFormat(options.format)]
+        : sanitizeFormats(options?.providerOptions?.formats);
 
     // Resume an existing batch job when a prior output record retained its
     // handle. Starting another job here would duplicate provider work.
@@ -197,7 +264,7 @@ export class FirecrawlAdapter implements SearchAdapter {
             ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
             : {}),
           scrapeOptions: {
-            formats: ["markdown"],
+            formats,
           },
         }),
       }, {
