@@ -9,6 +9,7 @@ import {
 } from "../engine/fanout.js";
 import { CacheStore, type CacheEntryMeta } from "../cache/cache.js";
 import { cacheKey, parseDuration } from "../cache/key.js";
+import { capabilityCacheIdentity } from "../contracts/endpoint-identity.js";
 import { resolveCapabilityProviders } from "../providers.js";
 import { HistoryStore } from "../history/store.js";
 import { redactForPersistence, redactSensitive } from "../history/redact.js";
@@ -300,11 +301,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const ttl = this.effectiveTtl(this.searchTtl, options);
     const reranker = options.rerankStrategy ?? "rrf";
 
+    // The key carries config identity (pool, strategy, endpoint material) so
+    // editing the configured pool or an endpoint invalidates stale entries;
+    // per-call provider scoping is excluded by shouldUseCache() instead.
     const key = useCache
       ? cacheKey("search", query, {
           limit: options.limit,
           limitSet: options.limitSet !== false,
           rerankStrategy: reranker,
+          ...capabilityCacheIdentity(this.config, "search"),
           searchProviderLimitIdentity: searchProviderLimitIdentity(
             this.config,
             options.limitSet === false
@@ -440,6 +445,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
     );
     const key = useCache
       ? cacheKey("extract", url, {
+          ...capabilityCacheIdentity(this.config, "extract"),
           format: effectiveReturnFormat,
           providerFormats: extractProviderFormatIdentity(this.config, options),
           providerHeaders: jinaCacheHeaders,
