@@ -594,9 +594,9 @@ async function nativeExa(target) {
     jsonPost(
       {
         urls: candidateUrls,
-        text: { max_characters: 12000 },
+        text: { maxCharacters: 12000 },
         livecrawl: "preferred",
-        livecrawl_timeout: 10000,
+        livecrawlTimeout: 10000,
       },
       headers
     ),
