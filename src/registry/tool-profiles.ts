@@ -22,6 +22,8 @@ import type {
  */
 
 const VERIFIED = "2026-06-26";
+/** Profiles re-verified against current provider docs on 2026-10-07. */
+const REVERIFIED = "2026-10-07";
 
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
@@ -31,7 +33,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /search",
     categories: ["search", "research"],
     description:
-      "Neural/keyword web search behind one endpoint. The `type` knob spans " +
+      "Unified web search behind one endpoint. The `type` knob spans " +
       "instant/fast/auto/deep-lite/deep/deep-reasoning, so the same tool covers " +
       "fast retrieval and research-grade reasoning. Content can be attached " +
       "directly via `contents`.",
@@ -42,8 +44,6 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "numResults",
       "includeDomains",
       "excludeDomains",
-      "startCrawlDate",
-      "endCrawlDate",
       "startPublishedDate",
       "endPublishedDate",
       "category",
@@ -52,6 +52,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "outputSchema",
       "systemPrompt",
       "userLocation",
+      "moderation",
+      "objective",
+      "userIdentifier",
       "compliance",
       "stream",
     ],
@@ -63,7 +66,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
           limit: "numResults",
           includeDomains: "includeDomains",
           excludeDomains: "excludeDomains",
-          freshness: "startPublishedDate/endPublishedDate or startCrawlDate/endCrawlDate",
+          freshness: "startPublishedDate/endPublishedDate (startCrawlDate/endCrawlDate are ignored upstream)",
           includeContent: "contents.text/highlights",
         },
         unsupportedCommonOptions: [],
@@ -73,6 +76,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
           "outputSchema",
           "systemPrompt",
           "category",
+          "moderation",
+          "objective",
           "compliance",
           "stream",
         ],
@@ -103,7 +108,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -125,9 +130,11 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "summary",
       "maxAgeHours",
       "livecrawlTimeout",
+      "snapshotAsOf",
       "subpages",
       "subpageTarget",
       "extras",
+      "userIdentifier",
       "compliance",
     ],
     commonViews: [
@@ -136,7 +143,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         semanticFit: "direct",
         mapsCommonOptions: { url: "urls", includeContent: "text/highlights/summary" },
         unsupportedCommonOptions: ["javascriptActions"],
-        nativeOptionsWithoutCommonEquivalent: ["subpages", "subpageTarget", "maxAgeHours"],
+        nativeOptionsWithoutCommonEquivalent: ["subpages", "subpageTarget", "maxAgeHours", "snapshotAsOf"],
         notes: "`maxAgeHours: 0` forces livecrawl; `-1` is cache-only.",
       },
       {
@@ -160,7 +167,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -298,6 +305,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "include_favicon",
       "format",
       "timeout",
+      "include_usage",
+      "type",
     ],
     commonViews: [
       {
@@ -312,7 +321,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -339,6 +348,11 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "extract_depth",
       "format",
       "timeout",
+      "chunks_per_source",
+      "include_images",
+      "include_favicon",
+      "include_usage",
+      "type",
     ],
     commonViews: [
       {
@@ -346,14 +360,14 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         semanticFit: "direct",
         mapsCommonOptions: { url: "url", limit: "limit", depth: "max_depth" },
         unsupportedCommonOptions: [],
-        nativeOptionsWithoutCommonEquivalent: ["instructions", "max_breadth", "allow_external"],
+        nativeOptionsWithoutCommonEquivalent: ["instructions", "max_breadth", "allow_external", "include_usage"],
       },
     ],
     features: { semanticTraversal: true, urlDiscovery: false, integratedContent: true },
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "crawl",
   },

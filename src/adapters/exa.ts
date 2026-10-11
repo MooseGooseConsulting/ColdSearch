@@ -22,16 +22,18 @@ interface ExaProviderOptions {
    * "financial report". Other strings are accepted as category hints.
    */
   category?: string;
-  /** Search type: auto (default), keyword, neural, fast, instant, deep-lite, deep */
-  searchType?: "auto" | "keyword" | "neural" | "fast" | "instant" | "deep-lite" | "deep";
+  /**
+   * Search type. Current upstream enum is
+   * auto (default) | fast | instant | deep-lite | deep | deep-reasoning;
+   * the retired keyword/neural modes were removed from the API.
+   */
+  searchType?: "auto" | "fast" | "instant" | "deep-lite" | "deep" | "deep-reasoning";
   /** Max age of indexed content in hours. 0 = always livecrawl, -1 = never livecrawl */
   maxAgeHours?: number;
   /** Domains to include in search results */
   includeDomains?: string[];
   /** Domains to exclude from search results */
   excludeDomains?: string[];
-  /** Use autoprompt (query enhancement). Default: true */
-  useAutoprompt?: boolean;
   /** Number of results. Default: 10 */
   numResults?: number;
 }
@@ -93,6 +95,15 @@ interface ExaFindSimilarResponse {
  * maxAgeHours = 24         # Cache freshness
  * ```
  */
+const EXA_SEARCH_TYPES: readonly string[] = [
+  "auto",
+  "fast",
+  "instant",
+  "deep-lite",
+  "deep",
+  "deep-reasoning",
+];
+
 export class ExaAdapter implements SearchAdapter {
   name = "exa";
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
@@ -111,11 +122,21 @@ export class ExaAdapter implements SearchAdapter {
     query: string,
     opts: ExaProviderOptions
   ): Record<string, unknown> {
+    // `useAutoprompt` was retired upstream; `type` selects the search mode.
+    // searchType arrives from TOML options untyped, so validate it here —
+    // an invalid value would otherwise reach Exa as a rejected request.
+    const searchType = opts.searchType ?? "auto";
+    if (!EXA_SEARCH_TYPES.includes(searchType)) {
+      throw new Error(
+        `Invalid Exa searchType "${String(opts.searchType)}". ` +
+          `Supported values: ${EXA_SEARCH_TYPES.join(", ")}.`
+      );
+    }
+
     const body: Record<string, unknown> = {
       query,
       numResults: opts.numResults ?? 10,
-      useAutoprompt: opts.useAutoprompt ?? true,
-      type: opts.searchType ?? "auto",
+      type: searchType,
     };
 
     // Category filter
@@ -265,7 +286,6 @@ export class ExaAdapter implements SearchAdapter {
     const searchOpts: ExaProviderOptions = {
       ...opts,
       numResults: limit,
-      useAutoprompt: false,
       includeDomains: [domain],
       excludeDomains: undefined,
     };
@@ -305,7 +325,9 @@ export class ExaAdapter implements SearchAdapter {
           urls: candidateUrls,
           text: { maxCharacters: opts.maxCharacters ?? 12000 },
           livecrawl: "preferred",
-          livecrawl_timeout: 10000,
+          // Exa's field is camelCase `livecrawlTimeout`; the snake_case
+          // spelling is silently ignored upstream.
+          livecrawlTimeout: 10000,
           ...(opts.maxAgeHours !== undefined
             ? { maxAgeHours: opts.maxAgeHours }
             : {}),

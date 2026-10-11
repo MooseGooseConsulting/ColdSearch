@@ -30,6 +30,10 @@ test("tavily crawl uses native /crawl endpoint", async () => {
     "POST https://api.tavily.com/crawl": async ({ init }) => {
       const body = JSON.parse(init.body);
       assert.equal(typeof body.url, "string");
+      // Upstream caps crawls via `limit`; the retired `max_results` name is
+      // silently ignored and must not come back.
+      assert.equal(body.limit, 2);
+      assert.equal("max_results" in body, false);
       return jsonResponse({
         results: [
           { title: "P1", url: "https://x.example/1", rawContent: "c1" },

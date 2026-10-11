@@ -24,7 +24,9 @@ import type {
   NormalizedResult,
 } from "../types.js";
 
-type SearchResult = {
+// Exported: these outcome types ARE the ExecutionBackend contract — the seam
+// a remote/hybrid backend must implement against (docs/architecture.md).
+export type SearchResult = {
   results: NormalizedResult[];
   providersUsed: string[];
   errors: Record<string, string>;
@@ -32,14 +34,14 @@ type SearchResult = {
   warnings?: string[];
 };
 
-type ExtractOutcome = {
+export type ExtractOutcome = {
   result: ExtractResult | null;
   provider: string;
   errors?: Record<string, string>;
   warnings?: string[];
 };
 
-type CrawlOutcome = {
+export type CrawlOutcome = {
   results: CrawlResult[];
   provider: string;
   errors?: Record<string, string>;
