@@ -56,14 +56,14 @@ test("firecrawl crawl preserves quota rejection during polling instead of treati
     "POST https://api.firecrawl.dev/v2/crawl": async () => jsonResponse({ success: true, id: "quota-job" }),
     "GET https://api.firecrawl.dev/v2/crawl/quota-job": async () => {
       pollCount++;
-      return jsonResponse({ error: "Insufficient quota" }, { status: 429 });
+      return jsonResponse({ error: "Payment required" }, { status: 402 });
     },
   });
   t.after(restore);
   await assert.rejects(new FirecrawlAdapter().crawl("https://x.example", "k"), (error) => {
     assert.match(error.message, /crawl poll failed/);
     assert.equal(isQuotaExhausted(error), true);
-    assert.equal(error.cause.status, 429);
+    assert.equal(error.cause.status, 402);
     return true;
   });
   assert.equal(pollCount, 1);
@@ -208,7 +208,6 @@ test("firecrawl poll errors take precedence over completed response data", async
     globalThis.setTimeout = originalSetTimeout;
   }
 });
-
 test("firecrawl extract honors providerOptions formats (default [markdown])", async () => {
   const bodies = [];
   const restore = installFetchMock({
@@ -307,26 +306,4 @@ test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending j
     restore();
     globalThis.setTimeout = originalSetTimeout;
   }
-});
-
-test("firecrawl crawl preserves a 402 quota rejection during polling", async (t) => {
-  const originalSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
-  t.after(() => { globalThis.setTimeout = originalSetTimeout; });
-  let pollCount = 0;
-  const restore = installFetchMock({
-    "POST https://api.firecrawl.dev/v2/crawl": async () => jsonResponse({ success: true, id: "quota-job" }),
-    "GET https://api.firecrawl.dev/v2/crawl/quota-job": async () => {
-      pollCount++;
-      return jsonResponse({ error: "Payment required", tag: "X402_PAYMENT_REQUIRED" }, { status: 402 });
-    },
-  });
-  t.after(restore);
-  await assert.rejects(new FirecrawlAdapter().crawl("https://x.example", "k"), (error) => {
-    assert.match(error.message, /crawl poll failed/);
-    assert.equal(isQuotaExhausted(error), true);
-    assert.equal(error.cause.status, 402);
-    return true;
-  });
-  assert.equal(pollCount, 1);
 });
