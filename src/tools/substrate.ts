@@ -430,7 +430,6 @@ async function dispatchToolCall(
       if (apiKey) {
         headers["Authorization"] = `Bearer ${apiKey}`;
       }
-      
       const dispatched = jinaDispatch(tool, params);
       if (dispatched.kind === "reader" || dispatched.kind === "search") {
         delete headers["Content-Type"];
@@ -461,6 +460,7 @@ async function dispatchToolCall(
         method = "GET";
         url = dispatched.url;
       } else {
+        method = "POST";
         url = dispatched.url;
         body = JSON.stringify(params);
       }

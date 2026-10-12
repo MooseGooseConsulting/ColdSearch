@@ -80,7 +80,12 @@ export class TavilyAdapter implements SearchAdapter {
 
     const body: Record<string, unknown> = {
       query,
-      max_results: this.clampIntegerOption(providerOptions.max_results, 1, 100, 10),
+      max_results: this.clampIntegerOption(
+        options?.limit ?? providerOptions.max_results,
+        0,
+        20,
+        10
+      ),
       search_depth:
         providerOptions.search_depth === "advanced" ? "advanced" : "basic",
       include_answer:
@@ -133,8 +138,9 @@ export class TavilyAdapter implements SearchAdapter {
       urls: [url],
       include_images: false,
     };
-    if (providerOptions.format === "markdown" || providerOptions.format === "text") {
-      body.format = providerOptions.format;
+    const format = options?.format ?? providerOptions.format;
+    if (format === "markdown" || format === "text") {
+      body.format = format;
     }
     if (providerOptions.extract_depth === "basic" || providerOptions.extract_depth === "advanced") {
       body.extract_depth = providerOptions.extract_depth;

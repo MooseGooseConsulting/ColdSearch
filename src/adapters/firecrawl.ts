@@ -56,7 +56,8 @@ function sanitizeFormats(value: unknown): string[] {
       `Invalid Firecrawl formats: expected an array of ${FIRECRAWL_FORMATS.join(", ")}.`
     );
   }
-  for (const entry of value) {
+  const mapped = value.map((entry) => (entry === "text" ? "markdown" : entry));
+  for (const entry of mapped) {
     if (typeof entry !== "string" || !FIRECRAWL_FORMATS.includes(entry)) {
       throw new Error(
         `Invalid Firecrawl format "${String(entry)}". ` +
@@ -64,7 +65,13 @@ function sanitizeFormats(value: unknown): string[] {
       );
     }
   }
-  return value.length > 0 ? [...value] : ["markdown"];
+  return mapped.length > 0 ? [...mapped] : ["markdown"];
+}
+
+/** Request Markdown alongside configured formats for the normalized content field. */
+function normalizedTextFormats(value: unknown): string[] {
+  const formats = sanitizeFormats(value);
+  return formats.includes("markdown") ? formats : [...formats, "markdown"];
 }
 
 /** Validate a configured `sources` array against Firecrawl's supported values. */
@@ -134,6 +141,30 @@ export class FirecrawlAdapter implements SearchAdapter {
             sourceURL?: string;
           };
         }>;
+        news?: Array<{
+          title?: string;
+          url?: string;
+          description?: string;
+          markdown?: string;
+          score?: number;
+          metadata?: {
+            title?: string;
+            description?: string;
+            sourceURL?: string;
+          };
+        }>;
+        images?: Array<{
+          title?: string;
+          url?: string;
+          description?: string;
+          markdown?: string;
+          score?: number;
+          metadata?: {
+            title?: string;
+            description?: string;
+            sourceURL?: string;
+          };
+        }>;
       };
       error?: string;
     }>(
@@ -153,7 +184,8 @@ export class FirecrawlAdapter implements SearchAdapter {
       throw new Error(`Firecrawl error: ${data.error || "Unknown error"}`);
     }
 
-    const results = data.data?.web || [];
+    const requestedSources = sources ?? ["web"];
+    const results = requestedSources.flatMap((source) => data.data?.[source] ?? []);
     return results.map((result, index) => {
       const url = result.url || result.metadata?.sourceURL || "";
       const title = result.title || result.metadata?.title || "";
@@ -184,12 +216,13 @@ export class FirecrawlAdapter implements SearchAdapter {
     const formats =
       options?.format !== undefined
         ? [firecrawlScrapeFormat(options.format)]
-        : sanitizeFormats(options?.providerOptions?.formats);
+        : normalizedTextFormats(options?.providerOptions?.formats);
 
     const data = await fetchJson<{
       success?: boolean;
       data?: {
         markdown?: string;
+        html?: string;
         metadata?: {
           title?: string;
           sourceURL?: string;
@@ -215,7 +248,7 @@ export class FirecrawlAdapter implements SearchAdapter {
     }
 
     return {
-      content: data.data?.markdown || "",
+      content: data.data?.markdown || data.data?.html || "",
       url: data.data?.metadata?.sourceURL || url,
       title: data.data?.metadata?.title || "",
       source: this.name,
@@ -241,7 +274,7 @@ export class FirecrawlAdapter implements SearchAdapter {
     const formats =
       options?.format !== undefined
         ? [firecrawlScrapeFormat(options.format)]
-        : sanitizeFormats(options?.providerOptions?.formats);
+        : normalizedTextFormats(options?.providerOptions?.formats);
 
     // Resume an existing batch job when a prior output record retained its
     // handle. Starting another job here would duplicate provider work.
@@ -289,6 +322,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         status?: "scraping" | "completed" | "failed" | "cancelled";
         data?: Array<{
           markdown?: string;
+          html?: string;
           metadata?: {
             title?: string;
             sourceURL?: string;
@@ -354,7 +388,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         return statusData.data.map((item) => ({
           url: item.metadata?.sourceURL || "",
           title: item.metadata?.title || "",
-          content: item.markdown || "",
+          content: item.markdown || item.html || "",
           status: "completed" as const,
           jobId,
         }));

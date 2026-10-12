@@ -22,10 +22,7 @@ export function serperToolUrl(tool: string): string {
   return `https://google.serper.dev/${tool}`;
 }
 
-/**
- * Brave path table. Image search uses the documented plural `/images/search`.
- * A live call confirms or corrects that path.
- */
+/** Brave path table. Image and video search use the plural paths confirmed by live calls. */
 export function braveToolPath(tool: string): string {
   switch (tool) {
     case "webSearch":

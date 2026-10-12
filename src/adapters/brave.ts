@@ -48,6 +48,7 @@ export class BraveAdapter implements SearchAdapter {
       ? Math.min(20, Math.max(1, Math.floor(options.limit)))
       : clampIntegerOption(options?.providerOptions?.count, 1, 20, 10);
     url.searchParams.set("q", query);
+    // Brave caps `count` at 20 results per request.
     url.searchParams.set("count", String(count));
     url.searchParams.set("offset", "0");
 

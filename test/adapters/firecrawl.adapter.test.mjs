@@ -257,7 +257,7 @@ test("firecrawl search honors providerOptions limit (clamped 1..100) and sources
   assert.deepEqual(bodies[1].sources, ["web", "news"]);
 });
 
-test("firecrawl crawl timeout error includes the jobId", async () => {
+test("firecrawl crawl returns pending and the jobId after the short poll cap", async () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
   globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
@@ -274,13 +274,12 @@ test("firecrawl crawl timeout error includes the jobId", async () => {
   });
   try {
     const adapter = new FirecrawlAdapter();
-    await assert.rejects(
-      adapter.crawl("https://x.example", "k", {
-        limit: 1,
-        providerOptions: { formats: ["html"] },
-      }),
-      /timed out for job job-42/
-    );
+    const results = await adapter.crawl("https://x.example", "k", {
+      limit: 1,
+      providerOptions: { formats: ["html"] },
+    });
+    assert.equal(results[0].status, "pending");
+    assert.equal(results[0].jobId, "job-42");
   } finally {
     restore();
     globalThis.setTimeout = originalSetTimeout;
