@@ -37,7 +37,7 @@ export class BraveAdapter implements SearchAdapter {
   ): Promise<NormalizedResult[]> {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     const count = typeof options?.limit === "number" && Number.isFinite(options.limit)
-      ? Math.max(1, Math.floor(options.limit))
+      ? Math.min(20, Math.max(1, Math.floor(options.limit)))
       : 10;
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(count));

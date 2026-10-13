@@ -64,3 +64,28 @@ test("firecrawl crawl polls until completion", async () => {
   }
 });
 
+test("firecrawl crawl keeps the 30-poll budget and visibly fails while pending", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
+
+  let pollCount = 0;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "job-pending" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-pending": async () => {
+      pollCount++;
+      return jsonResponse({ success: true, status: "scraping" });
+    },
+  });
+  try {
+    await assert.rejects(
+      () => new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 1 }),
+      /job job-pending is still pending after 30 polls/
+    );
+    assert.equal(pollCount, 30);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+

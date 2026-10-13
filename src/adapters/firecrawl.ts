@@ -192,7 +192,7 @@ export class FirecrawlAdapter implements SearchAdapter {
 
     // Poll for completion
     const jobId = startData.id;
-    const maxAttempts = 5;
+    const maxAttempts = 30;
     const pollInterval = 2000; // 2 seconds
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
