@@ -1,5 +1,10 @@
 import type { ErrorCategory } from "./types.js";
-import { captureEnabled, recordCapture } from "./testing/capture.js";
+import {
+  captureEnabled,
+  readCaptureResponsePrefix,
+  recordCapture,
+  trackCaptureTask,
+} from "./testing/capture.js";
 
 export interface RequestPolicy {
   label?: string;
@@ -10,7 +15,7 @@ export interface RequestPolicy {
   /**
    * Resolved secret values (API keys/tokens) for this call. Only consulted by
    * the opt-in capture harness (COLDSEARCH_CAPTURE_DIR) to redact secrets
-   * from URLs, bodies, and header values; never sent anywhere.
+   * from captured request/response values; never sent anywhere.
    */
   secrets?: string[];
 }
@@ -190,7 +195,7 @@ export async function fetchWithPolicy(
       responseHeaders?: Headers;
       responseBodyText?: string;
       error?: string;
-    }): void => {
+    }, durationMs = Date.now() - attemptStart): void => {
       if (!captureOn || attemptCaptured) return;
       attemptCaptured = true;
       void recordCapture({
@@ -199,7 +204,7 @@ export async function fetchWithPolicy(
         url: requestUrl,
         requestHeaders: init.headers,
         requestBody: init.body,
-        durationMs: Date.now() - attemptStart,
+        durationMs,
         secrets: policy.secrets,
         ...outcome,
       });
@@ -226,13 +231,23 @@ export async function fetchWithPolicy(
 
       if (response.ok) {
         if (captureOn) {
-          // Read a clone so the returned Response body is untouched.
-          const bodyText = await response.clone().text().catch(() => "");
-          recordAttempt({
-            status: response.status,
-            responseHeaders: response.headers,
-            responseBodyText: bodyText,
-          });
+          // Read a bounded clone asynchronously. The request timeout is only
+          // for receiving the response headers; capture must not delay or
+          // abort the caller while it consumes the original body.
+          const captureDurationMs = Date.now() - attemptStart;
+          const captureResponse = response.clone();
+          trackCaptureTask(
+            readCaptureResponsePrefix(captureResponse).then((bodyText) => {
+              recordAttempt(
+                {
+                  status: response.status,
+                  responseHeaders: response.headers,
+                  responseBodyText: bodyText,
+                },
+                captureDurationMs
+              );
+            })
+          );
         }
         return response;
       }

@@ -62,6 +62,7 @@ export class SerperAdapter implements SearchAdapter {
       }),
     }, {
       label: "Serper search",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     // Normalize Serper results to shared schema

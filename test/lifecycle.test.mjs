@@ -154,7 +154,7 @@ test("brightdata substrate: trigger → progress → snapshot threads snapshot_i
         options: { maxStructuredInputsPerCall: 2 },
       },
     },
-    logging: {},
+    logging: { usage: { path: path.join(tmpDir, "usage.jsonl") } },
     history: { path: path.join(tmpDir, "history.jsonl") },
     cache: { enabled: false },
   };

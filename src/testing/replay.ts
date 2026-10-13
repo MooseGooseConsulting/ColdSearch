@@ -63,8 +63,12 @@ export async function loadFixtures(targetPath: string): Promise<ProviderEnvelope
 
 /** Rebuild a Response exactly as captured (status, headers, body text). */
 export function fixtureResponse(fixture: ProviderEnvelopeFixture): Response {
-  return new Response(fixture.responseBodyText ?? "", {
-    status: fixture.status ?? 200,
+  const status = fixture.status ?? 200;
+  const body = [204, 205, 304].includes(status)
+    ? null
+    : fixture.responseBodyText ?? "";
+  return new Response(body, {
+    status,
     headers: fixture.responseHeaders ?? { "content-type": "application/json" },
   });
 }

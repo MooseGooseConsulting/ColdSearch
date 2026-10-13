@@ -16,7 +16,7 @@ export class SearXNGAdapter implements SearchAdapter {
 
   async search(
     query: string,
-    _apiKey: string,
+    apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const configuredBaseUrl = options?.providerOptions?.baseUrl;
@@ -65,6 +65,7 @@ export class SearXNGAdapter implements SearchAdapter {
       }>;
     }>(searchUrl.toString(), {}, {
       label: "SearXNG search",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     // Normalize SearXNG results to the shared schema

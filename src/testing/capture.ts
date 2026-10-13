@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -13,8 +13,8 @@ import path from "node:path";
  * - the `authorization`, `proxy-authorization`, `x-api-key`, and
  *   `x-subscription-token` request headers are always replaced by "REDACTED";
  * - every configured secret value (RequestPolicy.secrets and/or
- *   setCaptureSecrets) is replaced by "REDACTED" wherever it appears: header
- *   values, the URL query (e.g. `?api_key=...`), and the request body;
+ *   setCaptureSecrets) is replaced by "REDACTED" wherever it appears in
+ *   request/response headers, URLs, bodies, or error messages;
  * - well-known credential query/body keys (api_key, access_token, jwt, …) are
  *   redacted even when the secret value was not threaded through, as a
  *   defense-in-depth net.
@@ -177,6 +177,16 @@ function selectResponseHeaders(headers: Headers | undefined): Record<string, str
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function redactResponseHeaders(
+  headers: Record<string, string> | undefined,
+  secrets: string[]
+): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name, redactText(value, secrets)])
+  );
+}
+
 function truncateBody(text: string): string {
   if (Buffer.byteLength(text, "utf8") <= RESPONSE_BODY_LIMIT_BYTES) return text;
   // Truncate on a character boundary well under the byte cap to avoid
@@ -225,12 +235,15 @@ export function buildCaptureRecord(input: CaptureInput, now = new Date()): Captu
     record.requestBody = redactText(requestBody, secrets);
   }
   if (input.status !== undefined) record.status = input.status;
-  const responseHeaders = selectResponseHeaders(input.responseHeaders);
+  const responseHeaders = redactResponseHeaders(
+    selectResponseHeaders(input.responseHeaders),
+    secrets
+  );
   if (responseHeaders) record.responseHeaders = responseHeaders;
   if (input.responseBodyText !== undefined) {
     record.responseBodyText = redactText(truncateBody(input.responseBodyText), secrets);
   }
-  if (input.error) record.error = input.error;
+  if (input.error) record.error = redactText(input.error, secrets);
   return record;
 }
 
@@ -239,6 +252,54 @@ export function buildCaptureRecord(input: CaptureInput, now = new Date()): Captu
  * recordCapture without interleaving partial lines.
  */
 let writeChain: Promise<void> = Promise.resolve();
+const pendingCaptureTasks = new Set<Promise<void>>();
+
+/** Keep asynchronous response-prefix reads visible to flushCaptures(). */
+export function trackCaptureTask(task: Promise<void>): void {
+  const tracked = task.catch(() => undefined);
+  pendingCaptureTasks.add(tracked);
+  void tracked.then(() => pendingCaptureTasks.delete(tracked));
+}
+
+/** Read and decode at most the capture limit without consuming the caller's response. */
+export async function readCaptureResponsePrefix(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  try {
+    while (totalBytes < RESPONSE_BODY_LIMIT_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = RESPONSE_BODY_LIMIT_BYTES - totalBytes;
+      const length = Math.min(value.byteLength, remaining);
+      if (length > 0) {
+        chunks.push(value.subarray(0, length));
+        totalBytes += length;
+      }
+      if (length < value.byteLength || totalBytes === RESPONSE_BODY_LIMIT_BYTES) {
+        truncated = true;
+        break;
+      }
+    }
+  } catch {
+    // A capture read is best effort and must not affect the provider response.
+  } finally {
+    if (truncated) void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(bytes);
+  return truncated ? `${text}…[capture truncated at 64 KiB]` : text;
+}
 
 /**
  * Append one exchange to today's capture file. No-op when
@@ -254,12 +315,15 @@ export function recordCapture(input: CaptureInput): Promise<void> {
     try {
       const now = new Date();
       const record = buildCaptureRecord(input, now);
-      await mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await chmod(dir, 0o700);
+      const file = path.join(dir, captureFileName(now));
       await appendFile(
-        path.join(dir, captureFileName(now)),
+        file,
         `${JSON.stringify(record)}\n`,
-        "utf8"
+        { encoding: "utf8", mode: 0o600 }
       );
+      await chmod(file, 0o600);
     } catch {
       // Capture failures are swallowed: the operator's request must not fail
       // because an evidence file could not be written.
@@ -270,6 +334,9 @@ export function recordCapture(input: CaptureInput): Promise<void> {
 }
 
 /** Resolve once every capture write queued so far has completed. */
-export function flushCaptures(): Promise<void> {
-  return writeChain;
+export async function flushCaptures(): Promise<void> {
+  while (pendingCaptureTasks.size > 0) {
+    await Promise.all([...pendingCaptureTasks]);
+  }
+  await writeChain;
 }

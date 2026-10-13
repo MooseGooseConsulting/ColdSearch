@@ -101,7 +101,7 @@ test("replay: Firecrawl /v2/scrape 200 markdown envelope normalizes to extract c
   assertNormalizedResult("extract", "firecrawl", result);
 });
 
-test("replay: Firecrawl /v2/scrape 200 html envelope — data.html is not surfaced as markdown content", async () => {
+test("replay: Firecrawl /v2/scrape 200 html envelope — data.html is surfaced as extract content", async () => {
   const fixture = await loadFixture("firecrawl-scrape-html-200.json");
   const envelope = JSON.parse(fixture.responseBodyText);
   assert.equal(typeof envelope.data.html, "string");
@@ -114,10 +114,7 @@ test("replay: Firecrawl /v2/scrape 200 html envelope — data.html is not surfac
     installFetchMock
   );
 
-  // The extract contract reads data.markdown; an html-only envelope yields
-  // empty content while metadata still resolves. This pins the current
-  // markdown-vs-html normalization behavior against the real wire shape.
-  assert.equal(result.content, "");
+  assert.equal(result.content, envelope.data.html);
   assert.equal(result.title, "Example Domain");
   assertNormalizedResult("extract", "firecrawl", result);
 });

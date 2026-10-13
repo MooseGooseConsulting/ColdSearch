@@ -108,7 +108,7 @@ export class BrightDataAdapter implements SearchAdapter {
           country,
         }),
       },
-      { label: "Bright Data SERP search" }
+      { label: "Bright Data SERP search", secrets: apiKey ? [apiKey] : [] }
     );
 
     return (data.organic || []).map((result, index) => {
@@ -194,6 +194,7 @@ export class BrightDataAdapter implements SearchAdapter {
       {
         label: "Bright Data Web Unlocker extract",
         ...(timeoutMs ? { timeoutMs } : {}),
+        secrets: apiKey ? [apiKey] : [],
       }
     );
 

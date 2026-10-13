@@ -68,6 +68,7 @@ export class BraveAdapter implements SearchAdapter {
       },
     }, {
       label: "Brave search",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     // Normalize Brave results to shared schema

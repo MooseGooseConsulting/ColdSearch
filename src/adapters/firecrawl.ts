@@ -205,7 +205,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Firecrawl search" }
+      { label: "Firecrawl search", secrets: apiKey ? [apiKey] : [] }
     );
 
     if (!data.success || data.error) {
@@ -292,6 +292,7 @@ export class FirecrawlAdapter implements SearchAdapter {
       }),
     }, {
       label: "Firecrawl extract",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     if (!data.success || data.error) {
@@ -353,6 +354,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         }),
       }, {
         label: "Firecrawl crawl start",
+        secrets: apiKey ? [apiKey] : [],
       });
 
       if (!startData.success || !startData.id) {
@@ -391,6 +393,7 @@ export class FirecrawlAdapter implements SearchAdapter {
           label: "Firecrawl crawl poll",
           retries: 0,
           timeoutMs: 5000,
+          secrets: apiKey ? [apiKey] : [],
         });
       } catch (error) {
         if (error instanceof HTTPRequestError) {

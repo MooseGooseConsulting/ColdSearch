@@ -75,10 +75,11 @@ A capture line must never contain a secret value:
 - `authorization`, `proxy-authorization`, `x-api-key`, and
   `x-subscription-token` header values are always replaced by `REDACTED`;
 - secret values threaded via `RequestPolicy.secrets` (or registered by tests
-  with `setCaptureSecrets`) are redacted wherever they appear — other header
-  values, the URL query (`?api_key=…`), and the request body;
+  with `setCaptureSecrets`) are redacted wherever they appear in request and
+  response headers, URLs, bodies, or error messages;
 - well-known credential keys (`api_key`, `access_token`, `jwt`, …) are
-  redacted even when the concrete secret was never threaded through.
+  redacted in URLs and bodies even when the concrete secret was never threaded
+  through.
 
 Still treat capture files as sensitive working artifacts: review them before
 sharing, and never commit raw captures.
