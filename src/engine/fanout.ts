@@ -333,12 +333,25 @@ export class FanoutEngine {
         const adapter = createAdapter(provider);
 
         if (!adapter.extract) {
-          errors[provider] = "Adapter does not support extract";
+          const error = "Adapter does not support extract";
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = error;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "extract",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error,
+          });
           attempts.push({
             provider,
             success: false,
-            error: errors[provider],
+            error,
+            duration_ms: durationMs,
           });
+          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
           continue;
         }
 
@@ -649,12 +662,25 @@ export class FanoutEngine {
         const adapter = createAdapter(provider);
 
         if (!adapter.crawl) {
-          errors[provider] = "Adapter does not support crawl";
+          const error = "Adapter does not support crawl";
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = error;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error,
+          });
           attempts.push({
             provider,
             success: false,
-            error: errors[provider],
+            error,
+            duration_ms: durationMs,
           });
+          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
           continue;
         }
 

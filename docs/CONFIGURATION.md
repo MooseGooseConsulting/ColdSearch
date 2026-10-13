@@ -144,6 +144,9 @@ Usage log entries and execution-history attempts mark detected exhaustion with
 recorded as `partial`. Detection reads the status code, not the response body.
 `--dry-run` lists the initial selection and conditional
 `quota_fallback_providers`, without calling providers or resolving secrets.
+Its `estimated_api_calls` reports the initial selection; `max_api_calls` also
+counts every conditional fallback, for the worst case where each attempt is
+needed.
 
 This is recovery after a rejection, not a preflight balance probe or persistent
 quota gate. A new invocation can select that account again and recover again.
