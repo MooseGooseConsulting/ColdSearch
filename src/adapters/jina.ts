@@ -23,7 +23,7 @@ export class JinaAdapter implements SearchAdapter {
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     // Validate URL
     if (!url || !url.trim()) {
@@ -38,8 +38,9 @@ export class JinaAdapter implements SearchAdapter {
 
     // Keep the caller's scheme. r.jina.ai fetches the URL appended after the host.
     const jinaUrl = `https://r.jina.ai/${normalizedUrl}`;
-    // Reader stays on text/plain. markdown and text are both returned as that body.
-    const headers: Record<string, string> = { Accept: "text/plain" };
+    const headers: Record<string, string> = {
+      "X-Return-Format": options?.format ?? "markdown",
+    };
     if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey}`;
 
     const content = await fetchText(jinaUrl, {

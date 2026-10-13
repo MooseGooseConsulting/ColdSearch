@@ -25,7 +25,7 @@ test("search adapters send the caller limit on the provider's count field", asyn
       return jsonResponse({ success: true, data: { web: [] } });
     },
     "POST https://api.exa.ai/search": async ({ init }) => {
-      seen.exa = bodyOf(init);
+      (seen.exa ??= []).push(bodyOf(init));
       return jsonResponse({ results: [] });
     },
     "GET https://api.search.brave.com/res/v1/web/search?q=q&count=3&offset=0": async ({ url }) => {
@@ -41,11 +41,12 @@ test("search adapters send the caller limit on the provider's count field", asyn
     await new TavilyAdapter().search("q", "k", { limit: 3 });
     await new FirecrawlAdapter().search("q", "k", { limit: 3 });
     await new ExaAdapter().search("q", "k", { limit: 3 });
+    await new ExaAdapter().search("q", "k", { limit: 500 });
     await new BraveAdapter().search("q", "k", { limit: 3 });
     await new SerperAdapter().search("q", "k", { limit: 3 });
     assert.equal(seen.tavily.max_results, 3);
     assert.equal(seen.firecrawl.limit, 3);
-    assert.equal(seen.exa.numResults, 3);
+    assert.deepEqual(seen.exa.map((request) => request.numResults), [3, 100]);
     assert.equal(seen.brave, "3");
     assert.equal(seen.serper.num, 3);
   } finally {
@@ -66,19 +67,22 @@ test("extract adapters send format on the provider field and Jina keeps the URL 
     },
     "GET https://r.jina.ai/https://example.com": async ({ url, init }) => {
       seen.jinaUrl = url;
-      seen.jinaAccept = init.headers.Accept;
+      seen.jinaFormat = init.headers["X-Return-Format"];
       return rawResponse("Title: t\nbody", { headers: { "Content-Type": "text/plain" } });
     },
   });
   try {
     await new TavilyAdapter().extract("https://example.com", "k", { format: "text" });
-    await new FirecrawlAdapter().extract("https://example.com", "k", { format: "text" });
+    await new FirecrawlAdapter().extract("https://example.com", "k", { format: "markdown" });
     await new JinaAdapter().extract("https://example.com", "", { format: "text" });
+    await assert.rejects(
+      () => new FirecrawlAdapter().extract("https://example.com", "k", { format: "text" }),
+      /does not support plain-text/
+    );
     assert.equal(seen.tavily.format, "text");
-    // Live Firecrawl v2 scrape rejects formats:["text"]; markdown is the content format.
     assert.deepEqual(seen.firecrawl.formats, ["markdown"]);
     assert.equal(seen.jinaUrl, "https://r.jina.ai/https://example.com");
-    assert.equal(seen.jinaAccept, "text/plain");
+    assert.equal(seen.jinaFormat, "text");
   } finally {
     restore();
   }
@@ -121,10 +125,13 @@ test("crawl depth is sent for Tavily and Firecrawl and Exa results stay derived"
   try {
     await new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 2 });
     assert.equal(seen.tavily.max_depth, 2);
-    await new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 0 });
+    await assert.rejects(
+      () => new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 0 }),
+      /does not support depth 0/
+    );
     await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 2, depth: 1 });
     const exa = await new ExaAdapter().crawl("https://example.com", "k", { limit: 2, depth: 4 });
-    assert.equal(seen.tavily.max_depth, 1);
+    assert.equal(seen.tavily.max_depth, 2);
     assert.equal(seen.tavily.limit, 2);
     assert.equal(seen.firecrawl.maxDiscoveryDepth, 1);
     assert.equal(exa[0].derived, true);

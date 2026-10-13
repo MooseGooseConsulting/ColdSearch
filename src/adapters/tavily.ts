@@ -141,6 +141,13 @@ export class TavilyAdapter implements SearchAdapter {
     }
 
     const limit = this.sanitizeLimit(options?.limit);
+    let depth: number | undefined;
+    if (options?.depth !== undefined) {
+      depth = Math.floor(options.depth);
+      if (!Number.isFinite(depth) || depth < 1) {
+        throw new Error("Tavily crawl does not support depth 0; the minimum depth is 1");
+      }
+    }
     const normalizedUrl = url.trim();
 
     const response = await fetchJson<TavilyCrawlResponse>(
@@ -157,8 +164,7 @@ export class TavilyAdapter implements SearchAdapter {
           // `max_results` name is silently ignored upstream.
           limit,
           extract_depth: "basic",
-          // Live crawl rejects max_depth below 1. A caller depth of 0 still sends 1.
-          ...(options?.depth !== undefined ? { max_depth: Math.max(1, Math.floor(options.depth)) } : {}),
+          ...(depth !== undefined ? { max_depth: depth } : {}),
         }),
       },
       { label: "Tavily crawl", timeoutMs: 120_000 }

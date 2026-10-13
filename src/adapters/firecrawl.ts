@@ -12,7 +12,13 @@ import type {
  * Live v2 scrape accepts markdown, html, rawHtml, and rawBase64.
  * It rejects the common "text" value. Markdown is the page-content format.
  */
-function firecrawlScrapeFormat(_format?: AdapterCallOptions["format"]): "markdown" {
+function firecrawlScrapeFormat(format?: AdapterCallOptions["format"]): "markdown" {
+  if (format === "text") {
+    throw new Error(
+      'Firecrawl does not support plain-text extract output; use format "markdown" or select another provider'
+    );
+  }
+
   return "markdown";
 }
 
@@ -262,12 +268,8 @@ export class FirecrawlAdapter implements SearchAdapter {
       // If still scraping, continue polling
     }
 
-    return [{
-      url: normalizedUrl,
-      title: "",
-      content: "",
-      status: "pending",
-      jobId,
-    }];
+    throw new Error(
+      `Firecrawl crawl job ${jobId} is still pending after ${maxAttempts} polls`
+    );
   }
 }

@@ -103,6 +103,12 @@ const EXA_SEARCH_TYPES: readonly string[] = [
   "deep",
   "deep-reasoning",
 ];
+const EXA_MAX_RESULTS = 100;
+
+function normalizeResultCount(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 10;
+  return Math.min(EXA_MAX_RESULTS, Math.max(1, Math.floor(value)));
+}
 
 export class ExaAdapter implements SearchAdapter {
   name = "exa";
@@ -136,7 +142,7 @@ export class ExaAdapter implements SearchAdapter {
 
     const body: Record<string, unknown> = {
       query,
-      numResults: limit ?? opts.numResults ?? 10,
+      numResults: normalizeResultCount(limit ?? opts.numResults),
       type: searchType,
     };
 
@@ -373,7 +379,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          numResults: options?.numResults ?? opts.numResults ?? 10,
+          numResults: normalizeResultCount(options?.numResults ?? opts.numResults),
           contents: opts.highlights
             ? { highlights: true }
             : { text: { maxCharacters: opts.maxCharacters ?? 15000 } },
