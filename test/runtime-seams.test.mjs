@@ -189,7 +189,7 @@ test("HTTP status table: quota, rate_limit, validation, provider rows", () => {
   }
 });
 
-test("SearXNG 403 keeps credentials category but adds the JSON-format operator hint", () => {
+test("SearXNG 403 is a config error and adds the JSON-format operator hint", () => {
   const { category, message } = classifyError(
     new HTTPRequestError("SearXNG search failed with HTTP 403", {
       url: "https://search.example/search",
@@ -197,7 +197,7 @@ test("SearXNG 403 keeps credentials category but adds the JSON-format operator h
       label: "SearXNG search",
     })
   );
-  assert.equal(category, "credentials");
+  assert.equal(category, "config");
   assert.match(message, /SearXNG search failed with HTTP 403/); // original kept
   assert.match(message, /formats: \[json\]/);
   assert.match(message, /settings\.yml/);
@@ -214,7 +214,7 @@ test("SearXNG 403 keeps credentials category but adds the JSON-format operator h
   assert.doesNotMatch(other.message, /settings\.yml/);
 });
 
-test("structured provider error bodies are appended to the classified message", () => {
+test("structured provider error bodies are not surfaced in the classified message", () => {
   // Live-probe shapes (2026-10-12), one per provider.
   const cases = [
     {
@@ -223,7 +223,7 @@ test("structured provider error bodies are appended to the classified message", 
       status: 432,
       body: JSON.stringify({ detail: { error: "Plan limit exceeded" } }),
       category: "quota",
-      fragment: "[provider: tavily] Plan limit exceeded",
+      fragment: "Plan limit exceeded",
     },
     {
       name: "exa error+tag",
@@ -231,7 +231,7 @@ test("structured provider error bodies are appended to the classified message", 
       status: 402,
       body: JSON.stringify({ error: "Payment required", tag: "X402_PAYMENT_REQUIRED" }),
       category: "quota",
-      fragment: "[provider: X402_PAYMENT_REQUIRED] Payment required",
+      fragment: "Payment required",
     },
     {
       name: "firecrawl error+code",
@@ -239,7 +239,7 @@ test("structured provider error bodies are appended to the classified message", 
       status: 401,
       body: JSON.stringify({ error: "Invalid API key", code: "AUTH_INVALID" }),
       category: "credentials",
-      fragment: "[provider: AUTH_INVALID] Invalid API key",
+      fragment: "Invalid API key",
     },
     {
       name: "serper message+statusCode",
@@ -247,7 +247,7 @@ test("structured provider error bodies are appended to the classified message", 
       status: 403,
       body: JSON.stringify({ message: "Forbidden", statusCode: 403 }),
       category: "credentials",
-      fragment: "[provider: 403] Forbidden",
+      fragment: "Forbidden",
     },
   ];
 
@@ -263,7 +263,8 @@ test("structured provider error bodies are appended to the classified message", 
     );
     assert.equal(category, c.category, c.name);
     assert.match(message, new RegExp(`^${original.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), c.name);
-    assert.ok(message.includes(c.fragment), `${c.name}: ${message}`);
+    assert.equal(message, original, `${c.name}: raw provider response was surfaced`);
+    assert.ok(!message.includes(c.fragment), `${c.name}: ${message}`);
   }
 });
 
