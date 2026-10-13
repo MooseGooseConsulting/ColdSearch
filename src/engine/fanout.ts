@@ -39,9 +39,13 @@ export interface FanoutOptions {
   /**
    * Per-invocation `--freshness <duration>` override of the config `[cache]`
    * TTL. Threaded from the CLI to the execution backend; FanoutEngine itself
-   * ignores this flag.
+   * ignores this flag. This is not a provider published-date filter.
    */
   freshness?: string;
+  /** Extract `--format`. Search and crawl ignore it. */
+  format?: "markdown" | "text";
+  /** Crawl `--depth`. Search and extract ignore it. */
+  depth?: number;
 }
 
 /**
@@ -167,7 +171,7 @@ export class FanoutEngine {
 
     // Execute searches in parallel
     const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query))
+      providers.map((provider) => this.searchProvider(provider, query, options.limit))
     );
 
     // Collect results and errors
@@ -274,6 +278,7 @@ export class FanoutEngine {
         if (apiKey) secretsUsed.push(apiKey);
         const result = await adapter.extract(url, apiKey, {
           providerOptions: this.config.providers[provider]?.options,
+          format: options.format,
         });
 
         const durationMs = Math.round(performance.now() - start);
@@ -363,6 +368,7 @@ export class FanoutEngine {
         if (apiKey) secretsUsed.push(apiKey);
         const results = await adapter.crawl(url, apiKey, {
           limit: options.limit,
+          depth: options.depth,
           providerOptions: this.config.providers[provider]?.options,
         });
 
@@ -419,7 +425,8 @@ export class FanoutEngine {
    */
   private async searchProvider(
     provider: string,
-    query: string
+    query: string,
+    limit: number
   ): Promise<ProviderResult> {
     const start = performance.now();
     let keyRef = "none";
@@ -432,6 +439,7 @@ export class FanoutEngine {
       const adapter = createAdapter(provider);
       const results = await adapter.search(query, apiKey, {
         providerOptions: this.config.providers[provider]?.options,
+        limit,
       });
 
       const durationMs = Math.round(performance.now() - start);

@@ -22,7 +22,7 @@ export class JinaAdapter implements SearchAdapter {
 
   async extract(
     url: string,
-    _apiKey: string,
+    apiKey: string,
     _options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     // Validate URL
@@ -36,13 +36,14 @@ export class JinaAdapter implements SearchAdapter {
       normalizedUrl = `https://${normalizedUrl}`;
     }
 
-    // Jina AI Reader endpoint - supports both http and https
-    const jinaUrl = `https://r.jina.ai/http://${normalizedUrl.replace(/^https?:\/\//, "")}`;
+    // Keep the caller's scheme. r.jina.ai fetches the URL appended after the host.
+    const jinaUrl = `https://r.jina.ai/${normalizedUrl}`;
+    // Reader stays on text/plain. markdown and text are both returned as that body.
+    const headers: Record<string, string> = { Accept: "text/plain" };
+    if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey}`;
 
     const content = await fetchText(jinaUrl, {
-      headers: {
-        Accept: "text/plain",
-      },
+      headers,
     }, {
       label: "Jina extract",
     });

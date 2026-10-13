@@ -159,7 +159,7 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅ (a `topic:"news"` variant exists but is not separately exposed)
 - `POST /extract` → **extract** ✅
 - `POST /crawl` → **crawl** ✅
-- `POST /map` (URL discovery) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`tavily.map`); not a normalized router
 - Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-11) ❌
 - `POST /research` (async multi-search report; `request_id` + GET poll) ❌
 
@@ -167,8 +167,8 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅
 - `POST /scrape` → **extract** ✅
 - `POST /crawl` (async job, polled) → **crawl** ✅
-- `POST /map` (URL discovery) ❌
-- `POST /extract` (schema / LLM structured extraction) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`firecrawl.map`); not a normalized router
+- `POST /extract` (schema / LLM structured extraction) ❌ not the extract router (`scrape` is)
 - `/scrape` actions (interact: click/scroll/type) ❌
 - `POST /agent` (autonomous browser agent) ❌
 - `POST /batch/scrape` (bulk) ❌

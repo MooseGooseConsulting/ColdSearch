@@ -120,7 +120,8 @@ export class ExaAdapter implements SearchAdapter {
    */
   private buildSearchBody(
     query: string,
-    opts: ExaProviderOptions
+    opts: ExaProviderOptions,
+    limit?: number
   ): Record<string, unknown> {
     // `useAutoprompt` was retired upstream; `type` selects the search mode.
     // searchType arrives from TOML options untyped, so validate it here —
@@ -135,7 +136,7 @@ export class ExaAdapter implements SearchAdapter {
 
     const body: Record<string, unknown> = {
       query,
-      numResults: opts.numResults ?? 10,
+      numResults: limit ?? opts.numResults ?? 10,
       type: searchType,
     };
 
@@ -174,7 +175,7 @@ export class ExaAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const opts = this.getExaOptions(options);
-    const body = this.buildSearchBody(query, opts);
+    const body = this.buildSearchBody(query, opts, options?.limit);
 
     const data = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -340,6 +341,8 @@ export class ExaAdapter implements SearchAdapter {
       url: result.url || "",
       title: result.title || "",
       content: result.text || "",
+      derived: true,
+      status: "completed" as const,
     }));
   }
 

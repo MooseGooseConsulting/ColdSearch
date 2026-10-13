@@ -24,6 +24,8 @@ interface TavilyExtractResponse {
     rawContent?: string;
     raw_content?: string;
   }>;
+  failed_results?: Array<{ error?: string; reason?: string }>;
+  failedResults?: Array<{ error?: string; reason?: string }>;
 }
 
 interface TavilyCrawlResponse {
@@ -56,7 +58,7 @@ export class TavilyAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const response = await fetchJson<TavilySearchResponse>(
       `${this.baseUrl}/search`,
@@ -70,6 +72,7 @@ export class TavilyAdapter implements SearchAdapter {
           query,
           search_depth: "basic",
           include_answer: false,
+          max_results: this.sanitizeLimit(options?.limit),
         }),
       },
       { label: "Tavily search" }
@@ -89,7 +92,7 @@ export class TavilyAdapter implements SearchAdapter {
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     const response = await fetchJson<TavilyExtractResponse>(
       `${this.baseUrl}/extract`,
@@ -102,6 +105,7 @@ export class TavilyAdapter implements SearchAdapter {
         body: JSON.stringify({
           urls: [url],
           include_images: false,
+          format: options?.format ?? "markdown",
         }),
       },
       { label: "Tavily extract" }
@@ -109,7 +113,13 @@ export class TavilyAdapter implements SearchAdapter {
 
     const result = response.results?.[0];
     if (!result) {
-      throw new Error(`Failed to extract content from ${url}`);
+      const failed = response.failed_results?.[0] ?? response.failedResults?.[0];
+      const reason = failed?.error ?? failed?.reason;
+      throw new Error(
+        reason
+          ? `Failed to extract content from ${url}: ${reason}`
+          : `Failed to extract content from ${url}`
+      );
     }
 
     return {
@@ -147,6 +157,8 @@ export class TavilyAdapter implements SearchAdapter {
           // `max_results` name is silently ignored upstream.
           limit,
           extract_depth: "basic",
+          // Live crawl rejects max_depth below 1. A caller depth of 0 still sends 1.
+          ...(options?.depth !== undefined ? { max_depth: Math.max(1, Math.floor(options.depth)) } : {}),
         }),
       },
       { label: "Tavily crawl", timeoutMs: 120_000 }

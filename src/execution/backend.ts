@@ -185,6 +185,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
       ...(options.singleProvider ? { singleProvider: true } : {}),
       ...(options.noCache ? { noCache: true } : {}),
       ...(options.freshness ? { freshness: options.freshness } : {}),
+      ...(options.format ? { format: options.format } : {}),
+      ...(options.depth !== undefined ? { depth: options.depth } : {}),
     };
   }
 
@@ -328,7 +330,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
-    const key = useCache ? cacheKey("extract", url, {}) : null;
+    const key = useCache
+      ? cacheKey("extract", url, options.format ? { format: options.format } : {})
+      : null;
 
     if (key) {
       const entry = this.cache.getEntry("extract", key, isExtractCachePayload);

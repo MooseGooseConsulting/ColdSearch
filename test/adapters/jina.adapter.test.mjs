@@ -5,7 +5,7 @@ import { installFetchMock, textResponse } from "./_fetch-mock.mjs";
 test("jina extract normalizes title prefix", async () => {
   const restore = installFetchMock({
     "*": async ({ url }) => {
-      assert.match(url, /^https:\/\/r\.jina\.ai\/http:\/\//);
+      assert.equal(url, "https://r.jina.ai/https://x.example");
       return textResponse("Title: Hello\n\nBody");
     },
   });

@@ -9,6 +9,14 @@ import type {
 } from "../types.js";
 
 /**
+ * Live v2 scrape accepts markdown, html, rawHtml, and rawBase64.
+ * It rejects the common "text" value. Markdown is the page-content format.
+ */
+function firecrawlScrapeFormat(_format?: AdapterCallOptions["format"]): "markdown" {
+  return "markdown";
+}
+
+/**
  * Firecrawl adapter.
  * Provides extract (scrape) and crawl capabilities.
  * @see https://docs.firecrawl.dev
@@ -21,7 +29,7 @@ export class FirecrawlAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const data = await fetchJson<{
       success?: boolean;
@@ -50,7 +58,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           query,
-          limit: 10,
+          limit: typeof options?.limit === "number" && Number.isFinite(options.limit)
+            ? Math.max(1, Math.floor(options.limit))
+            : 10,
           scrapeOptions: {
             formats: ["markdown"],
           },
@@ -83,7 +93,7 @@ export class FirecrawlAdapter implements SearchAdapter {
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     // Validate URL
     if (!url || !url.trim()) {
@@ -108,9 +118,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
+        body: JSON.stringify({
         url: normalizedUrl,
-        formats: ["markdown"],
+        formats: [firecrawlScrapeFormat(options?.format)],
       }),
     }, {
       label: "Firecrawl extract",
@@ -159,6 +169,9 @@ export class FirecrawlAdapter implements SearchAdapter {
       body: JSON.stringify({
         url: normalizedUrl,
         limit,
+        ...(options?.depth !== undefined
+          ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
+          : {}),
         scrapeOptions: {
           formats: ["markdown"],
         },
@@ -173,7 +186,7 @@ export class FirecrawlAdapter implements SearchAdapter {
 
     // Poll for completion
     const jobId = startData.id;
-    const maxAttempts = 30;
+    const maxAttempts = 5;
     const pollInterval = 2000; // 2 seconds
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -238,6 +251,8 @@ export class FirecrawlAdapter implements SearchAdapter {
           url: item.metadata?.sourceURL || "",
           title: item.metadata?.title || "",
           content: item.markdown || "",
+          status: "completed" as const,
+          jobId,
         }));
       }
 
@@ -247,6 +262,12 @@ export class FirecrawlAdapter implements SearchAdapter {
       // If still scraping, continue polling
     }
 
-    throw new Error("Firecrawl crawl timed out");
+    return [{
+      url: normalizedUrl,
+      title: "",
+      content: "",
+      status: "pending",
+      jobId,
+    }];
   }
 }

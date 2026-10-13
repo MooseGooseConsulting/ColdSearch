@@ -237,7 +237,7 @@ test("extract hit-once: two identical extracts with cache on hit the network onc
 
   let fetchCalls = 0;
   const restore = installFetchMock({
-    // Jina reader: strips scheme and prefixes with https://r.jina.ai/http://
+    // Jina reader keeps the caller scheme: https://r.jina.ai/https://...
     "*": async ({ url }) => {
       fetchCalls++;
       if (url.includes("r.jina.ai")) {

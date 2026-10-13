@@ -31,7 +31,7 @@ export class SerperAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const data = await fetchJson<SerperSearchResponse>("https://google.serper.dev/search", {
       method: "POST",
@@ -41,7 +41,9 @@ export class SerperAdapter implements SearchAdapter {
       },
       body: JSON.stringify({
         q: query,
-        num: 10,
+        num: typeof options?.limit === "number" && Number.isFinite(options.limit)
+          ? Math.max(1, Math.floor(options.limit))
+          : 10,
       }),
     }, {
       label: "Serper search",

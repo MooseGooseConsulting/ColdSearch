@@ -489,7 +489,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
     schemaLastVerified: VERIFIED,
-    status: "available",
+    status: "direct",
   },
   "tavily.research": {
     provider: "tavily",
@@ -747,7 +747,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
     schemaLastVerified: VERIFIED,
-    status: "available",
+    status: "direct",
   },
   "firecrawl.extract": {
     provider: "firecrawl",

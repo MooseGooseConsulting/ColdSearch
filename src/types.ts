@@ -21,16 +21,30 @@ export interface CrawlResult {
   url: string;
   title: string;
   content: string;
+  /** Set when the provider job has not finished. Pages may be empty. */
+  status?: "completed" | "pending";
+  jobId?: string;
+  /** True when crawl is synthesized (Exa search + contents), not a native crawler. */
+  derived?: boolean;
 }
+
+export type ContentFormat = "markdown" | "text";
 
 export type CapabilityName = "search" | "extract" | "crawl";
 
 export interface AdapterCallOptions {
   providerOptions?: Record<string, unknown>;
+  /** Caller limit. Search adapters send this as the provider's count field. */
+  limit?: number;
+  /** Extract output format. Adapters send the provider's native field or keep text. */
+  format?: ContentFormat;
+  /** Crawl depth. Sent as the provider's depth field, or ignored when the crawl is derived. */
+  depth?: number;
 }
 
 export interface CrawlCallOptions extends AdapterCallOptions {
   limit?: number;
+  depth?: number;
 }
 
 export interface SearchAdapter {

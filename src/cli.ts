@@ -68,6 +68,10 @@ interface ExtendedCLIOptions extends CLIOptions {
   freshness?: string;
   /** Whether --limit was passed explicitly (history commands default to 20 otherwise) */
   limitSet?: boolean;
+  /** Extract output format. Not a search knob. */
+  format?: "markdown" | "text";
+  /** Crawl depth. Not a cache TTL. */
+  depth?: number;
   /** JSON input string/file for tool calling */
   jsonInput?: string;
   /** `coldsearch tool <sub>` discovery/execution surface */
@@ -186,6 +190,23 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         }
         options.limit = limit;
         options.limitSet = true;
+        break;
+
+      case "--format":
+        i++;
+        if (args[i] !== "markdown" && args[i] !== "text") {
+          throw new Error(`Invalid format: ${args[i]}. Use "markdown" or "text".`);
+        }
+        options.format = args[i] as "markdown" | "text";
+        break;
+
+      case "--depth":
+        i++;
+        const depth = parseInt(args[i], 10);
+        if (isNaN(depth) || depth < 0) {
+          throw new Error(`Invalid depth: ${args[i]}`);
+        }
+        options.depth = depth;
         break;
 
       case "--pretty":
@@ -484,6 +505,8 @@ Options:
     
   General Options:
     -l, --limit N        Return at most N results (default: 10; history: 20)
+    --format markdown|text  Extract format sent to the provider (default: markdown)
+    --depth N            Crawl depth sent to the provider when it has a depth field
     -p, --pretty         Pretty print JSON output
     -j, --json           Force JSON output
     -c, --config PATH    Use custom config file
@@ -636,6 +659,7 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     singleProvider: options.singleProvider,
     noCache: options.noCache,
     freshness: options.freshness,
+    format: options.format,
   });
 
   for (const warning of result.warnings ?? []) {
@@ -680,6 +704,7 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
 
   const result = await backend.crawl(options.query, {
     limit: options.limit,
+    depth: options.depth,
     providers: options.providers,
     singleProvider: options.singleProvider,
   });

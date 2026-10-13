@@ -41,7 +41,9 @@ test("exa crawl discovers then fetches contents", async () => {
     assert.equal(searchCalled, 1);
     assert.equal(contentsCalled, 1);
     assert.equal(results.length, 2);
-    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "title", "url"]);
+    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "derived", "status", "title", "url"]);
+    assert.equal(results[0].derived, true);
+    assert.equal(results[0].status, "completed");
   } finally {
     restore();
   }

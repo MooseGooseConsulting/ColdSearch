@@ -148,7 +148,7 @@ export class BrightDataAdapter implements SearchAdapter {
           format: "raw",
           method: "GET",
           country,
-          data_format: "markdown",
+          data_format: options?.format ?? "markdown",
         }),
       },
       {
