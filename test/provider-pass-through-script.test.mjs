@@ -10,6 +10,7 @@ import {
   ALLOWED_STATUSES,
   REQUIRED_PROVIDER_PATHS,
   REQUIRED_PROVIDER_TOOLS,
+  compareToolTarget,
   makeColdSearchToolResult,
   notRunRow,
   redact,
@@ -254,7 +255,7 @@ test("tavily.map parses its result array from raw.results, matching the substrat
   });
   assert.equal(parsed.result_count, 2);
   assert.equal(parsed.catalogued, true);
-  assert.equal(parsed.raw_preserved, true);
+  assert.equal(parsed.raw_available, true);
 
   const urlsOnly = makeColdSearchToolResult(tavilyMap, {
     ok: true,
@@ -266,7 +267,7 @@ test("tavily.map parses its result array from raw.results, matching the substrat
   assert.equal(urlsOnly.result_count, 0, "urls is not the Tavily Map result field");
 });
 
-test("tool-call results disclose whether provider raw detail was preserved", () => {
+test("tool-call results disclose whether the expected raw response field is available", () => {
   const tavilyMap = { provider: "tavily", tool: "map", kind: "tool" };
   assert.equal(
     makeColdSearchToolResult(tavilyMap, {
@@ -275,7 +276,7 @@ test("tool-call results disclose whether provider raw detail was preserved", () 
       provider: "tavily",
       tool: "map",
       raw: { results: ["https://docs.tavily.com"] },
-    }).raw_preserved,
+    }).raw_available,
     true
   );
   assert.equal(
@@ -285,9 +286,9 @@ test("tool-call results disclose whether provider raw detail was preserved", () 
       provider: "tavily",
       tool: "map",
       raw: {},
-    }).raw_preserved,
+    }).raw_available,
     false,
-    "an empty raw payload is not preserved detail"
+    "an empty object does not contain the expected response field"
   );
   assert.equal(
     makeColdSearchToolResult(tavilyMap, {
@@ -295,9 +296,63 @@ test("tool-call results disclose whether provider raw detail was preserved", () 
       catalogued: true,
       provider: "tavily",
       tool: "map",
-    }).raw_preserved,
+      raw: { unrelated: true },
+    }).raw_available,
     false,
-    "a missing raw payload is not preserved detail"
+    "an unrelated non-empty object is not a Tavily Map response shape"
+  );
+  assert.equal(
+    makeColdSearchToolResult(tavilyMap, {
+      ok: true,
+      catalogued: true,
+      provider: "tavily",
+      tool: "map",
+    }).raw_available,
+    false,
+    "a missing raw payload has no expected response field"
+  );
+});
+
+test("Firecrawl Map unwraps object links and preserves the tool metadata envelope", () => {
+  const target = { provider: "firecrawl", tool: "map", kind: "tool" };
+  const raw = {
+    links: [{
+      url: "https://docs.firecrawl.dev/api",
+      title: "API reference",
+      description: "Firecrawl API documentation",
+    }],
+  };
+  const output = {
+    ok: true,
+    catalogued: true,
+    provider: "firecrawl",
+    tool: "map",
+    meta: { duration_ms: 12, safe_key_ref: "env:FIRECRAWL_API_KEY", warnings: [] },
+    raw,
+  };
+  const cold = makeColdSearchToolResult(target, output);
+
+  assert.deepEqual(cold.items, [{
+    title: "API reference",
+    url: "https://docs.firecrawl.dev/api",
+    content: "Firecrawl API documentation",
+    source: "firecrawl",
+  }]);
+  assert.deepEqual(cold.meta, output.meta);
+  assert.equal(cold.raw_available, true);
+
+  const native = {
+    result_count: 1,
+    items: cold.items,
+  };
+  assert.equal(compareToolTarget(target, native, cold).passed, true);
+
+  const mislabelled = makeColdSearchToolResult(target, { ...output, provider: "exa" });
+  const comparison = compareToolTarget(target, native, mislabelled);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool result names the selected provider").pass,
+    false
   );
 });
 

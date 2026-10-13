@@ -841,7 +841,7 @@ async function nativeFirecrawlMap(target) {
     throw new Error(`native Firecrawl map error: ${data.error || "unknown error"}`);
   }
   const links = data.links || data.data || [];
-  const items = links.map((url) => ({ title: "", url, content: "", source: "firecrawl" }));
+  const items = firecrawlMapItems(links);
   return makeNativeToolResult(target, items, {
     native_shape: ["links[]"],
   });
@@ -1023,13 +1023,45 @@ function toolRawItems(target, raw) {
       // Tavily Map puts discovered URLs under `results` (matches substrate).
       return (raw.results || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
     case "firecrawl.map":
-      return (raw.links || raw.data || []).map((url) => ({ title: "", url, content: "", source: "firecrawl" }));
+      return firecrawlMapItems(raw.links || raw.data || []);
     case "brave.webSearch":
       return (raw.web?.results || []).map((item, index) => searchItem(item, "brave", index));
     case "exa.contents":
       return (raw.results || []).map((item) => extractItem(item, "exa", EXTRACT_URL));
     default:
       return [];
+  }
+}
+
+function firecrawlMapItems(links) {
+  if (!Array.isArray(links)) return [];
+  return links.flatMap((link) => {
+    const url = typeof link === "string" ? link : link?.url;
+    if (typeof url !== "string" || !url.trim()) return [];
+    return [{
+      title: typeof link === "object" && typeof link.title === "string" ? link.title : "",
+      url,
+      content: typeof link === "object" && typeof link.description === "string"
+        ? link.description
+        : "",
+      source: "firecrawl",
+    }];
+  });
+}
+
+function hasExpectedToolRawShape(target, raw) {
+  if (!raw || typeof raw !== "object") return false;
+  switch (targetId(target)) {
+    case "tavily.map":
+      return Array.isArray(raw.results);
+    case "brave.webSearch":
+      return Array.isArray(raw.web?.results);
+    case "exa.contents":
+      return Array.isArray(raw.results);
+    case "firecrawl.map":
+      return Array.isArray(raw.links) || Array.isArray(raw.data);
+    default:
+      return false;
   }
 }
 
@@ -1044,15 +1076,11 @@ export function makeColdSearchToolResult(target, output) {
     items,
     provider: output.provider,
     tool: output.tool,
-    // Whether the CLI's tool-call surface actually preserved the provider raw
-    // payload: the substrate returns raw detail in the JSON output, and the
-    // evidence path redacts it; raw_preserved proves the pass-through rather
-    // than assuming it. Full bodies are deliberately not persisted here —
-    // provider raw detail stays at the CLI/redaction boundary, not in evidence.
-    raw_preserved:
-      Boolean(output.raw) &&
-      typeof output.raw === "object" &&
-      Object.keys(output.raw).length > 0,
+    meta: output.meta && typeof output.meta === "object" ? output.meta : null,
+    // Evidence keeps the raw body out of persisted reports. This narrower
+    // check only confirms that the expected provider response field is present;
+    // it does not claim byte-for-byte fidelity with the native response.
+    raw_available: hasExpectedToolRawShape(target, raw),
   };
 }
 
@@ -1107,21 +1135,36 @@ function compareTarget(target, nativeResult, coldResult) {
   return { passed, checks, notes, detail_loss: detailLoss };
 }
 
-function compareToolTarget(target, nativeResult, coldResult) {
+export function compareToolTarget(target, nativeResult, coldResult) {
   const checks = [];
   const notes = [];
   const detailLoss = [];
 
   checks.push(check(nativeResult.result_count > 0, "native returned non-empty results"));
   checks.push(check(coldResult.ok, "ColdSearch tool call succeeded"));
+  checks.push(check(
+    coldResult.provider === target.provider,
+    "ColdSearch tool result names the selected provider"
+  ));
+  checks.push(check(
+    coldResult.tool === target.tool,
+    "ColdSearch tool result names the selected tool"
+  ));
+  checks.push(check(
+    coldResult.meta &&
+      Number.isFinite(coldResult.meta.duration_ms) &&
+      (coldResult.meta.safe_key_ref === null || typeof coldResult.meta.safe_key_ref === "string") &&
+      Array.isArray(coldResult.meta.warnings),
+    "ColdSearch tool result includes its metadata envelope"
+  ));
   checks.push(check(coldResult.result_count > 0, "ColdSearch tool call returned non-empty raw results"));
   checks.push(check(
     hasUrlOrTitleOverlap(nativeResult.items, coldResult.items),
     "native and ColdSearch tool results overlap by URL or title"
   ));
   checks.push(check(
-    coldResult.raw_preserved,
-    "ColdSearch tool call output preserved provider raw detail"
+    coldResult.raw_available,
+    "ColdSearch tool call output includes the expected provider raw response field"
   ));
   checks.push(check(
     coldResult.catalogued,
