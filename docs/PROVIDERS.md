@@ -87,9 +87,10 @@ ColdSearch columns = what the adapter actually implements today.
 The legacy provider set was last broadly verified **2026-05-28** against real
 provider APIs via `scripts/smoke.mjs` and ad-hoc probes. `✅⚡` = live-verified
 end-to-end · `✅` = implemented but not yet live-checked · `—` = not applicable.
-Native schemas were re-inspected against official docs on **2026-10-12**
-(`docs/reviews/2026-10-12-provider-contract-audit.md`); doc inspection does
-not advance live-verification status.
+Provider surfaces were reviewed against official docs on **2026-10-11**
+(`docs/reviews/2026-10-11-provider-contract-audit.md`). `schemaLastVerified`
+remains per-profile and advances only where that native schema was reconciled;
+doc inspection does not advance live-verification status.
 
 | Provider | search | extract | crawl |
 |----------|:------:|:-------:|:-----:|
@@ -159,7 +160,7 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /extract` → **extract** ✅
 - `POST /crawl` → **crawl** ✅
 - `POST /map` (URL discovery) ❌
-- Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-12) ❌
+- Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-11) ❌
 - `POST /research` (async multi-search report; `request_id` + GET poll) ❌
 
 ### Firecrawl — `src/adapters/firecrawl.ts` · [docs](https://docs.firecrawl.dev)
@@ -216,7 +217,7 @@ skip vendor specialties. Highest-leverage gaps:
 - **Serper** — candidate verticals are catalogued as deferred until routes and schemas are validated with authoritative or authenticated evidence.
 - **Jina** — `embeddings` (v5), `rerank` (v3.5), search, and DeepSearch are catalogued as deferred candidates pending schema and dispatch reconciliation.
 - **Tavily `answer`/`research`** and **Exa `answer`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`); Exa's standalone `/research` was retired 2026-05-01 (deep modes live on `/search`).
-- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-12 audit.
+- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-11 audit.
 - **Bright Data** Crawl/Discover/Browser/Marketplace expansion should be driven by concrete workflows and spend controls, not by surface-area completion.
 
 ## Adding a provider
