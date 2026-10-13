@@ -44,8 +44,9 @@ export class HTTPRequestError extends Error {
 }
 
 /** Detect account exhaustion without publishing provider response bodies.
- * HTTP 402 is definitive; other statuses need an explicit quota/balance
- * message. A generic 429 rate limit is not evidence that credits ran out.
+ * Only HTTP statuses classified as quota exhaustion (402, 432, and 433) count,
+ * including when wrapped in a cause. A generic 429 or response-body message
+ * does not trigger provider fallback.
  */
 export function isQuotaExhausted(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 4) return false;
