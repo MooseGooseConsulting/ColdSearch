@@ -47,14 +47,6 @@ export class TavilyAdapter implements SearchAdapter {
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
   private readonly baseUrl = "https://api.tavily.com";
 
-  private sanitizeSearchLimit(limit?: number): number {
-    if (typeof limit !== "number" || !Number.isFinite(limit)) {
-      return 10;
-    }
-
-    return Math.min(20, Math.max(1, Math.floor(limit)));
-  }
-
   private sanitizeCrawlLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
       return 10;
@@ -77,6 +69,24 @@ export class TavilyAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const providerOptions = options?.providerOptions ?? {};
+    const requestedIncludeAnswer = providerOptions.include_answer;
+    const includeAnswerRequested =
+      requestedIncludeAnswer === true ||
+      requestedIncludeAnswer === "basic" ||
+      requestedIncludeAnswer === "advanced";
+    if (includeAnswerRequested) {
+      throw new Error(
+        "Tavily search synthesis cannot be represented in normalized search results; " +
+          "use the Tavily answer tool for include_answer output."
+      );
+    }
+
+    const requestedDepth = providerOptions.search_depth;
+    const searchDepth = ["basic", "advanced", "fast", "ultra-fast"].includes(
+      String(requestedDepth)
+    )
+      ? String(requestedDepth)
+      : "basic";
 
     const body: Record<string, unknown> = {
       query,
@@ -86,12 +96,8 @@ export class TavilyAdapter implements SearchAdapter {
         20,
         10
       ),
-      search_depth:
-        providerOptions.search_depth === "advanced" ? "advanced" : "basic",
-      include_answer:
-        typeof providerOptions.include_answer === "boolean"
-          ? providerOptions.include_answer
-          : false,
+      search_depth: searchDepth,
+      include_answer: false,
     };
     if (typeof providerOptions.topic === "string" && providerOptions.topic.trim()) {
       body.topic = providerOptions.topic.trim();
@@ -108,10 +114,7 @@ export class TavilyAdapter implements SearchAdapter {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          ...body,
-          max_results: this.sanitizeSearchLimit(options?.limit ?? providerOptions.max_results),
-        }),
+        body: JSON.stringify(body),
       },
       { label: "Tavily search" }
     );

@@ -86,6 +86,11 @@ export class BrightDataAdapter implements SearchAdapter {
     const engine = optionalStringOption(options, ["searchEngine"], "google");
     const country = optionalStringOption(options, ["country", "searchCountry"], "us");
     const format = optionalStringOption(options, ["format"], "json");
+    if (format.toLowerCase() !== "json") {
+      throw new Error(
+        `Normalized Bright Data search requires format="json"; received "${format}".`
+      );
+    }
 
     const data = await fetchJson<BrightDataSerpResponse>(
       `${this.baseUrl}/request`,
@@ -136,12 +141,18 @@ export class BrightDataAdapter implements SearchAdapter {
       );
     }
 
-    // `zone`/`country` are the profile-declared keys; unlockerZone/searchCountry
-    // are accepted as legacy aliases.
-    const zone = requireStringOption(options, ["zone", "unlockerZone"], "BRIGHTDATA_UNLOCKER_ZONE");
+    // Prefer the capability-specific zone when both SERP and Unlocker zones
+    // are configured in the shared provider options.
+    const zone = requireStringOption(options, ["unlockerZone", "zone"], "BRIGHTDATA_UNLOCKER_ZONE");
     const country = optionalStringOption(options, ["country", "searchCountry"], "us");
     const format = optionalStringOption(options, ["format"], "raw");
     const dataFormat = optionalStringOption(options, ["data_format"], "markdown");
+    if (dataFormat === "screenshot") {
+      throw new Error(
+        "Bright Data unlocker data_format 'screenshot' returns binary PNG that cannot be normalized as text; " +
+          "use a text format such as 'markdown' or 'html'"
+      );
+    }
     const normalizedUrl = url.trim();
 
     // JS-rendered pages routinely exceed the default 10s fetch timeout; allow

@@ -705,7 +705,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         nativeOptionsWithoutCommonEquivalent: ["webhook", "maxConcurrency", "delay", "scrapeOptions"],
         notes:
           "The adapter honors a `formats` array from [providers.firecrawl.options] " +
-          "as scrapeOptions.formats (validated against markdown|html|rawHtml|links|" +
+          "as scrapeOptions.formats (text aliases markdown; values are validated against markdown|html|rawHtml|links|" +
           "screenshot|json; default [markdown]).",
       },
     ],

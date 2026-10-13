@@ -29,15 +29,20 @@ function configuredString(
   return undefined;
 }
 
-function configuredPositiveInteger(config: Config, key: string, fallback: number): number {
-  const value = config.providers.brightdata?.options?.[key];
+function positiveInteger(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    return Math.floor(value);
+    const integer = Math.floor(value);
+    return integer > 0 ? integer : undefined;
   }
   if (typeof value === "string" && /^\d+$/.test(value) && Number(value) > 0) {
     return Number(value);
   }
-  return fallback;
+  return undefined;
+}
+
+function configuredPositiveInteger(config: Config, key: string, fallback: number): number {
+  const value = positiveInteger(config.providers.brightdata?.options?.[key]);
+  return value ?? fallback;
 }
 
 function requireValue(value: unknown, name: string): string {
@@ -226,8 +231,10 @@ export function buildBrightDataToolRequest(
           "use a text format such as 'markdown' or 'html'"
       );
     }
+    const payloadParams = { ...params };
+    delete payloadParams.unlockerTimeoutMs;
     const payload = {
-      ...params,
+      ...payloadParams,
       zone,
       url: targetUrl,
       format,
@@ -237,7 +244,9 @@ export function buildBrightDataToolRequest(
     // Any non-JSON format is a text/HTML payload and must not go through the
     // JSON response parser. The unlocker documents native `format: "html"`,
     // which would otherwise fail JSON parsing.
-    const timeoutMs = configuredPositiveInteger(config, "unlockerTimeoutMs", 0);
+    const timeoutMs =
+      positiveInteger(params.unlockerTimeoutMs) ??
+      configuredPositiveInteger(config, "unlockerTimeoutMs", 0);
 
     return {
       url: `${baseUrl}/request`,
