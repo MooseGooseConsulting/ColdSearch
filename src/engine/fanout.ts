@@ -748,8 +748,8 @@ export class FanoutEngine {
       if (apiKey) resolvedSecret = apiKey;
       const adapter = createAdapter(provider);
       const results = await adapter.search(query, apiKey, {
+        ...(limit !== undefined ? { limit } : {}),
         providerOptions: this.config.providers[provider]?.options,
-        limit,
       });
 
       const durationMs = Math.round(performance.now() - start);

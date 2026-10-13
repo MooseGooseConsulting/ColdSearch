@@ -43,7 +43,7 @@ export class SerperAdapter implements SearchAdapter {
     const body: Record<string, unknown> = {
       q: query,
       // Serper accepts up to 100 results per request.
-      num: clampIntegerOption(options?.providerOptions?.num, 1, 100, 10),
+      num: clampIntegerOption(options?.limit ?? options?.providerOptions?.num, 1, 100, 10),
     };
     const location = options?.providerOptions?.location;
     if (typeof location === "string" && location.trim()) {

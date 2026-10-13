@@ -48,6 +48,24 @@ const FIRECRAWL_FORMATS: readonly string[] = [
 
 const FIRECRAWL_SOURCES: readonly string[] = ["web", "news", "images"];
 
+interface FirecrawlSearchResult {
+  title?: string;
+  url?: string;
+  imageUrl?: string;
+  image_url?: string;
+  imageURL?: string;
+  sourceURL?: string;
+  description?: string;
+  snippet?: string;
+  markdown?: string;
+  score?: number;
+  metadata?: {
+    title?: string;
+    description?: string;
+    sourceURL?: string;
+  };
+}
+
 /** Validate a configured `formats` array against Firecrawl's supported values. */
 function sanitizeFormats(value: unknown): string[] {
   if (value === undefined) return ["markdown"];
@@ -129,42 +147,9 @@ export class FirecrawlAdapter implements SearchAdapter {
     const data = await fetchJson<{
       success?: boolean;
       data?: {
-        web?: Array<{
-          title?: string;
-          url?: string;
-          description?: string;
-          markdown?: string;
-          score?: number;
-          metadata?: {
-            title?: string;
-            description?: string;
-            sourceURL?: string;
-          };
-        }>;
-        news?: Array<{
-          title?: string;
-          url?: string;
-          description?: string;
-          markdown?: string;
-          score?: number;
-          metadata?: {
-            title?: string;
-            description?: string;
-            sourceURL?: string;
-          };
-        }>;
-        images?: Array<{
-          title?: string;
-          url?: string;
-          description?: string;
-          markdown?: string;
-          score?: number;
-          metadata?: {
-            title?: string;
-            description?: string;
-            sourceURL?: string;
-          };
-        }>;
+        web?: FirecrawlSearchResult[];
+        news?: FirecrawlSearchResult[];
+        images?: FirecrawlSearchResult[];
       };
       error?: string;
     }>(
@@ -185,11 +170,22 @@ export class FirecrawlAdapter implements SearchAdapter {
     }
 
     const requestedSources = sources ?? ["web"];
-    const results = requestedSources.flatMap((source) => data.data?.[source] ?? []);
+    const results = requestedSources.flatMap((source) => {
+      if (source === "news") return data.data?.news ?? [];
+      if (source === "images") return data.data?.images ?? [];
+      return data.data?.web ?? [];
+    });
     return results.map((result, index) => {
-      const url = result.url || result.metadata?.sourceURL || "";
+      const url =
+        result.url ||
+        result.metadata?.sourceURL ||
+        result.sourceURL ||
+        result.imageUrl ||
+        result.image_url ||
+        result.imageURL ||
+        "";
       const title = result.title || result.metadata?.title || "";
-      const snippetSource = result.description || result.metadata?.description || result.markdown || "";
+      const snippetSource = result.description || result.snippet || result.metadata?.description || result.markdown || "";
       const snippet = snippetSource.length > 500 ? `${snippetSource.slice(0, 497)}...` : snippetSource;
 
       return {

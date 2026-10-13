@@ -374,7 +374,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
 
   async extract(url: string, options: FanoutOptions): Promise<ExtractOutcome> {
     this.validateAndRecord("extract", url, options);
-    const useCache = this.shouldUseCache(options);
+    const jinaOptions = this.config.providers.jina?.options ?? {};
+    const hasStatefulJinaHeader = Object.entries(jinaOptions).some(
+      ([name, value]) =>
+        ["x-no-cache", "x-set-cookie"].includes(name.toLowerCase()) &&
+        value !== undefined &&
+        value !== null &&
+        String(value).trim() !== ""
+    );
+    const useCache = this.shouldUseCache(options) && !hasStatefulJinaHeader;
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
