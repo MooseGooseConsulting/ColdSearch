@@ -1276,6 +1276,10 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     hasUrlOrTitleOverlap(nativeResult.items, coldResult.items),
     "native and ColdSearch tool results overlap by URL or title"
   ));
+  checks.push(check(
+    toolNativeFieldsPreserved(target, nativeResult.items, coldResult.items),
+    "ColdSearch tool output retains populated native result fields"
+  ));
   if (targetId(target) === "tavily.map" || targetId(target) === "firecrawl.map") {
     checks.push(check(
       sameSet(normalizedItemUrls(nativeResult.items), normalizedItemUrls(coldResult.items)),
@@ -1307,6 +1311,28 @@ function hasUrlOverlap(nativeItems, coldItems) {
 
 function normalizedItemUrls(items) {
   return new Set((items || []).map((item) => normalizedUrl(item.url)).filter(Boolean));
+}
+
+function toolNativeFieldsPreserved(target, nativeItems, coldItems) {
+  const fields = targetId(target) === "brave.webSearch"
+    ? ["title", "url", "snippet"]
+    : targetId(target) === "exa.contents"
+      ? ["title", "url", "content"]
+      : targetId(target) === "firecrawl.map"
+        ? ["title", "url", "content"]
+        : ["url"];
+  return (nativeItems || []).every((native) => {
+    const nativeUrl = normalizedUrl(native.url);
+    const nativeTitle = normalizedTitle(native.title);
+    const cold = (coldItems || []).find((item) =>
+      (nativeUrl && normalizedUrl(item.url) === nativeUrl) ||
+      (!nativeUrl && nativeTitle && normalizedTitle(item.title) === nativeTitle)
+    );
+    if (!cold) return false;
+    return fields.every((field) =>
+      !String(native[field] ?? "").trim() || Boolean(String(cold[field] ?? "").trim())
+    );
+  });
 }
 
 function sameSet(left, right) {

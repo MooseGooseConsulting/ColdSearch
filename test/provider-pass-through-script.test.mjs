@@ -466,6 +466,29 @@ test("map conformance rejects partial ColdSearch result payloads", () => {
   );
 });
 
+test("tool conformance rejects content fields dropped from a partial response", () => {
+  const target = { provider: "exa", tool: "contents", kind: "tool" };
+  const native = {
+    result_count: 1,
+    items: [{ url: "https://example.com", title: "Example", content: "Native page text" }],
+    raw_available: true,
+  };
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "exa",
+    tool: "contents",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: [{ url: "https://example.com", title: "Example" }] },
+  });
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool output retains populated native result fields").pass,
+    false
+  );
+});
+
 test("catalogued tools without fixtures remain visible as not_run", () => {
   const row = notRunRow({ provider: "exa", tool: "findSimilar", kind: "tool" });
   assert.equal(row.status, "not_run");
