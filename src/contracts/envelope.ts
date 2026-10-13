@@ -93,5 +93,14 @@ export function assertNormalizedResult(
         );
       }
     }
+    if (
+      capability === "search" &&
+      (typeof record.score !== "number" || !Number.isFinite(record.score))
+    ) {
+      throw new Error(
+        `Provider '${provider}' returned a malformed ${capability} result: ` +
+          `missing/invalid finite 'score' in item ${describeItem(item)}`
+      );
+    }
   }
 }

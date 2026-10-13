@@ -178,7 +178,11 @@ export async function fetchWithPolicy(
           RETRY_AFTER_STATUSES.has(response.status)
             ? retryAfterMs(response.headers)
             : undefined;
-        await sleep(withJitter(hinted ?? retryDelayMs * (attempt + 1)), externalSignal);
+        const delay =
+          hinted !== undefined
+            ? hinted + Math.round(Math.random() * hinted * 0.2)
+            : withJitter(retryDelayMs * (attempt + 1));
+        await sleep(delay, externalSignal);
         continue;
       }
 
@@ -247,56 +251,6 @@ export interface ClassifiedError {
 }
 
 /**
- * Best-effort extraction of the provider's own error message (and a short
- * slug/tag) from the structured JSON body captured on an HTTPRequestError.
- * Known shapes (verified against live keyless probes, 2026-10-12):
- *   Tavily    { detail: { error } }
- *   Exa       { error, tag }        (e.g. tag "X402_PAYMENT_REQUIRED")
- *   Firecrawl { error, code }
- *   Serper    { message, statusCode }
- * Returns undefined when the body is missing, unparseable, or shapeless.
- * Never throws — classification must never make an error worse.
- */
-function extractProviderDetail(
-  body: string | undefined,
-  label: string | undefined
-): { slug: string; message: string } | undefined {
-  try {
-    if (!body) return undefined;
-    const parsed: unknown = JSON.parse(body);
-    if (!parsed || typeof parsed !== "object") return undefined;
-    const obj = parsed as Record<string, unknown>;
-
-    let message: string | undefined;
-    let tag: string | undefined;
-
-    const detail = obj.detail;
-    if (detail && typeof detail === "object") {
-      const errorField = (detail as Record<string, unknown>).error;
-      if (typeof errorField === "string") message = errorField; // Tavily
-    }
-    if (message === undefined && typeof obj.error === "string") {
-      message = obj.error; // Exa / Firecrawl
-    }
-    if (message === undefined && typeof obj.message === "string") {
-      message = obj.message; // Serper
-    }
-    if (typeof obj.tag === "string") tag = obj.tag; // Exa
-    else if (typeof obj.code === "string") tag = obj.code; // Firecrawl
-    else if (typeof obj.statusCode === "number") tag = String(obj.statusCode); // Serper
-
-    if (!message) return undefined;
-    const slug =
-      tag ??
-      (label ? label.split(/\s+/)[0].toLowerCase() : undefined) ??
-      "unknown";
-    return { slug, message };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * HTTP status → category table for HTTPRequestError. Evaluated BEFORE any
  * message-regex rule: the status code is the structured, trustworthy signal;
  * message text is only a fallback for errors that never reached HTTP.
@@ -335,6 +289,35 @@ function classifyHttpStatus(status: number): ErrorCategory {
   }
 }
 
+const SEARXNG_JSON_HINT =
+  " — SearXNG returned 403 — if keyless, the instance likely has JSON format disabled; " +
+  "enable `search: formats: [json]` in settings.yml";
+
+function classifyHttpRequestError(error: HTTPRequestError): ClassifiedError {
+  if (error.status === undefined) {
+    return { category: "network", message: error.message };
+  }
+
+  const isKeylessSearxng403 =
+    error.status === 403 && error.label?.startsWith("SearXNG");
+  const category = isKeylessSearxng403
+    ? "config"
+    : classifyHttpStatus(error.status);
+  const message = isKeylessSearxng403
+    ? error.message + SEARXNG_JSON_HINT
+    : error.message;
+  return { category, message };
+}
+
+function underlyingHttpErrors(error: unknown): HTTPRequestError[] {
+  if (!error || typeof error !== "object") return [];
+  const candidate = (error as { providerHttpErrors?: unknown }).providerHttpErrors;
+  if (!candidate || typeof candidate !== "object") return [];
+  return Object.values(candidate).filter(
+    (item): item is HTTPRequestError => item instanceof HTTPRequestError
+  );
+}
+
 /**
  * Classify an unknown error into one of the machine-readable categories used
  * by status/doctor output and user-facing CLI errors.
@@ -349,32 +332,32 @@ export function classifyError(error: unknown): ClassifiedError {
   const name = error instanceof Error ? error.name : "";
 
   if (error instanceof HTTPRequestError) {
-    let category: ErrorCategory;
-    let classified = message;
-
-    if (error.status === undefined) {
-      // Never got an HTTP response: transport-level failure.
-      category = "network";
-    } else {
-      category = classifyHttpStatus(error.status);
-
-      if (error.status === 403 && error.label?.startsWith("SearXNG")) {
-        // A keyless SearXNG instance without `formats: [json]` answers 403 to
-        // JSON requests — an operator-fixable deployment gap, so hint at it.
-        classified +=
-          " — SearXNG returned 403 — if keyless, the instance likely has JSON format disabled; " +
-          "enable `search: formats: [json]` in settings.yml";
-      }
-    }
-
-    // Append the provider's own structured error detail when the captured
-    // body parses — the original message is always kept alongside it.
-    const detail = extractProviderDetail(error.body, error.label);
-    if (detail) {
-      classified += ` [provider: ${detail.slug}] ${detail.message}`;
-    }
-
-    return { category, message: classified };
+    return classifyHttpRequestError(error);
+  }
+  const httpErrors = underlyingHttpErrors(error);
+  if (httpErrors.length > 0) {
+    const classified = httpErrors.map(classifyHttpRequestError);
+    const categories = new Set(classified.map((item) => item.category));
+    const providerErrors =
+      error &&
+      typeof error === "object" &&
+      "providerErrors" in error
+        ? (error as { providerErrors?: unknown }).providerErrors
+        : undefined;
+    const allFailuresAreHttp =
+      providerErrors !== null &&
+      typeof providerErrors === "object" &&
+      Object.keys(providerErrors).length === httpErrors.length;
+    const category =
+      allFailuresAreHttp && categories.size === 1
+        ? classified[0]!.category
+        : "provider";
+    // The wrapper message contains safe request labels/statuses. Preserve the
+    // operator hint for a SearXNG 403, but never append an untrusted body.
+    const hints = httpErrors
+      .filter((item) => item.status === 403 && item.label?.startsWith("SearXNG"))
+      .map(() => SEARXNG_JSON_HINT);
+    return { category, message: message + [...new Set(hints)].join("") };
   }
   if (name === "AbortError") {
     return { category: "network", message };

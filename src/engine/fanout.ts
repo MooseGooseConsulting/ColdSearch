@@ -5,6 +5,7 @@ import { providerSupportsCapability, resolveCapabilityProviders } from "../provi
 import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
+import { HTTPRequestError } from "../http.js";
 import type {
   CapabilityName,
   Config,
@@ -70,6 +71,8 @@ interface ProviderResult {
   keyRef: string;
   /** Resolved credential value used for this call, when any. */
   secret?: string;
+  /** Retained in-memory so the CLI can classify an all-provider failure. */
+  httpError?: HTTPRequestError;
 }
 
 /**
@@ -98,11 +101,13 @@ export class AllProvidersFailedError extends Error {
   readonly secretsUsed: string[];
   readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
   readonly discardedResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
+  readonly providerHttpErrors: Record<string, HTTPRequestError>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
     secretsUsed: string[],
+    providerHttpErrors: Record<string, HTTPRequestError> = {},
     terminalResumeJobs: PendingCrawlJob[] = [],
     discardedResumeJobs: PendingCrawlJob[] = []
   ) {
@@ -113,6 +118,7 @@ export class AllProvidersFailedError extends Error {
     this.secretsUsed = secretsUsed;
     this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     this.discardedResumeJobs = discardedResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
+    this.providerHttpErrors = providerHttpErrors;
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
@@ -120,6 +126,10 @@ export class AllProvidersFailedError extends Error {
     Object.defineProperty(this, "secretsUsed", { enumerable: false });
     Object.defineProperty(this, "terminalResumeJobs", { enumerable: false });
     Object.defineProperty(this, "discardedResumeJobs", { enumerable: false });
+    // HTTP error bodies may contain echoed request credentials. Keep structured
+    // status/label/body available in memory for classification and debugging,
+    // but off the enumerable surface used by loggers and JSON serializers.
+    Object.defineProperty(this, "providerHttpErrors", { enumerable: false });
   }
 }
 
@@ -205,6 +215,7 @@ export class FanoutEngine {
     const providersUsed: string[] = [];
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
+    const providerHttpErrors: Record<string, HTTPRequestError> = {};
 
     results.forEach((result, index) => {
       const provider = providers[index];
@@ -214,6 +225,7 @@ export class FanoutEngine {
         if (value.secret) secretsUsed.push(value.secret);
         if (value.error) {
           errors[provider] = value.error;
+          if (value.httpError) providerHttpErrors[provider] = value.httpError;
           attempts.push({
             provider,
             success: false,
@@ -235,13 +247,16 @@ export class FanoutEngine {
       } else {
         const message = result.reason?.message || "Unknown error";
         errors[provider] = message;
+        if (result.reason instanceof HTTPRequestError) {
+          providerHttpErrors[provider] = result.reason;
+        }
         attempts.push({ provider, success: false, error: message });
       }
     });
 
     // If all providers failed, throw error
     if (providersUsed.length === 0) {
-      throw new AllProvidersFailedError(errors, attempts, secretsUsed);
+      throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
     }
 
     // Rerank results
@@ -278,6 +293,7 @@ export class FanoutEngine {
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
+    const providerHttpErrors: Record<string, HTTPRequestError> = {};
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -335,6 +351,7 @@ export class FanoutEngine {
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
+        if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
@@ -354,7 +371,7 @@ export class FanoutEngine {
       }
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed);
+    throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
   }
 
   /**
@@ -375,6 +392,7 @@ export class FanoutEngine {
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
+    const providerHttpErrors: Record<string, HTTPRequestError> = {};
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
@@ -610,7 +628,6 @@ export class FanoutEngine {
         // Engine-boundary shape guard (issue #79, PR-C): fail loudly on a
         // malformed adapter normalization rather than caching/rendering it.
         assertNormalizedResult("crawl", provider, results);
-
         const durationMs = Math.round(performance.now() - start);
         const pendingResults = results.filter((result) => result.status === "pending");
         const pageResults = results.filter((result) => result.status !== "pending");
@@ -687,6 +704,7 @@ export class FanoutEngine {
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
+        if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
@@ -731,6 +749,7 @@ export class FanoutEngine {
       errors,
       attempts,
       secretsUsed,
+      providerHttpErrors,
       terminalResumeJobs,
       discardedResumeJobs
     );
@@ -794,6 +813,7 @@ export class FanoutEngine {
         provider,
         results: [],
         error: (error as Error).message,
+        ...(error instanceof HTTPRequestError ? { httpError: error } : {}),
         durationMs,
         keyRef,
         // The secret may have resolved before the call failed; the error
