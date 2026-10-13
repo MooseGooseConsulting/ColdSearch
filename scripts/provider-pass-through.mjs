@@ -31,14 +31,57 @@ export const REQUIRED_PROVIDER_PATHS = [
   { provider: "searxng", path: "search" },
 ];
 
+/** All implemented normalized paths; some paid/provider-specific paths remain
+ * visible in coverage while deliberately lacking a routine native fixture. */
+export const SUPPORTED_PROVIDER_PATHS = [
+  ...REQUIRED_PROVIDER_PATHS,
+  { provider: "brightdata", path: "search" },
+  { provider: "brightdata", path: "extract" },
+];
+
 /**
- * Catalogued provider-tool rows. These run through the ColdSearch `tool call`
- * CLI path and are compared against a native HTTP call using the same status
- * vocabulary as the provider/path rows, so a scoped check triggered by a
- * generic provider-tool change has a row to run. IDs use the registry keys from
- * src/registry/tool-profiles.ts (`<provider>.<tool>`).
+ * Complete catalogued provider-tool inventory. Only rows listed in
+ * RUNNABLE_PROVIDER_TOOLS have a native fixture today; all other catalogued
+ * rows remain visible as `not_run` instead of disappearing from coverage.
+ * IDs use the registry keys from src/registry/tool-profiles.ts.
  */
 export const REQUIRED_PROVIDER_TOOLS = [
+  { provider: "exa", tool: "search" },
+  { provider: "exa", tool: "contents" },
+  { provider: "exa", tool: "findSimilar" },
+  { provider: "exa", tool: "answer" },
+  { provider: "tavily", tool: "search" },
+  { provider: "tavily", tool: "extract" },
+  { provider: "tavily", tool: "crawl" },
+  { provider: "tavily", tool: "map" },
+  { provider: "tavily", tool: "research" },
+  { provider: "tavily", tool: "answer" },
+  { provider: "firecrawl", tool: "search" },
+  { provider: "firecrawl", tool: "scrape" },
+  { provider: "firecrawl", tool: "crawl" },
+  { provider: "firecrawl", tool: "map" },
+  { provider: "firecrawl", tool: "extract" },
+  { provider: "brave", tool: "webSearch" },
+  { provider: "brave", tool: "llmContext" },
+  { provider: "serper", tool: "search" },
+  { provider: "jina", tool: "reader" },
+  { provider: "searxng", tool: "search" },
+  { provider: "brightdata", tool: "serp" },
+  { provider: "brightdata", tool: "unlocker" },
+  { provider: "brightdata", tool: "datasetsList" },
+  { provider: "brightdata", tool: "datasetMetadata" },
+  { provider: "brightdata", tool: "scrape" },
+  { provider: "brightdata", tool: "trigger" },
+  { provider: "brightdata", tool: "progress" },
+  { provider: "brightdata", tool: "snapshotMetadata" },
+  { provider: "brightdata", tool: "cancel" },
+  { provider: "brightdata", tool: "snapshot" },
+  { provider: "brightdata", tool: "crawl" },
+  { provider: "brightdata", tool: "discover" },
+];
+
+/** Rows with both a native provider call and ColdSearch input fixture. */
+export const RUNNABLE_PROVIDER_TOOLS = [
   { provider: "tavily", tool: "map" },
   { provider: "brave", tool: "webSearch" },
   { provider: "exa", tool: "contents" },
@@ -66,6 +109,7 @@ const KEY_ENV_BY_PROVIDER = {
   exa: "EXA_API_KEY",
   brave: "BRAVE_API_KEY",
   serper: "SERPER_API_KEY",
+  brightdata: "BRIGHTDATA_API_KEY",
 };
 
 const SECRET_ENV_NAMES = [
@@ -74,8 +118,13 @@ const SECRET_ENV_NAMES = [
   "EXA_API_KEY",
   "BRAVE_API_KEY",
   "SERPER_API_KEY",
+  "BRIGHTDATA_API_KEY",
   "SEARXNG_BASE_URL",
+  "GROQ_API_KEY",
 ];
+
+const SENSITIVE_FIELD_PATTERN =
+  /(api[_-]?key|authorization|auth[_-]?token|access[_-]?token|credential|password|secret|signature|bearer|cookie|^token$|^key$)/i;
 
 class ProviderHttpError extends Error {
   constructor(message, status, bodySample) {
@@ -99,7 +148,7 @@ export function selectTargets({ provider, path: capabilityPath, tool } = {}) {
     return selected.map((target) => ({ ...target, kind: "tool" }));
   }
 
-  const selected = REQUIRED_PROVIDER_PATHS.filter((target) => {
+  const selected = SUPPORTED_PROVIDER_PATHS.filter((target) => {
     if (provider && target.provider !== provider) return false;
     if (capabilityPath && target.path !== capabilityPath) return false;
     return true;
@@ -210,7 +259,7 @@ Usage:
   node scripts/provider-pass-through.mjs --provider tavily --tool map --out-dir <dir>
 
 Options:
-  --all                 Run every required provider/path and provider-tool row
+  --all                 Run runnable rows and disclose unsupported fixtures as not_run
   --provider NAME       Run one provider, or combine with --path/--tool
   --path NAME           Run one capability path: search, extract, crawl
   --tool NAME           Run one catalogued provider tool (e.g. tavily.map
@@ -220,7 +269,7 @@ Options:
                         evidence directory is protected)
   --waive provider:path or provider.tool
                         Mark a row waived_by_user without running it
-  --list                Print the required provider/path and provider-tool
+  --list                Print the supported provider/path and catalogued tool
                         matrix as JSON
   --overwrite-baseline  Allow writing to the committed Gate 0 baseline evidence
                         directory (requires --all; only for deliberately
@@ -282,6 +331,17 @@ function inputForTarget(target) {
   return { url: CRAWL_URL, limit: CRAWL_LIMIT };
 }
 
+function hasRunnableFixture(target) {
+  const inventory = target.tool ? RUNNABLE_PROVIDER_TOOLS : REQUIRED_PROVIDER_PATHS;
+  return inventory.some((entry) => targetId(entry) === targetId(target));
+}
+
+function evidenceInput(target) {
+  return hasRunnableFixture(target)
+    ? inputForTarget(target)
+    : { unavailable: "no native conformance fixture" };
+}
+
 function normalizedUrl(value) {
   if (!value || typeof value !== "string") return "";
   try {
@@ -315,7 +375,7 @@ function truncate(value, max = 240) {
 
 function secretValues() {
   return SECRET_ENV_NAMES.map((name) => process.env[name]).filter(
-    (value) => typeof value === "string" && value.length >= 8
+    (value) => typeof value === "string" && value.length > 0
   );
 }
 
@@ -326,7 +386,7 @@ function redactString(value) {
     result = result.split(secret).join("REDACTED");
   }
   return result
-    .replace(/([?&](?:jwt|redir_token|access_token|api_key|key|token)=)[^&#"'\s]+/gi, "$1REDACTED")
+    .replace(/([?&](?:jwt|redir_token|access_token|auth_token|api_key|apikey|client_secret|credential|key|password|sessionid|signature|sig|token|x-amz-credential|x-amz-security-token|x-amz-signature)=)[^&#"'\s]+/gi, "$1REDACTED")
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1REDACTED")
     .replace(/(X-API-KEY["':\s]+)[A-Za-z0-9._~+/=-]+/gi, "$1REDACTED")
     .replace(/(X-Subscription-Token["':\s]+)[A-Za-z0-9._~+/=-]+/gi, "$1REDACTED");
@@ -337,10 +397,53 @@ export function redact(value) {
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, redact(entry)])
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        SENSITIVE_FIELD_PATTERN.test(key) ? "REDACTED" : redact(entry),
+      ])
     );
   }
   return value;
+}
+
+/** Safe text boundary for CLI errors that may be copied into CI summaries. */
+export function redactSensitiveText(value) {
+  return redactString(String(value ?? ""));
+}
+
+const MAX_RAW_EVIDENCE_BYTES = 12_000;
+
+function boundedRawValue(value, depth = 0) {
+  if (typeof value === "string") return truncate(redactString(value), 400);
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 5) return "[MAX_DEPTH]";
+  if (Array.isArray(value)) {
+    const entries = value.slice(0, 10).map((entry) => boundedRawValue(entry, depth + 1));
+    if (value.length > entries.length) entries.push(`[${value.length - entries.length} MORE ITEMS]`);
+    return entries;
+  }
+  if (typeof value === "object") {
+    const pairs = Object.entries(value);
+    const out = Object.fromEntries(pairs.slice(0, 40).map(([key, entry]) => [
+      key,
+      SENSITIVE_FIELD_PATTERN.test(key) ? "REDACTED" : boundedRawValue(entry, depth + 1),
+    ]));
+    if (pairs.length > 40) out.__omitted_keys = pairs.length - 40;
+    return out;
+  }
+  return String(value);
+}
+
+function boundedRawEvidence(raw) {
+  const bounded = boundedRawValue(raw);
+  const serialized = JSON.stringify(bounded);
+  if (Buffer.byteLength(serialized, "utf8") <= MAX_RAW_EVIDENCE_BYTES) return bounded;
+  return {
+    truncated: true,
+    serialized_preview: Buffer.from(serialized, "utf8")
+      .subarray(0, MAX_RAW_EVIDENCE_BYTES)
+      .toString("utf8"),
+  };
 }
 
 async function fetchText(url, init = {}, label = "request", timeoutMs = 60000) {
@@ -460,12 +563,15 @@ function makeNativeResult(target, items, metadata = {}) {
 }
 
 function makeNativeToolResult(target, items, metadata = {}) {
+  const { raw, ...safeMetadata } = metadata;
   return {
     ok: true,
     result_count: items.length,
     sample: sampleToolItems(items),
     items,
-    ...metadata,
+    raw_available: hasExpectedToolRawShape(target, raw),
+    raw_sample: boundedRawEvidence(raw),
+    ...safeMetadata,
   };
 }
 
@@ -795,6 +901,7 @@ async function nativeTavilyMap(target) {
   const items = (data.results || []).map((url) => ({ title: "", url, content: "", source: "tavily" }));
   return makeNativeToolResult(target, items, {
     native_shape: ["results[]"],
+    raw: data,
   });
 }
 
@@ -816,6 +923,7 @@ async function nativeBraveWebSearch(target) {
   const items = (data.web?.results || []).map((item, index) => searchItem(item, "brave", index));
   return makeNativeToolResult(target, items, {
     native_shape: ["web.results[].title", "web.results[].url", "web.results[].description"],
+    raw: data,
   });
 }
 
@@ -828,6 +936,7 @@ async function nativeExaContents(target) {
   const items = (data.results || []).map((item) => extractItem(item, "exa", EXTRACT_URL));
   return makeNativeToolResult(target, items, {
     native_shape: ["results[].title", "results[].url", "results[].text"],
+    raw: data,
   });
 }
 
@@ -844,6 +953,7 @@ async function nativeFirecrawlMap(target) {
   const items = firecrawlMapItems(links);
   return makeNativeToolResult(target, items, {
     native_shape: ["links[]"],
+    raw: data,
   });
 }
 
@@ -1077,10 +1187,10 @@ export function makeColdSearchToolResult(target, output) {
     provider: output.provider,
     tool: output.tool,
     meta: output.meta && typeof output.meta === "object" ? output.meta : null,
-    // Evidence keeps the raw body out of persisted reports. This narrower
-    // check only confirms that the expected provider response field is present;
-    // it does not claim byte-for-byte fidelity with the native response.
+    // Keep a bounded, redacted payload sample so provider-specific fields can
+    // be inspected without persisting the full live response.
     raw_available: hasExpectedToolRawShape(target, raw),
+    raw_sample: boundedRawEvidence(raw),
   };
 }
 
@@ -1159,18 +1269,28 @@ export function compareToolTarget(target, nativeResult, coldResult) {
   ));
   checks.push(check(coldResult.result_count > 0, "ColdSearch tool call returned non-empty raw results"));
   checks.push(check(
+    nativeResult.result_count === coldResult.result_count,
+    "Native and ColdSearch tool result counts match"
+  ));
+  checks.push(check(
     hasUrlOrTitleOverlap(nativeResult.items, coldResult.items),
     "native and ColdSearch tool results overlap by URL or title"
   ));
+  if (targetId(target) === "tavily.map" || targetId(target) === "firecrawl.map") {
+    checks.push(check(
+      sameSet(normalizedItemUrls(nativeResult.items), normalizedItemUrls(coldResult.items)),
+      "native and ColdSearch map URL sets match"
+    ));
+  }
   checks.push(check(
-    coldResult.raw_available,
-    "ColdSearch tool call output includes the expected provider raw response field"
+    nativeResult.raw_available && coldResult.raw_available,
+    "native and ColdSearch tool outputs include the expected provider raw response field"
   ));
   checks.push(check(
     coldResult.catalogued,
     "ColdSearch tool call row remained catalogued in the registry"
   ));
-  detailLoss.push("The tool summary is a lossy derived view; provider raw detail stays at the CLI output/redaction boundary and is not re-persisted into evidence.");
+  detailLoss.push("Native and ColdSearch raw payload samples are bounded and redacted in evidence; separate live calls may vary.");
 
   const passed = checks.every((item) => item.pass);
   return { passed, checks, notes, detail_loss: detailLoss };
@@ -1183,6 +1303,14 @@ function check(pass, label) {
 function hasUrlOverlap(nativeItems, coldItems) {
   const nativeUrls = new Set(nativeItems.map((item) => normalizedUrl(item.url)).filter(Boolean));
   return coldItems.some((item) => nativeUrls.has(normalizedUrl(item.url)));
+}
+
+function normalizedItemUrls(items) {
+  return new Set((items || []).map((item) => normalizedUrl(item.url)).filter(Boolean));
+}
+
+function sameSet(left, right) {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function hasUrlOrTitleOverlap(nativeItems, coldItems) {
@@ -1225,7 +1353,7 @@ export function notRunRow(target, reason = "not selected by this scoped run") {
     provider: target.provider,
     ...(target.tool ? { tool: target.tool } : { path: target.path }),
     status: "not_run",
-    input: inputForTarget(target),
+    input: evidenceInput(target),
     native: { skipped: true },
     coldsearch: { skipped: true },
     comparison: { passed: false, notes: [reason] },
@@ -1239,7 +1367,7 @@ async function runTarget(target, options) {
     timestamp,
     provider: target.provider,
     ...(isTool ? { tool: target.tool } : { path: target.path }),
-    input: inputForTarget(target),
+    input: evidenceInput(target),
   };
   const rowKey = targetId(target);
 
@@ -1250,6 +1378,19 @@ async function runTarget(target, options) {
       native: { skipped: true },
       coldsearch: { skipped: true },
       comparison: { passed: false, notes: ["waived by explicit --waive flag"] },
+    };
+  }
+
+  if (!hasRunnableFixture(target)) {
+    return {
+      ...rowBase,
+      status: "not_run",
+      native: { skipped: true },
+      coldsearch: { skipped: true },
+      comparison: {
+        passed: false,
+        notes: ["supported inventory row has no native conformance fixture"],
+      },
     };
   }
 
@@ -1431,13 +1572,13 @@ ${ALLOWED_STATUSES.map((status) => `| ${status} | ${counts[status] || 0} |`).joi
 ## Results
 
 | Row | Status | Native Count | ColdSearch Count | Notes |
-|---|---|---|---:|---:|---|
+|---|---|---:|---:|---|
 ${table}
 
 ## Evidence Files
 
-- \`results.jsonl\`: one machine-readable row per required provider/path and provider-tool row.
-- \`samples/\`: redacted native and ColdSearch samples for rows that ran.
+- \`results.jsonl\`: one machine-readable row per supported provider/path and catalogued provider-tool row.
+- \`samples/\`: bounded, redacted native and ColdSearch samples for rows that ran.
 - \`coldsearch-usage.jsonl\`: usage log emitted by the ColdSearch calls.
 
 Missing credentials or endpoints are recorded as \`blocked_missing_secret\`, not skipped or passed.
@@ -1448,7 +1589,7 @@ Supported rows that this run did not select are recorded as \`not_run\` — they
 export function verifyAllRows(rows) {
   const keys = new Set(rows.map(targetId));
   const required = [
-    ...REQUIRED_PROVIDER_PATHS.map((row) => `${row.provider}:${row.path}`),
+    ...SUPPORTED_PROVIDER_PATHS.map((row) => `${row.provider}:${row.path}`),
     ...REQUIRED_PROVIDER_TOOLS.map((row) => `${row.provider}.${row.tool}`),
   ];
   const missing = required.filter((key) => !keys.has(key));
@@ -1469,7 +1610,7 @@ async function main() {
     return;
   }
   if (options.list) {
-    console.log(JSON.stringify({ paths: REQUIRED_PROVIDER_PATHS, tools: REQUIRED_PROVIDER_TOOLS }, null, 2));
+    console.log(JSON.stringify({ paths: SUPPORTED_PROVIDER_PATHS, tools: REQUIRED_PROVIDER_TOOLS }, null, 2));
     return;
   }
 

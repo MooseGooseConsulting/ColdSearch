@@ -10,10 +10,13 @@ import {
   ALLOWED_STATUSES,
   REQUIRED_PROVIDER_PATHS,
   REQUIRED_PROVIDER_TOOLS,
+  RUNNABLE_PROVIDER_TOOLS,
+  SUPPORTED_PROVIDER_PATHS,
   compareToolTarget,
   makeColdSearchToolResult,
   notRunRow,
   redact,
+  redactSensitiveText,
   renderSummary,
   selectTargets,
   targetId,
@@ -55,8 +58,40 @@ test("Gate 0 harness enumerates every required provider path", () => {
 test("Gate 0 harness enumerates required provider-tool rows", () => {
   assert.deepEqual(
     REQUIRED_PROVIDER_TOOLS.map(({ provider, tool }) => `${provider}.${tool}`),
-    ["tavily.map", "brave.webSearch", "exa.contents", "firecrawl.map"]
+    [
+      "exa.search", "exa.contents", "exa.findSimilar", "exa.answer",
+      "tavily.search", "tavily.extract", "tavily.crawl", "tavily.map", "tavily.research", "tavily.answer",
+      "firecrawl.search", "firecrawl.scrape", "firecrawl.crawl", "firecrawl.map", "firecrawl.extract",
+      "brave.webSearch", "brave.llmContext", "serper.search", "jina.reader", "searxng.search",
+      "brightdata.serp", "brightdata.unlocker", "brightdata.datasetsList", "brightdata.datasetMetadata",
+      "brightdata.scrape", "brightdata.trigger", "brightdata.progress", "brightdata.snapshotMetadata",
+      "brightdata.cancel", "brightdata.snapshot", "brightdata.crawl", "brightdata.discover",
+    ]
   );
+});
+
+test("all catalogued tool profiles remain visible in the conformance inventory", () => {
+  const sourceFiles = [
+    "src/registry/tool-profiles.ts",
+    "src/registry/brightdata-tool-profiles.ts",
+  ];
+  const sourceIds = new Set();
+  for (const file of sourceFiles) {
+    const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
+    for (const [, provider, tool] of source.matchAll(/^\s*"([^."]+)\.([^"]+)":\s*\{/gm)) {
+      sourceIds.add(`${provider}.${tool}`);
+    }
+  }
+  assert.deepEqual(
+    new Set(REQUIRED_PROVIDER_TOOLS.map(targetId)),
+    sourceIds
+  );
+});
+
+test("Bright Data normalized paths stay visible without routine live fixtures", () => {
+  assert.ok(SUPPORTED_PROVIDER_PATHS.some((target) => target.provider === "brightdata" && target.path === "search"));
+  assert.ok(SUPPORTED_PROVIDER_PATHS.some((target) => target.provider === "brightdata" && target.path === "extract"));
+  assert.ok(RUNNABLE_PROVIDER_TOOLS.every((target) => REQUIRED_PROVIDER_TOOLS.some((entry) => targetId(entry) === targetId(target))));
 });
 
 test("Gate 0 harness only emits plan-approved row statuses", () => {
@@ -102,7 +137,12 @@ test("provider/path/tool filters select only requested rows", () => {
     "tavily:search",
     "tavily:extract",
     "tavily:crawl",
+    "tavily.search",
+    "tavily.extract",
+    "tavily.crawl",
     "tavily.map",
+    "tavily.research",
+    "tavily.answer",
   ]);
 });
 
@@ -110,7 +150,7 @@ test("--all selection covers the full matrix of paths and tools", () => {
   const targets = selectTargets();
   assert.equal(
     targets.length,
-    REQUIRED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length
+    SUPPORTED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length
   );
   const toolRows = targets.filter((target) => target.kind === "tool");
   assert.deepEqual(
@@ -119,10 +159,10 @@ test("--all selection covers the full matrix of paths and tools", () => {
   );
 });
 
-test("selectTargets rejects unsupported provider tools", () => {
+test("selectTargets rejects tools outside the catalogued inventory", () => {
   assert.throws(
-    () => selectTargets({ provider: "tavily", tool: "extract" }),
-    /No conformance target matches provider=tavily tool=extract/
+    () => selectTargets({ provider: "tavily", tool: "ghost" }),
+    /No conformance target matches provider=tavily tool=ghost/
   );
 });
 
@@ -210,6 +250,7 @@ test("a successful workflow summary discloses blocked/not-run rows without calli
     notRunRow({ provider: "brave", tool: "webSearch", kind: "tool" }),
   ];
   const summary = renderSummary(rows);
+  assert.match(summary, /\n\|---\|---\|---:\|---:\|---\|\n/);
   assert.match(summary, /\| tavily:search \| pass \| 5 \| 5 \|/);
   assert.match(summary, /\| firecrawl:search \| blocked_missing_secret \| - \| - \|/);
   assert.match(summary, /\| brave.webSearch \| not_run \| - \| - \|/);
@@ -240,6 +281,42 @@ test("secrets and signed URLs are redacted from evidence and summaries", () => {
     delete process.env.TAVILY_API_KEY;
     delete process.env.BRAVE_API_KEY;
   }
+});
+
+test("short credential values are removed from failure text and raw samples", () => {
+  process.env.TAVILY_API_KEY = "tiny";
+  try {
+    assert.equal(redactSensitiveText("provider rejected key tiny"), "provider rejected key REDACTED");
+    const cold = makeColdSearchToolResult(
+      { provider: "tavily", tool: "map" },
+      {
+        ok: true,
+        raw: {
+          results: ["https://example.com"],
+          authorization: "Bearer tiny",
+          detail: "provider echoed tiny",
+        },
+      }
+    );
+    const serialized = JSON.stringify(cold.raw_sample);
+    assert.ok(!serialized.includes("tiny"));
+    assert.equal(cold.raw_sample.authorization, "REDACTED");
+  } finally {
+    delete process.env.TAVILY_API_KEY;
+  }
+});
+
+test("raw provider evidence is clipped to a bounded sample", () => {
+  const fields = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [
+    `field_${index}`,
+    Array.from({ length: 10 }, () => "x".repeat(400)),
+  ]));
+  const cold = makeColdSearchToolResult(
+    { provider: "tavily", tool: "map" },
+    { ok: true, raw: { results: ["https://example.com"], ...fields } }
+  );
+  assert.equal(cold.raw_sample.truncated, true);
+  assert.ok(Buffer.byteLength(cold.raw_sample.serialized_preview, "utf8") <= 12_000);
 });
 
 test("tavily.map parses its result array from raw.results, matching the substrate surface", () => {
@@ -340,10 +417,12 @@ test("Firecrawl Map unwraps object links and preserves the tool metadata envelop
   }]);
   assert.deepEqual(cold.meta, output.meta);
   assert.equal(cold.raw_available, true);
+  assert.deepEqual(cold.raw_sample, raw);
 
   const native = {
     result_count: 1,
     items: cold.items,
+    raw_available: true,
   };
   assert.equal(compareToolTarget(target, native, cold).passed, true);
 
@@ -356,14 +435,41 @@ test("Firecrawl Map unwraps object links and preserves the tool metadata envelop
   );
 });
 
-test("a catalogued tool row without an input definition fails with a clear error", () => {
-  // notRunRow computes the row input through the same TOOL_INPUTS lookup as a
-  // live run, so a catalogued tool missing its entry surfaces an actionable
-  // error instead of a TypeError.
-  assert.throws(
-    () => notRunRow({ provider: "tavily", tool: "ghost", kind: "tool" }),
-    /No tool input defined for tavily\.ghost/
+test("map conformance rejects partial ColdSearch result payloads", () => {
+  const target = { provider: "tavily", tool: "map", kind: "tool" };
+  const nativeItems = [
+    { url: "https://docs.example/a", title: "A" },
+    { url: "https://docs.example/b", title: "B" },
+  ];
+  const native = {
+    result_count: 2,
+    items: nativeItems,
+    raw_available: true,
+  };
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "tavily",
+    tool: "map",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: ["https://docs.example/a"] },
+  });
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "Native and ColdSearch tool result counts match").pass,
+    false
   );
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "native and ColdSearch map URL sets match").pass,
+    false
+  );
+});
+
+test("catalogued tools without fixtures remain visible as not_run", () => {
+  const row = notRunRow({ provider: "exa", tool: "findSimilar", kind: "tool" });
+  assert.equal(row.status, "not_run");
+  assert.deepEqual(row.input, { unavailable: "no native conformance fixture" });
 });
 
 test("--list shows the full matrix including provider-tool rows without network", () => {
@@ -372,7 +478,7 @@ test("--list shows the full matrix including provider-tool rows without network"
   const listed = JSON.parse(result.stdout);
   assert.deepEqual(
     listed.paths.map(({ provider, path }) => `${provider}:${path}`),
-    REQUIRED_PROVIDER_PATHS.map(({ provider, path }) => `${provider}:${path}`)
+    SUPPORTED_PROVIDER_PATHS.map(({ provider, path }) => `${provider}:${path}`)
   );
   assert.deepEqual(
     listed.tools.map(({ provider, tool }) => `${provider}.${tool}`),

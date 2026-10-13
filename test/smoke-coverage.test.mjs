@@ -7,8 +7,8 @@ import {
   renderCoverageTable,
 } from "../scripts/smoke.mjs";
 import {
-  REQUIRED_PROVIDER_PATHS,
   REQUIRED_PROVIDER_TOOLS,
+  SUPPORTED_PROVIDER_PATHS,
 } from "../scripts/provider-pass-through.mjs";
 
 function rowId(row) {
@@ -21,19 +21,21 @@ test("smoke coverage table seeds every supported row as not_run", () => {
   const rows = buildCoverageRows();
   assert.equal(
     rows.length,
-    REQUIRED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length
+    SUPPORTED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length
   );
   for (const entry of rows) {
     assert.equal(entry.conformance, "not_run");
     assert.equal(entry.smoke, "not covered");
   }
   const ids = new Set(rows.map((entry) => rowId(entry.row)));
-  for (const target of REQUIRED_PROVIDER_PATHS) {
+  for (const target of SUPPORTED_PROVIDER_PATHS) {
     assert.ok(ids.has(`${target.provider}:${target.path}`));
   }
   for (const target of REQUIRED_PROVIDER_TOOLS) {
     assert.ok(ids.has(`${target.provider}.${target.tool}`));
   }
+  assert.equal(ids.has("brightdata:search"), true);
+  assert.equal(ids.has("brightdata:extract"), true);
 });
 
 test("smoke coverage table maps check outcomes onto rows", () => {
@@ -64,7 +66,7 @@ test("renderCoverageTable labels rows smoke-only and never reports a conformance
   const dataLines = table
     .split("\n")
     .filter((line) => line.startsWith("| ") && !line.startsWith("| Row"));
-  assert.ok(dataLines.length >= REQUIRED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length);
+  assert.ok(dataLines.length >= SUPPORTED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length);
   for (const line of dataLines) {
     const [rowIdCell, conformance, smoke] = line
       .split("|")
@@ -106,7 +108,7 @@ test("coverage totals reconcile with the rows, one smoke status per inventory en
   const sum = totals.pass + totals.skip + totals.fail + totals["not covered"];
   assert.equal(
     sum,
-    REQUIRED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length,
+    SUPPORTED_PROVIDER_PATHS.length + REQUIRED_PROVIDER_TOOLS.length,
     "totals cover every inventory row exactly once"
   );
   assert.equal(totals.pass, rows.filter((r) => r.smoke === "pass").length);

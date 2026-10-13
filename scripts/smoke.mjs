@@ -13,6 +13,8 @@
  *   are skipped (not failed), so the canary is green with zero secrets.
  * - Coverage: search (tavily/brave/exa/serper), extract (jina keyless +
  *   tavily/exa/firecrawl), crawl (tavily), and agent mode (OpenRouter free; optional Isoquant conformance).
+ * - Published inventory also lists Bright Data and catalogued provider tools;
+ *   rows without a dedicated routine fixture remain explicitly not covered.
  *
  * Exit code is non-zero only when a check that actually ran fails.
  *
@@ -32,8 +34,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  REQUIRED_PROVIDER_PATHS,
   REQUIRED_PROVIDER_TOOLS,
+  SUPPORTED_PROVIDER_PATHS,
+  redactSensitiveText,
 } from "./provider-pass-through.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -220,13 +223,15 @@ function runCheck(check) {
       env: process.env,
     });
     if (res.status !== 0) {
-      throw new Error(`CLI exited ${res.status}: ${(res.stderr || "").trim() || "(no stderr)"}`);
+      throw new Error(redactSensitiveText(
+        `CLI exited ${res.status}: ${(res.stderr || res.stdout || "").trim() || "(no output)"}`
+      ));
     }
     let out;
     try {
       out = JSON.parse(res.stdout);
     } catch {
-      throw new Error(`output was not valid JSON: ${res.stdout.slice(0, 200)}`);
+      throw new Error(redactSensitiveText(`output was not valid JSON: ${res.stdout.slice(0, 200)}`));
     }
     check.assert(out);
   } finally {
@@ -253,7 +258,7 @@ function coverageRowId(row) {
  */
 export function buildCoverageRows(checkResults = []) {
   const byKey = new Map();
-  for (const target of REQUIRED_PROVIDER_PATHS) {
+  for (const target of SUPPORTED_PROVIDER_PATHS) {
     const key = `${target.provider}:${target.path}`;
     byKey.set(key, { row: { ...target }, conformance: "not_run", smoke: "not covered" });
   }
@@ -331,7 +336,7 @@ function main() {
       passed++;
       checkResults.push({ coverage: check.coverage, status: "pass" });
     } catch (err) {
-      console.error(`FAIL  ${check.name}: ${err.message}`);
+      console.error(`FAIL  ${check.name}: ${redactSensitiveText(err.message)}`);
       failed++;
       checkResults.push({ coverage: check.coverage, status: "fail" });
     }
