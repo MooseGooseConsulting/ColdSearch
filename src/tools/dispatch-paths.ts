@@ -42,9 +42,11 @@ export function braveToolPath(tool: string): string {
     case "llmContext":
       return "/res/v1/llm/context";
     default:
-      throw new Error(
-        `Unsupported Brave tool '${tool}'. Supported: webSearch, newsSearch, imageSearch, videoSearch, llmContext.`
-      );
+      // Preserve the substrate's warn-and-forward behavior for uncatalogued
+      // provider tools. Restrict fallback to a single path segment so callers
+      // cannot change the fixed Brave host or escape its versioned API path.
+      if (/^[A-Za-z0-9_-]+$/.test(tool)) return `/res/v1/${tool}`;
+      throw new Error(`Unsupported Brave tool '${tool}': invalid path segment.`);
   }
 }
 

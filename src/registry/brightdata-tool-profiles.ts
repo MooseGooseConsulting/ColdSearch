@@ -30,7 +30,7 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         nativeOptionsWithoutCommonEquivalent: ["zone", "searchEngine", "country"],
         notes:
           "Normalized search consumes organic results only. Shopping/local/other SERP blocks remain provider-native detail. " +
-          "The adapter also accepts the legacy option keys serpZone (for zone) and searchCountry (for country).",
+          "`zone` and `country` are canonical; deprecated legacy options `serpZone` and `searchCountry` are also accepted.",
       },
     ],
     features: {
