@@ -21,10 +21,46 @@ import type {
  * reconciled against the provider docs linked in `docsUrl`.
  */
 
-/** Profiles re-inspected against current provider docs on 2026-10-12
- * (see docs/reviews/2026-10-12-provider-contract-audit.md). This is a
- * doc-reinspection date, not live verification. */
-const REINSPECTED = "2026-10-12";
+const VERIFIED = "2026-06-26";
+/** Profiles re-verified against current provider docs on 2026-10-07. */
+const REVERIFIED = "2026-10-07";
+
+function deferredCandidateProfile(
+  provider: string,
+  tool: string,
+  nativeName: string,
+  category: CapabilityCategory,
+  docsUrl: string
+): ProviderToolProfile {
+  return {
+    provider,
+    tool,
+    nativeName: `Candidate ${nativeName} (unverified)`,
+    categories: [category],
+    description:
+      "Unverified provider-tool candidate. The endpoint and parameter schema " +
+      "must be confirmed from authoritative docs or an authenticated request " +
+      "before implementation.",
+    docsUrl,
+    requiredParams: [],
+    optionalParams: [],
+    commonViews: [
+      {
+        category,
+        semanticFit: "not-recommended",
+        mapsCommonOptions: {},
+        unsupportedCommonOptions: [],
+        notes: "The route and native parameter schema are unverified; do not route as a supported tool.",
+      },
+    ],
+    features: {},
+    execution: { mode: "sync" },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "raw" },
+    schemaSource: "handwritten",
+    schemaLastVerified: null,
+    status: "deferred",
+  };
+}
 
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
@@ -51,6 +87,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "excludeDomains",
       "startPublishedDate",
       "endPublishedDate",
+      "maxAgeHours",
+      "livecrawlTimeout",
       "category",
       "contents",
       "additionalQueries",
@@ -113,7 +151,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: "2026-10-12",
     status: "wired",
     adapterMethod: "search",
   },
@@ -172,7 +210,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -202,7 +240,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync" },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "wired",
     adapterMethod: "findSimilar",
   },
@@ -228,7 +266,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "answer" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
 
@@ -257,7 +295,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "include_images",
       "include_domains",
       "exclude_domains",
+      "include_domains_mode",
       "country",
+      "language",
       "auto_parameters",
       "exact_match",
       "safe_search",
@@ -290,7 +330,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: "2026-10-12",
     status: "wired",
     adapterMethod: "search",
   },
@@ -328,7 +368,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -374,7 +414,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: REVERIFIED,
     status: "wired",
     adapterMethod: "crawl",
   },
@@ -413,7 +453,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
   "tavily.research": {
@@ -453,7 +493,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true, supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "research" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
   "tavily.answer": {
@@ -478,7 +518,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "answer" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
 
@@ -532,7 +572,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -590,7 +630,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "wired",
     adapterMethod: "extract",
   },
@@ -634,7 +674,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true, supportsWait: true, jobIdField: "id" },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "crawl" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "wired",
     adapterMethod: "crawl",
   },
@@ -671,7 +711,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "map" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
   "firecrawl.extract": {
@@ -710,7 +750,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "async-job", supportsPolling: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "research" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "available",
   },
 
@@ -765,7 +805,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
     status: "wired",
     adapterMethod: "search",
   },
@@ -806,7 +846,34 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: VERIFIED,
+    status: "available",
+  },
+  "brave.answers": {
+    provider: "brave",
+    tool: "answers",
+    nativeName: "POST /res/v1/chat/completions",
+    categories: ["answer"],
+    description:
+      "OpenAI-compatible web-grounded Answers endpoint. This separate product " +
+      "uses the Brave Answers plan and is not wired into normalized routing.",
+    docsUrl: "https://api-dashboard.search.brave.com/api-reference/",
+    requiredParams: ["messages"],
+    optionalParams: ["model", "stream"],
+    commonViews: [
+      {
+        category: "answer",
+        semanticFit: "partial",
+        mapsCommonOptions: { question: "messages[0].content" },
+        unsupportedCommonOptions: ["url"],
+        notes: "The endpoint accepts a single user message; response is provider-native.",
+      },
+    ],
+    features: { synthesizedAnswer: true, webGrounding: true },
+    execution: { mode: "streaming", supportsWait: true },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "answer" },
+    schemaSource: "official-docs",
+    schemaLastVerified: "2026-10-12",
     status: "available",
   },
 
@@ -836,10 +903,28 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: "2026-10-12",
     status: "wired",
     adapterMethod: "search",
   },
+
+  // These Serper surfaces were named in the audit but could not be validated
+  // from unauthenticated probes: 403 does not prove a route exists. Keep them
+  // visible as deferred candidates without inventing a parameter schema.
+  "serper.images": deferredCandidateProfile("serper", "images", "POST /images", "search", "https://serper.dev/"),
+  "serper.news": deferredCandidateProfile("serper", "news", "POST /news", "search", "https://serper.dev/"),
+  "serper.videos": deferredCandidateProfile("serper", "videos", "POST /videos", "search", "https://serper.dev/"),
+  "serper.shopping": deferredCandidateProfile("serper", "shopping", "POST /shopping", "search", "https://serper.dev/"),
+  "serper.maps": deferredCandidateProfile("serper", "maps", "POST /maps", "search", "https://serper.dev/"),
+  "serper.places": deferredCandidateProfile("serper", "places", "POST /places", "search", "https://serper.dev/"),
+  "serper.scholar": deferredCandidateProfile("serper", "scholar", "POST /scholar", "search", "https://serper.dev/"),
+  "serper.patents": deferredCandidateProfile("serper", "patents", "POST /patents", "search", "https://serper.dev/"),
+  "serper.autocomplete": deferredCandidateProfile("serper", "autocomplete", "POST /autocomplete", "search", "https://serper.dev/"),
+  "serper.reviews": deferredCandidateProfile("serper", "reviews", "POST /reviews", "search", "https://serper.dev/"),
+  "serper.lens": deferredCandidateProfile("serper", "lens", "POST /lens", "search", "https://serper.dev/"),
+  "serper.webpage": deferredCandidateProfile("serper", "webpage", "POST scrape.serper.dev/webpage", "extract", "https://serper.dev/"),
+  "serper.shots": deferredCandidateProfile("serper", "shots", "POST scrape.serper.dev/shots", "extract", "https://serper.dev/"),
+  "serper.locations": deferredCandidateProfile("serper", "locations", "GET api.serper.dev/locations", "search", "https://serper.dev/"),
 
   // ── Jina ───────────────────────────────────────────────────────────────
   "jina.reader": {
@@ -850,8 +935,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description:
       "Keyless Reader extraction of a single URL to clean text/markdown. " +
       "X-Respond-With now targets jina-ocr-v1 (~40x output tokens; ReaderLM-v2 " +
-      "de-emphasized). JSON via Accept: application/json; streaming via " +
-      "Accept: text/event-stream; POST accepts local PDF/HTML upload.",
+      "de-emphasized). Direct calls can set reader headers and select JSON or " +
+      "event-stream responses; event streams are preserved as text, not yielded " +
+      "incrementally. Local-file POST upload is not exposed by this JSON call.",
     docsUrl: "https://jina.ai/reader",
     requiredParams: ["url"],
     optionalParams: [
@@ -885,6 +971,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "X-With-Iframe",
       "X-With-Shadow-Dom",
       "X-Base",
+      "Accept",
     ],
     commonViews: [
       {
@@ -898,10 +985,14 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: "2026-10-12",
     status: "wired",
     adapterMethod: "extract",
   },
+  "jina.search": deferredCandidateProfile("jina", "search", "GET s.jina.ai", "search", "https://jina.ai/"),
+  "jina.embeddings": deferredCandidateProfile("jina", "embeddings", "POST /v1/embeddings", "research", "https://jina.ai/embeddings"),
+  "jina.rerank": deferredCandidateProfile("jina", "rerank", "POST /v1/rerank", "research", "https://jina.ai/reranker"),
+  "jina.deepSearch": deferredCandidateProfile("jina", "deepSearch", "POST deepsearch.jina.ai/v1/chat/completions", "research", "https://jina.ai/deepsearch"),
 
   // ── SearXNG ────────────────────────────────────────────────────────────
   "searxng.search": {
@@ -912,7 +1003,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description: "Self-hosted metasearch. Operator-configured `baseUrl`.",
     docsUrl: "https://docs.searxng.org",
     requiredParams: ["q"],
-    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "format"],
+    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "theme", "format"],
     commonViews: [
       {
         category: "search",
@@ -930,7 +1021,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REINSPECTED,
+    schemaLastVerified: "2026-10-12",
     status: "wired",
     adapterMethod: "search",
   },

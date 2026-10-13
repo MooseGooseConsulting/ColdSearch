@@ -377,7 +377,7 @@ async function dispatchToolCall(
       
       let bravePath = `/res/v1/${tool}`;
       if (tool === "webSearch") bravePath = "/res/v1/web/search";
-      else if (tool === "llmContext") bravePath = "/res/v1/summarizer/llm_context";
+      else if (tool === "llmContext") bravePath = "/res/v1/llm/context";
       else if (tool === "newsSearch") bravePath = "/res/v1/news/search";
       else if (tool === "videoSearch") bravePath = "/res/v1/video/search";
       else if (tool === "imageSearch") bravePath = "/res/v1/image/search";
@@ -406,8 +406,24 @@ async function dispatchToolCall(
       }
       
       if (tool === "reader" || (params.url && !params.q)) {
-        useTextParser = true;
-        headers["Accept"] = "text/plain";
+        delete headers["Content-Type"];
+        const acceptEntry = Object.entries(params).find(([key]) => key.toLowerCase() === "accept");
+        const accept = typeof acceptEntry?.[1] === "string" ? acceptEntry[1] : "text/plain";
+        headers["Accept"] = accept;
+        useTextParser = !accept.toLowerCase().startsWith("application/json");
+        // Reader options are HTTP headers, not query or JSON-body fields.
+        // Only forward the documented header surface so arbitrary parameters
+        // cannot change transport-level headers such as Host or Authorization.
+        const readerProfileParams = new Map(
+          (registryProfile?.optionalParams ?? []).map((param) => [param.toLowerCase(), param])
+        );
+        for (const [key, value] of Object.entries(params)) {
+          const normalized = key.toLowerCase();
+          const headerName = readerProfileParams.get(normalized);
+          if (headerName && value != null) {
+            headers[headerName] = String(value);
+          }
+        }
         method = "GET";
         const targetUrl = params.url || params.q || "";
         // r.jina.ai takes the target URL appended raw (matches JinaAdapter).

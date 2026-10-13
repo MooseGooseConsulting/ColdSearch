@@ -193,17 +193,16 @@ they go stale fast and are intentionally not mirrored here.
 - `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` ❌
 - `/suggest` (autocomplete), `/spellcheck` ❌ (separate prepaid add-on plans)
 - LLM Context `GET/POST /res/v1/llm/context` — repackaged ~2026-02; now included in the standard Search plan ❌
-- Answers `POST /res/v1/chat/completions` (OpenAI-compatible, models `brave-pro`/`brave`) — separate Answers plan ❌
+- Answers `POST /res/v1/chat/completions` (OpenAI-compatible, models `brave-pro`/`brave`) — separate Answers plan; catalogued as `brave.answers`, not wired to normalized routing ❌
 
 ### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev) (`serper.dev/docs` now 404s — docs live on the homepage demo + login-gated playground)
-- `POST /search` (Google web) → **search** ✅ (also accepts a `location` param, backed by the unauthenticated `GET api.serper.dev/locations` geo list)
-- `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews`, `/lens` ❌ — **11 Google verticals unused**
-- `scrape.serper.dev` `/webpage` + `/shots` (page scraping) ❌
+- `POST /search` (Google web) → **search** ✅ (also accepts a `location` parameter)
+- Candidate verticals `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews`, and `/lens`, plus `scrape.serper.dev` `/webpage` and `/shots` and `api.serper.dev/locations`, are catalogued as **deferred**. Unauthenticated 403 responses do not confirm route existence or parameter schemas; verify with authoritative documentation or authenticated requests before implementation.
 
 ### Jina — `src/adapters/jina.ts` · [docs](https://jina.ai)
 - `r.jina.ai` Reader → **extract** ✅ (keyless: 20 RPM no key / 500 RPM free key; rich `X-*` header surface — see registry profile)
-- `s.jina.ai` search ❌ (live but now key-gated)
-- deep-search (`deepsearch.jina.ai`), `/v1/embeddings` (v5), `/v1/rerank` (v3.5) ❌ — no standalone `summarize` endpoint exists; DeepSearch covers it
+- `s.jina.ai` search — deferred candidate; key-gated
+- DeepSearch (`deepsearch.jina.ai`), `/v1/embeddings` (v5), `/v1/rerank` (v3.5) — deferred candidates pending request-schema and dispatch reconciliation; no standalone `summarize` endpoint exists
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
 - `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
@@ -214,8 +213,8 @@ they go stale fast and are intentionally not mirrored here.
 These are design choices, not bugs — the adapters expose the common denominator and
 skip vendor specialties. Highest-leverage gaps:
 
-- **Serper** — 11 Google verticals (news, scholar, images, shopping, maps, patents, lens…); only plain web is wired.
-- **Jina** — `embeddings` (v5) + `rerank` (v3.5) could back ColdSearch's own reranking step; `s.jina.ai` search is live but key-gated.
+- **Serper** — candidate verticals are catalogued as deferred until routes and schemas are validated with authoritative or authenticated evidence.
+- **Jina** — `embeddings` (v5), `rerank` (v3.5), search, and DeepSearch are catalogued as deferred candidates pending schema and dispatch reconciliation.
 - **Tavily `answer`/`research`** and **Exa `answer`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`); Exa's standalone `/research` was retired 2026-05-01 (deep modes live on `/search`).
 - **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-12 audit.
 - **Bright Data** Crawl/Discover/Browser/Marketplace expansion should be driven by concrete workflows and spend controls, not by surface-area completion.

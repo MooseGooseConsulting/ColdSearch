@@ -248,8 +248,8 @@ export interface ProviderToolProfile {
   };
 
   schemaSource: SchemaSource;
-  /** YYYY-MM-DD the native schema was last verified against provider docs. */
-  schemaLastVerified: string;
+  /** YYYY-MM-DD the native schema was last verified; null means not reconciled. */
+  schemaLastVerified: string | null;
 
   status: ToolWiringStatus;
   /** For wired tools: the adapter method that backs this tool. */
