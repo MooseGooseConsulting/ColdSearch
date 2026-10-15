@@ -1775,7 +1775,7 @@ export function writeEvidence(outDir, samplesDir, rows) {
       samplePath,
       `${JSON.stringify(redactEvidenceRow({
         provider: row.provider,
-        path: row.path || row.tool,
+        ...(row.tool ? { tool: row.tool } : { path: row.path }),
         status: row.status,
         native: row.native,
         coldsearch: row.coldsearch,

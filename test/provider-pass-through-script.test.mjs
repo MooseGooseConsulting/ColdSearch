@@ -208,21 +208,36 @@ test("results.jsonl emits one machine-readable row per provider-tool entry", () 
         coldsearch: { result_count: 2 },
         comparison: { passed: true, notes: [], checks: [], detail_loss: [] },
       },
-      notRunRow({ provider: "tavily", tool: "map", kind: "tool" }),
+      {
+        provider: "tavily",
+        tool: "map",
+        status: "pass",
+        native: { result_count: 2 },
+        coldsearch: { result_count: 2 },
+        comparison: { passed: true, notes: [], checks: [], detail_loss: [] },
+      },
+      notRunRow({ provider: "exa", tool: "contents", kind: "tool" }),
     ];
     writeEvidence(dir, samplesDir, rows);
     const lines = fs.readFileSync(path.join(dir, "results.jsonl"), "utf8")
       .trim()
       .split("\n");
-    assert.equal(lines.length, 2);
+    assert.equal(lines.length, 3);
     const parsed = lines.map((line) => JSON.parse(line));
     assert.deepEqual(
       parsed.map((row) => [row.provider, row.tool ?? row.path, row.status]),
       [
         ["tavily", "search", "pass"],
-        ["tavily", "map", "not_run"],
+        ["tavily", "map", "pass"],
+        ["exa", "contents", "not_run"],
       ]
     );
+    const pathSample = JSON.parse(fs.readFileSync(path.join(samplesDir, "tavily-search.json"), "utf8"));
+    assert.equal(pathSample.path, "search");
+    assert.equal(Object.hasOwn(pathSample, "tool"), false);
+    const toolSample = JSON.parse(fs.readFileSync(path.join(samplesDir, "tavily-map.json"), "utf8"));
+    assert.equal(toolSample.tool, "map");
+    assert.equal(Object.hasOwn(toolSample, "path"), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -777,6 +792,7 @@ test("tool conformance rejects invalid provider result-array item types", () => 
 
 test("raw provider id and status values are omitted from schema-only evidence", () => {
   const secret = "short-provider-key";
+  const previous = process.env.EXA_API_KEY;
   process.env.EXA_API_KEY = secret;
   try {
     const result = makeColdSearchToolResult(
@@ -794,7 +810,8 @@ test("raw provider id and status values are omitted from schema-only evidence", 
     assert.equal(result.raw_sample.stable.statuses.items[0].fields.id.type, "string");
     assert.equal(result.raw_sample.stable.statuses.items[0].fields.status.type, "string");
   } finally {
-    delete process.env.EXA_API_KEY;
+    if (previous === undefined) delete process.env.EXA_API_KEY;
+    else process.env.EXA_API_KEY = previous;
   }
 });
 
