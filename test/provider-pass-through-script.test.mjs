@@ -14,6 +14,7 @@ import {
   SUPPORTED_PROVIDER_PATHS,
   compareToolTarget,
   makeColdSearchToolResult,
+  missingRequiredEvidenceRows,
   notRunRow,
   redact,
   redactSensitiveText,
@@ -62,7 +63,8 @@ test("Gate 0 harness enumerates required provider-tool rows", () => {
       "exa.search", "exa.contents", "exa.findSimilar", "exa.answer",
       "tavily.search", "tavily.extract", "tavily.crawl", "tavily.map", "tavily.research", "tavily.answer",
       "firecrawl.search", "firecrawl.scrape", "firecrawl.crawl", "firecrawl.map", "firecrawl.extract",
-      "brave.webSearch", "brave.llmContext", "brave.answers", "serper.search", "jina.reader", "searxng.search",
+      "brave.webSearch", "brave.llmContext", "brave.answers", "serper.search",
+      "jina.reader", "jina.embeddings", "jina.rerank", "searxng.search",
       "brightdata.serp", "brightdata.unlocker", "brightdata.datasetsList", "brightdata.datasetMetadata",
       "brightdata.scrape", "brightdata.trigger", "brightdata.progress", "brightdata.snapshotMetadata",
       "brightdata.cancel", "brightdata.snapshot", "brightdata.crawl", "brightdata.discover",
@@ -70,7 +72,7 @@ test("Gate 0 harness enumerates required provider-tool rows", () => {
   );
 });
 
-test("all catalogued tool profiles remain visible in the conformance inventory", () => {
+test("all wired provider-tool profiles remain visible in the conformance inventory", () => {
   const sourceFiles = [
     "src/registry/tool-profiles.ts",
     "src/registry/brightdata-tool-profiles.ts",
@@ -78,13 +80,33 @@ test("all catalogued tool profiles remain visible in the conformance inventory",
   const sourceIds = new Set();
   for (const file of sourceFiles) {
     const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-    for (const [, provider, tool] of source.matchAll(/^\s*"([^."]+)\.([^"]+)":\s*\{/gm)) {
+    for (const [, provider, tool] of source.matchAll(/^\s*"([^."]+)\.([^"]+)":\s*(?:\{|directPassThroughProfile\()/gm)) {
       sourceIds.add(`${provider}.${tool}`);
     }
   }
   assert.deepEqual(
     new Set(REQUIRED_PROVIDER_TOOLS.map(targetId)),
     sourceIds
+  );
+});
+
+test("modern evidence keeps requiring tool rows even if every tool row is removed", () => {
+  const fullRows = [...SUPPORTED_PROVIDER_PATHS, ...REQUIRED_PROVIDER_TOOLS]
+    .map((target) => notRunRow(target));
+  const damagedRows = fullRows.filter((row) => !row.tool);
+  const summary = renderSummary(damagedRows);
+
+  assert.match(summary, /Inventory schema version: 2/);
+  assert.deepEqual(
+    missingRequiredEvidenceRows(damagedRows, summary),
+    REQUIRED_PROVIDER_TOOLS.map(targetId)
+  );
+});
+
+test("evidence validation fails closed when the inventory version is missing", () => {
+  assert.throws(
+    () => missingRequiredEvidenceRows([], "# Gate 0 evidence"),
+    /missing an inventory schema version/
   );
 });
 

@@ -55,7 +55,7 @@ node scripts/provider-pass-through.mjs --provider brave --tool webSearch \
   --out-dir /tmp/coldsearch-conformance-brave-websearch
 ```
 
-The harness emits one machine-readable row per selected row into `results.jsonl` plus a coverage `summary.md`. Supported rows a scoped selection did not include are listed as `not_run` — never counted as passes. Every row is exactly one of `pass`, `fail`, `blocked_missing_secret`, `blocked_provider`, `not_run`, `waived_by_user`. Use `--list` to enumerate the full matrix (paths and tools), `--tool NAME` (optionally with `--provider`) for a tool row, and `--waive <provider:path|provider.tool>` to mark a specific row waived. `--all` remains the deliberate full-matrix baseline selection.
+The harness emits one machine-readable row per selected row into `results.jsonl` plus a coverage `summary.md`. Supported rows a scoped selection did not include are listed as `not_run` — never counted as passes. Every row is exactly one of `pass`, `fail`, `blocked_missing_secret`, `blocked_provider`, `not_run`, `waived_by_user`. Use `--list` to enumerate the full matrix (paths and tools), `--tool NAME` (optionally with `--provider`) for a tool row, and `--waive <provider:path|provider.tool>` to mark a specific row waived. `--all` remains the deliberate full-matrix baseline selection. The summary records its inventory schema version; docs validation uses that marker to keep modern path-and-tool baselines from silently downgrading to the historical path-only matrix when rows are missing.
 
 ## Logging / CI output
 

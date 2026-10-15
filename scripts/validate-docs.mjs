@@ -3,9 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import {
   ALLOWED_STATUSES,
-  REQUIRED_PROVIDER_PATHS,
-  REQUIRED_PROVIDER_TOOLS,
-  SUPPORTED_PROVIDER_PATHS,
+  missingRequiredEvidenceRows,
   targetId,
 } from "./provider-pass-through.mjs";
 
@@ -283,13 +281,7 @@ await requireFile(`${providerEvidenceDir}/results.jsonl`);
 
 if (await exists(providerEvidenceDir)) {
   const rows = await readJsonl(`${providerEvidenceDir}/results.jsonl`);
-  // Keep the committed artifact's historical path-only inventory valid. If a
-  // full baseline is regenerated, validate its complete path and tool matrix.
-  const fullInventory = rows.some((row) => row.tool);
-  const expectedTargets = fullInventory
-    ? [...SUPPORTED_PROVIDER_PATHS, ...REQUIRED_PROVIDER_TOOLS]
-    : REQUIRED_PROVIDER_PATHS;
-  const expected = expectedTargets.map(targetId);
+  const summary = await read(`${providerEvidenceDir}/summary.md`);
   const seen = new Set();
 
   for (const row of rows) {
@@ -304,13 +296,14 @@ if (await exists(providerEvidenceDir)) {
     }
   }
 
-  for (const key of expected) {
-    if (!seen.has(key)) {
+  try {
+    for (const key of missingRequiredEvidenceRows(rows, summary)) {
       fail(`${providerEvidenceDir}/results.jsonl is missing required row ${key}`);
     }
+  } catch (error) {
+    fail(`${providerEvidenceDir}/summary.md: ${error.message}`);
   }
 
-  const summary = await read(`${providerEvidenceDir}/summary.md`);
   // The committed baseline is a historical full-matrix snapshot and cannot be
   // regenerated in CI (that would require paid live calls), so it is validated
   // against the status vocabulary in effect when it was generated: statuses

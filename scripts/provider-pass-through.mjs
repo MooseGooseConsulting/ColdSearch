@@ -15,6 +15,8 @@ export const ALLOWED_STATUSES = [
   "waived_by_user",
 ];
 
+const EVIDENCE_INVENTORY_SCHEMA_VERSION = 2;
+
 export const REQUIRED_PROVIDER_PATHS = [
   { provider: "tavily", path: "search" },
   { provider: "tavily", path: "extract" },
@@ -66,6 +68,8 @@ export const REQUIRED_PROVIDER_TOOLS = [
   { provider: "brave", tool: "answers" },
   { provider: "serper", tool: "search" },
   { provider: "jina", tool: "reader" },
+  { provider: "jina", tool: "embeddings" },
+  { provider: "jina", tool: "rerank" },
   { provider: "searxng", tool: "search" },
   { provider: "brightdata", tool: "serp" },
   { provider: "brightdata", tool: "unlocker" },
@@ -1593,6 +1597,26 @@ export function targetId(target) {
     : `${target.provider}:${target.path}`;
 }
 
+export function missingRequiredEvidenceRows(rows, summary) {
+  const versionMatch = summary.match(/^Inventory schema version: (\d+)$/m);
+  if (!versionMatch) {
+    throw new Error("summary.md is missing an inventory schema version");
+  }
+
+  const version = Number(versionMatch[1]);
+  let expectedTargets;
+  if (version === 1) {
+    expectedTargets = REQUIRED_PROVIDER_PATHS;
+  } else if (version === 2) {
+    expectedTargets = [...SUPPORTED_PROVIDER_PATHS, ...REQUIRED_PROVIDER_TOOLS];
+  } else {
+    throw new Error(`summary.md has unsupported inventory schema version ${version}`);
+  }
+
+  const seen = new Set(rows.map(targetId));
+  return expectedTargets.map(targetId).filter((key) => !seen.has(key));
+}
+
 const FIXED_TARGET_TOOL_URLS = {
   "exa.contents": EXTRACT_URL,
 };
@@ -1806,6 +1830,8 @@ export function renderSummary(rows) {
   return `# Gate 0 Provider Pass-Through Evidence
 
 Generated: ${generatedAt}
+
+Inventory schema version: ${EVIDENCE_INVENTORY_SCHEMA_VERSION}
 
 ## Commands
 
