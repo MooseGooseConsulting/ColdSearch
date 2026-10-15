@@ -80,6 +80,51 @@ test("parallel fanout collects and merges results from multiple providers", asyn
   }
 });
 
+test("CLI default output cap leaves configured provider counts in control", async () => {
+  const requests = [];
+  const restore = installFetchMock({
+    "*": async ({ url, method, init }) => {
+      const parsed = new URL(url);
+      const body = init.body ? JSON.parse(init.body) : {};
+      requests.push({ host: parsed.host, path: parsed.pathname, method, params: parsed.searchParams, body });
+      if (parsed.host === "api.search.brave.com") return jsonResponse({ web: { results: [] } });
+      if (parsed.host === "google.serper.dev") return jsonResponse({ organic: [] });
+      if (parsed.host === "api.exa.ai") return jsonResponse({ results: [] });
+      if (parsed.host === "api.firecrawl.dev") return jsonResponse({ success: true, data: { web: [] } });
+      if (parsed.host === "api.tavily.com") return jsonResponse({ results: [] });
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+
+  const providers = [
+    { provider: "brave", option: "count", read: (r) => r.params.get("count") },
+    { provider: "serper", option: "num", read: (r) => r.body.num },
+    { provider: "exa", option: "numResults", read: (r) => r.body.numResults },
+    { provider: "firecrawl", option: "limit", read: (r) => r.body.limit },
+    { provider: "tavily", option: "max_results", read: (r) => r.body.max_results },
+  ];
+
+  try {
+    for (const { provider, option, read } of providers) {
+      const engine = new FanoutEngine(
+        makeConfig({
+          capabilities: { search: { providers: [provider], strategy: "all" } },
+          providers: {
+            [provider]: { keyPool: { keys: ["k"] }, options: { [option]: 17 } },
+          },
+        })
+      );
+
+      await engine.search("q", { limit: 10, limitSet: false, rerankStrategy: "none" });
+      await engine.search("q", { limit: 7, limitSet: true, rerankStrategy: "none" });
+      const expected = provider === "brave" ? ["17", "7"] : [17, 7];
+      assert.deepEqual(requests.slice(-2).map(read), expected, provider);
+    }
+  } finally {
+    restore();
+  }
+});
+
 test("sequential extract tries providers in order and returns on first success", async () => {
   const restore = installFetchMock({
     "POST https://api.exa.ai/contents": async () => rawResponse("nope", { status: 500 }),

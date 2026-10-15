@@ -145,7 +145,9 @@ export class BrightDataAdapter implements SearchAdapter {
     // are configured in the shared provider options.
     const zone = requireStringOption(options, ["unlockerZone", "zone"], "BRIGHTDATA_UNLOCKER_ZONE");
     const country = optionalStringOption(options, ["country", "searchCountry"], "us");
-    const format = optionalStringOption(options, ["format"], "raw");
+    // Normalized extract returns page text, so request the raw unlocker body
+    // even when shared provider config selects a JSON envelope for other tools.
+    const format = "raw";
     const dataFormat = optionalStringOption(options, ["data_format"], "markdown");
     if (dataFormat === "screenshot") {
       throw new Error(
