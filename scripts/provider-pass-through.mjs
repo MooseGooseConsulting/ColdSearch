@@ -63,6 +63,7 @@ export const REQUIRED_PROVIDER_TOOLS = [
   { provider: "firecrawl", tool: "extract" },
   { provider: "brave", tool: "webSearch" },
   { provider: "brave", tool: "llmContext" },
+  { provider: "brave", tool: "answers" },
   { provider: "serper", tool: "search" },
   { provider: "jina", tool: "reader" },
   { provider: "searxng", tool: "search" },

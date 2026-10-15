@@ -62,7 +62,7 @@ test("Gate 0 harness enumerates required provider-tool rows", () => {
       "exa.search", "exa.contents", "exa.findSimilar", "exa.answer",
       "tavily.search", "tavily.extract", "tavily.crawl", "tavily.map", "tavily.research", "tavily.answer",
       "firecrawl.search", "firecrawl.scrape", "firecrawl.crawl", "firecrawl.map", "firecrawl.extract",
-      "brave.webSearch", "brave.llmContext", "serper.search", "jina.reader", "searxng.search",
+      "brave.webSearch", "brave.llmContext", "brave.answers", "serper.search", "jina.reader", "searxng.search",
       "brightdata.serp", "brightdata.unlocker", "brightdata.datasetsList", "brightdata.datasetMetadata",
       "brightdata.scrape", "brightdata.trigger", "brightdata.progress", "brightdata.snapshotMetadata",
       "brightdata.cancel", "brightdata.snapshot", "brightdata.crawl", "brightdata.discover",
