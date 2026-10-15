@@ -131,36 +131,38 @@ test("replay: Firecrawl /v2/scrape 200 html envelope — data.html is surfaced a
   assertNormalizedResult("extract", "firecrawl", result);
 });
 
-test("replay: Tavily 401 envelope classifies as credentials with provider detail", async () => {
+test("replay: Tavily 401 envelope classifies as credentials without exposing the body", async () => {
   const fixture = await loadFixture("tavily-search-401.json");
   const error = await replayError(fixture);
   assert.equal(error.status, 401);
+  assert.equal(error.body, fixture.responseBodyText);
 
   const { category, message } = classifyError(error);
   assert.equal(category, "credentials");
-  assert.match(message, /Tavily search failed with HTTP 401/);
-  assert.match(message, /Unauthorized: missing or invalid API key\./);
+  assert.equal(message, "Tavily search failed with HTTP 401");
+  assert.doesNotMatch(message, /Unauthorized: missing or invalid API key/);
 });
 
-test("replay: Serper 403 envelope classifies as credentials with provider detail", async () => {
+test("replay: Serper 403 envelope classifies as credentials without exposing the body", async () => {
   const fixture = await loadFixture("serper-search-403.json");
   const error = await replayError(fixture);
   assert.equal(error.status, 403);
+  assert.equal(error.body, fixture.responseBodyText);
 
   const { category, message } = classifyError(error);
   assert.equal(category, "credentials");
-  assert.match(message, /Serper search failed with HTTP 403/);
-  assert.match(message, /Unauthorized\. Sign up for a free account\./);
-  assert.match(message, /\[provider: 403\]/);
+  assert.equal(message, "Serper search failed with HTTP 403");
+  assert.doesNotMatch(message, /Unauthorized|provider: 403/);
 });
 
-test("replay: Exa 402 envelope classifies as quota with the X402 tag as slug", async () => {
+test("replay: Exa 402 envelope classifies as quota without exposing the body", async () => {
   const fixture = await loadFixture("exa-search-402.json");
   const error = await replayError(fixture);
   assert.equal(error.status, 402);
+  assert.equal(error.body, fixture.responseBodyText);
 
   const { category, message } = classifyError(error);
   assert.equal(category, "quota");
-  assert.match(message, /Exa search failed with HTTP 402/);
-  assert.match(message, /\[provider: X402_PAYMENT_REQUIRED\] Payment required to access this resource/);
+  assert.equal(message, "Exa search failed with HTTP 402");
+  assert.doesNotMatch(message, /X402_PAYMENT_REQUIRED|Payment required to access this resource/);
 });
