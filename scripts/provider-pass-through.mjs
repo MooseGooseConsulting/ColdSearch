@@ -456,6 +456,15 @@ const STABLE_RAW_METADATA_FIELDS = {
   "brave.webSearch": [{ name: "query", preserveObjectFields: true }],
   "exa.contents": [{ name: "statuses", preserveArrayItemFields: true }],
 };
+const TOOL_RAW_RESULT_ARRAYS = {
+  "tavily.map": [{ name: "results", path: ["results"], itemTypes: ["string"] }],
+  "brave.webSearch": [{ name: "results", path: ["web", "results"], itemTypes: ["object"] }],
+  "exa.contents": [{ name: "results", path: ["results"], itemTypes: ["object"] }],
+  "firecrawl.map": [
+    { name: "links", path: ["links"], itemTypes: ["string", "object"] },
+    { name: "data", path: ["data"], itemTypes: ["string", "object"] },
+  ],
+};
 
 function rawSchemaShape(value, budget, depth = 0) {
   if (budget.remaining <= 0) {
@@ -508,7 +517,22 @@ function boundedRawEvidence(raw, target) {
     const stableBudget = { remaining: 80, truncated: false };
     stable[name] = rawSchemaShape(raw[name], stableBudget, 1);
   }
-  const sample = { schema: shape, stable, truncated: budget.truncated };
+  const resultArrayItemTypes = {};
+  for (const { name, path } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
+    let value = raw;
+    for (const part of path) value = value && typeof value === "object" ? value[part] : undefined;
+    if (Array.isArray(value)) {
+      resultArrayItemTypes[name] = [...new Set(value.map((item) =>
+        item === null ? "null" : Array.isArray(item) ? "array" : typeof item
+      ))].sort();
+    }
+  }
+  const sample = {
+    schema: shape,
+    stable,
+    result_array_item_types: resultArrayItemTypes,
+    truncated: budget.truncated,
+  };
   while (Buffer.byteLength(JSON.stringify(sample), "utf8") > MAX_RAW_EVIDENCE_BYTES) {
     sample.truncated = true;
     if (trimRawSchemaShape(sample.schema)) continue;
@@ -1381,16 +1405,25 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     "ColdSearch tool output preserves stable provider raw metadata schema"
   ));
   checks.push(check(
+    compareToolRawResultArrayTypes(target, nativeResult.raw_sample, coldResult.raw_sample),
+    "native and ColdSearch tool result arrays retain expected item types"
+  ));
+  checks.push(check(
     coldResult.catalogued,
     "ColdSearch tool call row remained catalogued in the registry"
   ));
   const fixedUrl = FIXED_TARGET_TOOL_URLS[targetId(target)];
   if (fixedUrl) {
+    // Exa can return a canonical URL for the requested page. It does not
+    // expose reliable redirect metadata, so compare both independent legs'
+    // nonempty URL sets instead of requiring each to echo the input string.
+    const nativeUrls = new Set((nativeResult.items || []).map((item) => normalizedUrl(item.url)).filter(Boolean));
+    const coldUrls = new Set((coldResult.items || []).map((item) => normalizedUrl(item.url)).filter(Boolean));
     checks.push(check(
-      [nativeResult.items, coldResult.items].every((items) =>
-        (items || []).every((item) => normalizedUrl(item.url) === normalizedUrl(fixedUrl))
-      ),
-      "native and ColdSearch results retain the requested URL identity"
+      nativeUrls.size > 0 &&
+        nativeUrls.size === coldUrls.size &&
+        [...nativeUrls].every((url) => coldUrls.has(url)),
+      "native and ColdSearch results retain the same requested-page URL identity, including a shared canonical URL"
     ));
   }
   if (toolResultsVary(nativeResult.items, coldResult.items)) {
@@ -1452,6 +1485,20 @@ function compareToolRawSchema(target, nativeSample, coldSample) {
       if (!expectedItems.every((expected) => actualItems.some((actual) => schemaShapeContains(expected, actual)))) {
         return false;
       }
+    }
+  }
+  return true;
+}
+
+function compareToolRawResultArrayTypes(target, nativeSample, coldSample) {
+  const nativeTypesByArray = nativeSample?.result_array_item_types || {};
+  const coldTypesByArray = coldSample?.result_array_item_types || {};
+  for (const { name, itemTypes } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
+    const nativeTypes = nativeTypesByArray[name];
+    const coldTypes = coldTypesByArray[name];
+    if (nativeTypes && !coldTypes) return false;
+    if ([nativeTypes, coldTypes].some((types) => types && types.some((type) => !itemTypes.includes(type)))) {
+      return false;
     }
   }
   return true;

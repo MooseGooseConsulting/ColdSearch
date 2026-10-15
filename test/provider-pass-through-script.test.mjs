@@ -708,9 +708,74 @@ test("Exa contents keeps its fixed requested URL identity", () => {
   );
   assert.equal(comparison.passed, false);
   assert.equal(
-    comparison.checks.find(({ label }) => label === "native and ColdSearch results retain the requested URL identity").pass,
+    comparison.checks.find(({ label }) => label === "native and ColdSearch results retain the same requested-page URL identity, including a shared canonical URL").pass,
     false
   );
+});
+
+test("Exa contents accepts the same canonical URL from both calls", () => {
+  const target = { provider: "exa", tool: "contents", kind: "tool" };
+  const makeResult = () => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "exa",
+    tool: "contents",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: [{ url: "https://www.example.com/", title: "Example", text: "page text" }] },
+  });
+  const comparison = compareToolTarget(target, makeResult(), makeResult());
+  assert.equal(comparison.passed, true);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "native and ColdSearch results retain the same requested-page URL identity, including a shared canonical URL").pass,
+    true
+  );
+});
+
+test("tool conformance rejects invalid provider result-array item types", () => {
+  const target = { provider: "tavily", tool: "map", kind: "tool" };
+  const native = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: { results: ["https://docs.example/a"] },
+  });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "tavily",
+    tool: "map",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: [{ url: "https://docs.example/a" }] },
+  });
+  assert.deepEqual(native.raw_sample.result_array_item_types.results, ["string"]);
+  assert.deepEqual(cold.raw_sample.result_array_item_types.results, ["object"]);
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "native and ColdSearch tool result arrays retain expected item types").pass,
+    false
+  );
+});
+
+test("raw provider id and status values are omitted from schema-only evidence", () => {
+  const secret = "short-provider-key";
+  process.env.EXA_API_KEY = secret;
+  try {
+    const result = makeColdSearchToolResult(
+      { provider: "exa", tool: "contents", kind: "tool" },
+      {
+        ok: true,
+        raw: {
+          results: [{ url: "https://example.com", text: "content" }],
+          statuses: [{ id: secret, status: secret }],
+        },
+      }
+    );
+    const serialized = JSON.stringify(result.raw_sample);
+    assert.ok(!serialized.includes(secret));
+    assert.equal(result.raw_sample.stable.statuses.items[0].fields.id.type, "string");
+    assert.equal(result.raw_sample.stable.statuses.items[0].fields.status.type, "string");
+  } finally {
+    delete process.env.EXA_API_KEY;
+  }
 });
 
 test("short credentials are redacted from evidence text without changing row status", () => {
