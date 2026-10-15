@@ -775,6 +775,8 @@ export class FanoutEngine {
         const quotaExhausted = isQuotaExhausted(error);
         recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
+        // Firecrawl wraps non-transient polling HTTP errors to add job context.
+        // Keep the original response status for the final operator-facing category.
         const httpError = findHttpRequestError(error);
         if (httpError) providerHttpErrors[provider] = httpError;
         this.usageLogger.write({

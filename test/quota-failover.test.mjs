@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FanoutEngine, AllProvidersFailedError } from "../dist/engine/fanout.js";
-import { HTTPRequestError, isQuotaExhausted } from "../dist/http.js";
+import { classifyError, HTTPRequestError, isQuotaExhausted } from "../dist/http.js";
 import { resolveCapabilityProviders } from "../dist/providers.js";
 import { LocalExecutionBackend } from "../dist/execution/backend.js";
 import { HistoryStore } from "../dist/history/store.js";
@@ -184,6 +184,30 @@ test("quota alternatives respect feature eligibility and do not mutate config po
   assert.deepEqual(plan.providers, ["firecrawl"]);
   assert.deepEqual(plan.quotaFallbackProviders, []);
   assert.deepEqual(config.capabilities.extract.providers, before);
+});
+
+test("all-failed Firecrawl crawl poll preserves quota error classification", async (t) => {
+  const config = fixture(t, "crawl", ["firecrawl"]);
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
+  t.after(() => { globalThis.setTimeout = originalSetTimeout; });
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () => jsonResponse({ success: true, id: "quota-job" }),
+    "GET https://api.firecrawl.dev/v2/crawl/quota-job": async () => quotaResponse(402),
+  });
+  t.after(restore);
+
+  let failure;
+  await assert.rejects(
+    new FanoutEngine(config).crawl("https://x.example", { limit: 1 }),
+    (error) => {
+      failure = error;
+      return error instanceof AllProvidersFailedError;
+    }
+  );
+
+  assert.equal(failure.providerHttpErrors.firecrawl.status, 402);
+  assert.equal(classifyError(failure).category, "quota");
 });
 
 test("backend persists quota recovery as one partial execution with safe provider attempts", async (t) => {
