@@ -125,6 +125,18 @@ const SECRET_ENV_NAMES = [
 
 const SENSITIVE_FIELD_PATTERN =
   /(api[_-]?key|authorization|auth[_-]?token|access[_-]?token|credential|password|secret|signature|bearer|cookie|^token$|^key$)/i;
+const EVIDENCE_SCHEMA_VALUE_FIELDS = new Set([
+  "id",
+  "kind",
+  "path",
+  "provider",
+  "safe_key_ref",
+  "source",
+  "status",
+  "tool",
+  "truncated",
+  "type",
+]);
 
 class ProviderHttpError extends Error {
   constructor(message, status, bodySample) {
@@ -375,9 +387,8 @@ function truncate(value, max = 240) {
 
 function secretValues() {
   return SECRET_ENV_NAMES.map((name) => process.env[name]).filter(
-    // Very short keys are often ordinary words such as "pass". Replacing
-    // them inside every evidence string corrupts statuses and result text.
-    // Short values are still redacted in credential fields and error text.
+    // Generic redaction avoids replacing short words in arbitrary text.
+    // Evidence and error boundaries opt in while preserving schema/status fields.
     (value) => typeof value === "string" && value.length >= 8
   );
 }
@@ -412,6 +423,24 @@ export function redact(value) {
   return value;
 }
 
+function redactEvidenceValue(value, fieldName = "") {
+  if (typeof value === "string") {
+    return redactString(value, {
+      includeShortSecrets: !EVIDENCE_SCHEMA_VALUE_FIELDS.has(fieldName),
+    });
+  }
+  if (Array.isArray(value)) return value.map((item) => redactEvidenceValue(item, fieldName));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        SENSITIVE_FIELD_PATTERN.test(key) ? "REDACTED" : redactEvidenceValue(entry, key),
+      ])
+    );
+  }
+  return value;
+}
+
 /** Safe text boundary for CLI errors that may be copied into CI summaries. */
 export function redactSensitiveText(value) {
   return redactString(String(value ?? ""), { includeShortSecrets: true });
@@ -419,8 +448,13 @@ export function redactSensitiveText(value) {
 
 const MAX_RAW_EVIDENCE_BYTES = 12_000;
 const STABLE_RAW_METADATA_FIELDS = {
+  "tavily.map": [{ name: "base_url" }],
+  "firecrawl.map": [
+    { name: "success" },
+    { name: "metadata", preserveObjectFields: true },
+  ],
   "brave.webSearch": [{ name: "query", preserveObjectFields: true }],
-  "exa.contents": [{ name: "statuses" }],
+  "exa.contents": [{ name: "statuses", preserveArrayItemFields: true }],
 };
 
 function rawSchemaShape(value, budget, depth = 0) {
@@ -457,17 +491,36 @@ function rawSchemaShape(value, budget, depth = 0) {
   return { type: "object", fields };
 }
 
-function boundedRawEvidence(raw) {
+function boundedRawEvidence(raw, target) {
   // Persist shape only. Provider response values can contain credentials in
   // fields the harness does not know about, so redaction by field-name alone
   // is not a safe boundary for raw response samples.
   const budget = { remaining: 120, truncated: false };
   const shape = rawSchemaShape(raw, budget);
-  const sample = { schema: shape, truncated: budget.truncated };
+  const stable = {};
+  const stableMetadata = STABLE_RAW_METADATA_FIELDS[targetId(target)] || [];
+  for (const { name } of stableMetadata) {
+    if (!raw || typeof raw !== "object" || !Object.hasOwn(raw, name) || SENSITIVE_FIELD_PATTERN.test(name)) {
+      continue;
+    }
+    // A large result array can consume the general budget before stable
+    // provider metadata is shaped, so each declared field gets its own budget.
+    const stableBudget = { remaining: 80, truncated: false };
+    stable[name] = rawSchemaShape(raw[name], stableBudget, 1);
+  }
+  const sample = { schema: shape, stable, truncated: budget.truncated };
   while (Buffer.byteLength(JSON.stringify(sample), "utf8") > MAX_RAW_EVIDENCE_BYTES) {
     sample.truncated = true;
-    if (!trimRawSchemaShape(sample.schema)) {
+    if (trimRawSchemaShape(sample.schema)) continue;
+    const stableKey = Object.keys(sample.stable).at(-1);
+    if (stableKey && trimRawSchemaShape(sample.stable[stableKey])) continue;
+    if (stableKey) {
+      delete sample.stable[stableKey];
+      continue;
+    }
+    if (sample.schema.type !== "object" || !sample.schema.fields_truncated) {
       sample.schema = { type: "object", fields_truncated: true };
+    } else {
       break;
     }
   }
@@ -617,7 +670,7 @@ function makeNativeToolResult(target, items, metadata = {}) {
     sample: sampleToolItems(items),
     items,
     raw_available: hasExpectedToolRawShape(target, raw),
-    raw_sample: boundedRawEvidence(raw),
+    raw_sample: boundedRawEvidence(raw, target),
     ...safeMetadata,
   };
 }
@@ -1237,7 +1290,7 @@ export function makeColdSearchToolResult(target, output) {
     // Keep provider response shape for comparison without persisting payload
     // values that could contain credentials in unrecognized fields.
     raw_available: hasExpectedToolRawShape(target, raw),
-    raw_sample: boundedRawEvidence(raw),
+    raw_sample: boundedRawEvidence(raw, target),
   };
 }
 
@@ -1331,6 +1384,15 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     coldResult.catalogued,
     "ColdSearch tool call row remained catalogued in the registry"
   ));
+  const fixedUrl = FIXED_TARGET_TOOL_URLS[targetId(target)];
+  if (fixedUrl) {
+    checks.push(check(
+      [nativeResult.items, coldResult.items].every((items) =>
+        (items || []).every((item) => normalizedUrl(item.url) === normalizedUrl(fixedUrl))
+      ),
+      "native and ColdSearch results retain the requested URL identity"
+    ));
+  }
   if (toolResultsVary(nativeResult.items, coldResult.items)) {
     if (hasUrlOrTitleOverlap(nativeResult.items, coldResult.items)) {
       notes.push("Native and ColdSearch results differed across sequential live calls; unmatched results and count differences are recorded as provider variance.");
@@ -1369,18 +1431,45 @@ function compareToolRawSchema(target, nativeSample, coldSample) {
   // These response envelopes are stable for the same request and carry useful
   // provider-specific metadata. Require their root field and type to survive
   // whenever the native response supplied them.
-  for (const { name, preserveObjectFields = false } of STABLE_RAW_METADATA_FIELDS[targetId(target)] || []) {
-    const nativeField = nativeFields[name];
-    const coldField = coldFields[name];
+  const nativeStable = nativeSample?.stable || {};
+  const coldStable = coldSample?.stable || {};
+  for (const {
+    name,
+    preserveObjectFields = false,
+    preserveArrayItemFields = false,
+  } of STABLE_RAW_METADATA_FIELDS[targetId(target)] || []) {
+    const nativeField = nativeStable[name];
+    const coldField = coldStable[name];
     if (!nativeField) continue;
     if (!coldField || nativeField.type !== coldField.type) return false;
     if (preserveObjectFields && nativeField.type === "object") {
-      const expectedFields = nativeField.fields || {};
-      const actualFields = coldField.fields || {};
-      for (const [field, schema] of Object.entries(expectedFields)) {
-        if (!actualFields[field] || actualFields[field].type !== schema.type) return false;
+      if (!schemaShapeContains(nativeField, coldField)) return false;
+    }
+    if (preserveArrayItemFields && nativeField.type === "array") {
+      const expectedItems = nativeField.items || [];
+      const actualItems = coldField.items || [];
+      if (expectedItems.length > 0 && actualItems.length === 0) return false;
+      if (!expectedItems.every((expected) => actualItems.some((actual) => schemaShapeContains(expected, actual)))) {
+        return false;
       }
     }
+  }
+  return true;
+}
+
+function schemaShapeContains(expected, actual) {
+  if (!expected || !actual || expected.type !== actual.type) return false;
+  if (expected.type === "object") {
+    const expectedFields = expected.fields || {};
+    const actualFields = actual.fields || {};
+    return Object.entries(expectedFields).every(([key, schema]) =>
+      schemaShapeContains(schema, actualFields[key])
+    );
+  }
+  if (expected.type === "array") {
+    const expectedItems = expected.items || [];
+    const actualItems = actual.items || [];
+    return expectedItems.every((schema) => actualItems.some((actualItem) => schemaShapeContains(schema, actualItem)));
   }
   return true;
 }
@@ -1394,10 +1483,11 @@ function toolResultsVary(nativeItems, coldItems) {
 function findMatchingToolItem(item, candidates) {
   const itemUrl = normalizedUrl(item?.url);
   const itemTitle = normalizedTitle(item?.title);
-  return (candidates || []).find((candidate) =>
-    (itemUrl && normalizedUrl(candidate?.url) === itemUrl) ||
-    (itemTitle && normalizedTitle(candidate?.title) === itemTitle)
-  );
+  return (candidates || []).find((candidate) => {
+    const candidateUrl = normalizedUrl(candidate?.url);
+    if (itemUrl && candidateUrl) return candidateUrl === itemUrl;
+    return itemTitle && normalizedTitle(candidate?.title) === itemTitle;
+  });
 }
 
 function toolNativeFieldsPreserved(target, nativeItems, coldItems) {
@@ -1451,6 +1541,10 @@ export function targetId(target) {
     ? `${target.provider}.${target.tool}`
     : `${target.provider}:${target.path}`;
 }
+
+const FIXED_TARGET_TOOL_URLS = {
+  "exa.contents": EXTRACT_URL,
+};
 
 /** A supported row that this run did not select: visible, disclosed, never a pass. */
 export function notRunRow(target, reason = "not selected by this scoped run") {
@@ -1569,11 +1663,11 @@ async function runTarget(target, options) {
 
 function publicResult(result) {
   const { items, ...rest } = result;
-  return redact(rest);
+  return redactEvidenceValue(rest);
 }
 
 function redactEvidenceRow(row) {
-  const output = redact(row);
+  const output = redactEvidenceValue(row);
   // These fields describe the evidence row's identity and outcome. Preserve
   // them as schema values even when a short credential happens to equal one.
   for (const key of ["provider", "path", "tool", "kind", "status"]) {

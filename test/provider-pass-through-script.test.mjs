@@ -579,7 +579,141 @@ test("Exa contents conformance catches dropped statuses metadata", () => {
   );
 });
 
-test("short credentials do not rewrite evidence status or ordinary result text", () => {
+test("Exa contents rejects an empty status array when native returned status entries", () => {
+  const target = { provider: "exa", tool: "contents", kind: "tool" };
+  const native = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: {
+      results: [{ url: "https://example.com", text: "native" }],
+      statuses: [{ id: "request-1", status: "success" }],
+    },
+  });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "exa",
+    tool: "contents",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: {
+      results: [{ url: "https://example.com", text: "changed" }],
+      statuses: [],
+    },
+  });
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool output preserves stable provider raw metadata schema").pass,
+    false
+  );
+});
+
+test("stable raw metadata fields are required for Tavily and Firecrawl map", () => {
+  const cases = [
+    {
+      target: { provider: "tavily", tool: "map", kind: "tool" },
+      nativeRaw: { base_url: "https://docs.example", results: ["https://docs.example/a"] },
+      coldRaw: { results: ["https://docs.example/a"] },
+    },
+    {
+      target: { provider: "firecrawl", tool: "map", kind: "tool" },
+      nativeRaw: {
+        success: true,
+        metadata: { creditsUsed: 1 },
+        links: [{ url: "https://docs.example/a", title: "A" }],
+      },
+      coldRaw: { links: [{ url: "https://docs.example/a", title: "A" }] },
+    },
+  ];
+
+  for (const { target, nativeRaw, coldRaw } of cases) {
+    const native = makeColdSearchToolResult(target, { ok: true, raw: nativeRaw });
+    const cold = makeColdSearchToolResult(target, {
+      ok: true,
+      catalogued: true,
+      provider: target.provider,
+      tool: target.tool,
+      meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+      raw: coldRaw,
+    });
+    const comparison = compareToolTarget(target, native, cold);
+    assert.equal(comparison.passed, false, targetId(target));
+    assert.equal(
+      comparison.checks.find(({ label }) => label === "ColdSearch tool output preserves stable provider raw metadata schema").pass,
+      false,
+      targetId(target)
+    );
+  }
+});
+
+test("stable raw metadata uses an independent schema budget", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const makeRaw = (news) => ({
+    mixed: [],
+    news,
+    query: { original: "openai", show_strict_warning: false },
+    videos: [],
+    web: { results: [{ title: "Example", url: "https://example.com", description: "text" }] },
+  });
+  const largeNews = Array.from({ length: 3 }, () =>
+    Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`field${index}`, "value"]))
+  );
+  const native = makeColdSearchToolResult(target, { ok: true, raw: makeRaw(largeNews) });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: makeRaw([]),
+  });
+  assert.equal(native.raw_sample.schema.fields.query, undefined);
+  assert.deepEqual(Object.keys(native.raw_sample.stable.query.fields), ["original", "show_strict_warning"]);
+  assert.equal(compareToolTarget(target, native, cold).passed, true);
+});
+
+test("different URLs with the same title are live variance, not a false match", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const makeResult = (url) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: {
+      query: { original: "openai" },
+      web: { results: [{ title: "Same result", url, description: "description" }] },
+    },
+  });
+  const native = makeResult("https://correct.example");
+  const cold = makeResult("https://changed.example");
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, true);
+  assert.match(comparison.notes.join(" "), /provider variance/);
+});
+
+test("Exa contents keeps its fixed requested URL identity", () => {
+  const target = { provider: "exa", tool: "contents", kind: "tool" };
+  const makeResult = (url) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "exa",
+    tool: "contents",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: [{ url, title: "Example", text: "page text" }] },
+  });
+  const comparison = compareToolTarget(
+    target,
+    makeResult("https://example.com"),
+    makeResult("https://other.example")
+  );
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "native and ColdSearch results retain the requested URL identity").pass,
+    false
+  );
+});
+
+test("short credentials are redacted from evidence text without changing row status", () => {
   process.env.TAVILY_API_KEY = "pass";
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-short-key-evidence-"));
   const samplesDir = path.join(dir, "samples");
@@ -589,7 +723,11 @@ test("short credentials do not rewrite evidence status or ordinary result text",
       provider: "tavily",
       path: "search",
       status: "pass",
-      native: { sample: [{ snippet: "a pass is still an ordinary word" }], authorization: "pass" },
+      native: {
+        sample: [{ snippet: "the provider echoed pass", status: "pass" }],
+        authorization: "pass",
+        raw_sample: { schema: { type: "object" }, truncated: false },
+      },
       coldsearch: { result_count: 1 },
       comparison: { passed: true, notes: [], checks: [], detail_loss: [] },
     }];
@@ -600,8 +738,10 @@ test("short credentials do not rewrite evidence status or ordinary result text",
       .map((line) => JSON.parse(line));
     assert.equal(persisted.status, "pass");
     assert.equal(persisted.provider, "tavily");
-    assert.equal(persisted.native.sample[0].snippet, "a pass is still an ordinary word");
+    assert.equal(persisted.native.sample[0].snippet, "the provider echoed REDACTED");
+    assert.equal(persisted.native.sample[0].status, "pass");
     assert.equal(persisted.native.authorization, "REDACTED");
+    assert.equal(persisted.native.raw_sample.schema.type, "object");
     assert.match(fs.readFileSync(path.join(dir, "summary.md"), "utf8"), /\| tavily:search \| pass \|/);
   } finally {
     delete process.env.TAVILY_API_KEY;

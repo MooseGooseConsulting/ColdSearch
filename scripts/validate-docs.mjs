@@ -4,6 +4,9 @@ import process from "node:process";
 import {
   ALLOWED_STATUSES,
   REQUIRED_PROVIDER_PATHS,
+  REQUIRED_PROVIDER_TOOLS,
+  SUPPORTED_PROVIDER_PATHS,
+  targetId,
 } from "./provider-pass-through.mjs";
 
 const root = process.cwd();
@@ -280,11 +283,17 @@ await requireFile(`${providerEvidenceDir}/results.jsonl`);
 
 if (await exists(providerEvidenceDir)) {
   const rows = await readJsonl(`${providerEvidenceDir}/results.jsonl`);
-  const expected = REQUIRED_PROVIDER_PATHS.map((row) => `${row.provider}:${row.path}`);
+  // Keep the committed artifact's historical path-only inventory valid. If a
+  // full baseline is regenerated, validate its complete path and tool matrix.
+  const fullInventory = rows.some((row) => row.tool);
+  const expectedTargets = fullInventory
+    ? [...SUPPORTED_PROVIDER_PATHS, ...REQUIRED_PROVIDER_TOOLS]
+    : REQUIRED_PROVIDER_PATHS;
+  const expected = expectedTargets.map(targetId);
   const seen = new Set();
 
   for (const row of rows) {
-    const key = `${row.provider}:${row.path}`;
+    const key = targetId(row);
     if (seen.has(key)) {
       fail(`${providerEvidenceDir}/results.jsonl has duplicate row for ${key}`);
     }
