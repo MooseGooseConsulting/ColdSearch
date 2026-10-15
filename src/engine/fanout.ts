@@ -421,7 +421,11 @@ export class FanoutEngine {
           result_count: results.length,
         });
         return {
-          results: results,
+          // Keep earlier async job handles visible even when a later
+          // provider supplies a completed result.
+          results: pendingResult
+            ? [...pendingResult.results, ...results]
+            : results,
           provider,
           status: "completed",
           errors: Object.keys(errors).length > 0 ? errors : undefined,

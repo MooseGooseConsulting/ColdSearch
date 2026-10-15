@@ -148,7 +148,11 @@ test("pending Firecrawl crawl falls through to a completed provider", async () =
     const out = await engine.crawl("https://x.example", { limit: 1 });
     assert.equal(out.provider, "exa");
     assert.equal(out.status, "completed");
-    assert.equal(out.results[0].url, "https://x.example/a");
+    assert.equal(out.results.length, 2);
+    assert.equal(out.results[0].status, "pending");
+    assert.equal(out.results[0].jobId, "job-pending");
+    assert.equal(out.results[1].url, "https://x.example/a");
+    assert.equal(out.results[1].status, "completed");
     assert.equal(out.attempts[0].provider, "firecrawl");
     assert.equal(out.attempts[0].success, false);
     assert.equal(out.attempts[0].pending, true);
