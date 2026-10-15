@@ -111,8 +111,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "directly via `contents`. Category enum current as of 2026-10: company, " +
       "people, publication (replaced research paper), news, personal site, " +
       "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
-      "upstream — `contents.maxAgeHours` (0=always fetch, -1=cache-only) + " +
-      "`contents.livecrawlTimeout` are the migration path.",
+      "upstream. On `/search`, freshness uses `contents.maxAgeHours` " +
+      "(0=always fetch, -1=cache-only) and `contents.livecrawlTimeout`; " +
+      "`/contents` uses top-level `maxAgeHours`.",
     docsUrl: "https://exa.ai/docs/reference/search",
     requiredParams: ["query"],
     optionalParams: [
