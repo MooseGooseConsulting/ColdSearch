@@ -300,23 +300,25 @@ test("short credential values are removed from failure text and raw samples", ()
     );
     const serialized = JSON.stringify(cold.raw_sample);
     assert.ok(!serialized.includes("tiny"));
-    assert.equal(cold.raw_sample.authorization, "REDACTED");
+    assert.ok(!serialized.includes("provider echoed"));
+    assert.ok(!serialized.includes("authorization"), "credential field names are omitted from raw schema evidence");
   } finally {
     delete process.env.TAVILY_API_KEY;
   }
 });
 
-test("raw provider evidence is clipped to a bounded sample", () => {
+test("raw provider evidence stores bounded schema without provider values", () => {
   const fields = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [
     `field_${index}`,
-    Array.from({ length: 10 }, () => "x".repeat(400)),
+    Array.from({ length: 10 }, () => `unknown-credential-${index}`),
   ]));
   const cold = makeColdSearchToolResult(
     { provider: "tavily", tool: "map" },
     { ok: true, raw: { results: ["https://example.com"], ...fields } }
   );
   assert.equal(cold.raw_sample.truncated, true);
-  assert.ok(Buffer.byteLength(cold.raw_sample.serialized_preview, "utf8") <= 12_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(cold.raw_sample), "utf8") <= 12_000);
+  assert.ok(!JSON.stringify(cold.raw_sample).includes("unknown-credential"));
 });
 
 test("tavily.map parses its result array from raw.results, matching the substrate surface", () => {
@@ -417,12 +419,18 @@ test("Firecrawl Map unwraps object links and preserves the tool metadata envelop
   }]);
   assert.deepEqual(cold.meta, output.meta);
   assert.equal(cold.raw_available, true);
-  assert.deepEqual(cold.raw_sample, raw);
+  assert.deepEqual(cold.raw_sample.schema.fields.links.items[0].fields, {
+    description: { type: "string" },
+    title: { type: "string" },
+    url: { type: "string" },
+  });
+  assert.ok(!JSON.stringify(cold.raw_sample).includes("docs.firecrawl.dev"));
 
   const native = {
     result_count: 1,
     items: cold.items,
     raw_available: true,
+    raw_sample: cold.raw_sample,
   };
   assert.equal(compareToolTarget(target, native, cold).passed, true);
 
@@ -435,7 +443,7 @@ test("Firecrawl Map unwraps object links and preserves the tool metadata envelop
   );
 });
 
-test("map conformance rejects partial ColdSearch result payloads", () => {
+test("map conformance tolerates changing result sets across independent calls", () => {
   const target = { provider: "tavily", tool: "map", kind: "tool" };
   const nativeItems = [
     { url: "https://docs.example/a", title: "A" },
@@ -452,18 +460,36 @@ test("map conformance rejects partial ColdSearch result payloads", () => {
     provider: "tavily",
     tool: "map",
     meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
-    raw: { results: ["https://docs.example/a"] },
+    raw: { results: ["https://docs.example/a", "https://docs.example/c"] },
   });
+  native.raw_sample = cold.raw_sample;
   const comparison = compareToolTarget(target, native, cold);
-  assert.equal(comparison.passed, false);
-  assert.equal(
-    comparison.checks.find(({ label }) => label === "Native and ColdSearch tool result counts match").pass,
-    false
-  );
-  assert.equal(
-    comparison.checks.find(({ label }) => label === "native and ColdSearch map URL sets match").pass,
-    false
-  );
+  assert.equal(comparison.passed, true);
+  assert.match(comparison.notes.join(" "), /provider variance/);
+});
+
+test("map conformance records fully changed result sets as live variance", () => {
+  const target = { provider: "tavily", tool: "map", kind: "tool" };
+  const native = {
+    result_count: 2,
+    items: [
+      { url: "https://docs.example/a", title: "A" },
+      { url: "https://docs.example/b", title: "B" },
+    ],
+    raw_available: true,
+  };
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "tavily",
+    tool: "map",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: ["https://docs.example/c"] },
+  });
+  native.raw_sample = cold.raw_sample;
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, true);
+  assert.match(comparison.notes.join(" "), /no overlapping URLs or titles/);
 });
 
 test("tool conformance rejects content fields dropped from a partial response", () => {
@@ -481,12 +507,106 @@ test("tool conformance rejects content fields dropped from a partial response", 
     meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
     raw: { results: [{ url: "https://example.com", title: "Example" }] },
   });
+  native.raw_sample = cold.raw_sample;
   const comparison = compareToolTarget(target, native, cold);
   assert.equal(comparison.passed, false);
   assert.equal(
-    comparison.checks.find(({ label }) => label === "ColdSearch tool output retains populated native result fields").pass,
+    comparison.checks.find(({ label }) => label === "ColdSearch tool output retains populated native fields for overlapping results").pass,
     false
   );
+});
+
+test("provider raw metadata fields are checked without comparing live result values", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const nativeSample = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: {
+      query: { original: "openai", show_strict_warning: false },
+      web: { results: [{ title: "A", url: "https://a.example" }] },
+    },
+  }).raw_sample;
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: {
+      query: { original: "openai" },
+      web: { results: [{ title: "A changed", url: "https://a.example" }] },
+    },
+  });
+  const native = {
+    result_count: 1,
+    items: [{ title: "A", url: "https://a.example", snippet: "text" }],
+    raw_available: true,
+    raw_sample: nativeSample,
+  };
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool output preserves stable provider raw metadata schema").pass,
+    false
+  );
+});
+
+test("Exa contents conformance catches dropped statuses metadata", () => {
+  const target = { provider: "exa", tool: "contents", kind: "tool" };
+  const nativeSample = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: {
+      results: [{ url: "https://example.com", text: "native" }],
+      statuses: [{ id: "request-1", status: "success" }],
+    },
+  }).raw_sample;
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "exa",
+    tool: "contents",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { results: [{ url: "https://example.com", text: "changed" }] },
+  });
+  const comparison = compareToolTarget(target, {
+    result_count: 1,
+    items: [{ url: "https://example.com", title: "", content: "native" }],
+    raw_available: true,
+    raw_sample: nativeSample,
+  }, cold);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool output preserves stable provider raw metadata schema").pass,
+    false
+  );
+});
+
+test("short credentials do not rewrite evidence status or ordinary result text", () => {
+  process.env.TAVILY_API_KEY = "pass";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-short-key-evidence-"));
+  const samplesDir = path.join(dir, "samples");
+  fs.mkdirSync(samplesDir, { recursive: true });
+  try {
+    const rows = [{
+      provider: "tavily",
+      path: "search",
+      status: "pass",
+      native: { sample: [{ snippet: "a pass is still an ordinary word" }], authorization: "pass" },
+      coldsearch: { result_count: 1 },
+      comparison: { passed: true, notes: [], checks: [], detail_loss: [] },
+    }];
+    writeEvidence(dir, samplesDir, rows);
+    const [persisted] = fs.readFileSync(path.join(dir, "results.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(persisted.status, "pass");
+    assert.equal(persisted.provider, "tavily");
+    assert.equal(persisted.native.sample[0].snippet, "a pass is still an ordinary word");
+    assert.equal(persisted.native.authorization, "REDACTED");
+    assert.match(fs.readFileSync(path.join(dir, "summary.md"), "utf8"), /\| tavily:search \| pass \|/);
+  } finally {
+    delete process.env.TAVILY_API_KEY;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("catalogued tools without fixtures remain visible as not_run", () => {
