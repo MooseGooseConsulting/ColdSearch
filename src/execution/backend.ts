@@ -234,7 +234,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const reranker = options.rerankStrategy ?? "rrf";
 
     const key = useCache
-      ? cacheKey("search", query, { limit: options.limit, rerankStrategy: reranker })
+      ? cacheKey("search", query, {
+          limit: options.limit,
+          limitSet: options.limitSet !== false,
+          rerankStrategy: reranker,
+        })
       : null;
 
     if (key) {

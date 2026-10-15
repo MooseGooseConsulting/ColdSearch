@@ -24,20 +24,25 @@ function makeDir(tag = "coldsearch-batch-cli-") {
  * and resumed skips.
  */
 function startMockServer() {
-  const state = { requests: 0 };
+  const state = { requests: 0, searchBodies: [] };
   const server = http.createServer((req, res) => {
     state.requests += 1;
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("Content-Type", "application/json");
     if (req.method === "POST" && url.pathname === "/search") {
-      res.end(
-        JSON.stringify({
-          results: [
-            { title: "Mock Title", url: "https://mock.example/1", text: "mock snippet", score: 0.9 },
-          ],
-          answer: "mock answer",
-        })
-      );
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        state.searchBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.end(
+          JSON.stringify({
+            results: [
+              { title: "Mock Title", url: "https://mock.example/1", text: "mock snippet", score: 0.9 },
+            ],
+            answer: "mock answer",
+          })
+        );
+      });
     } else if (req.method === "POST" && url.pathname === "/contents") {
       res.end(
         JSON.stringify({
@@ -107,7 +112,7 @@ globalThis.fetch = (input, init) => {
   return `--require ${JSON.stringify(preloadPath)}`;
 }
 
-function writeConfig(dir, { cacheEnabled = false } = {}) {
+function writeConfig(dir, { cacheEnabled = false, exaNumResults } = {}) {
   const configPath = path.join(dir, "config.toml");
   const cacheBlock = cacheEnabled
     ? `[cache]\nenabled = true\npath = ${JSON.stringify(path.join(dir, "cache"))}\n`
@@ -128,6 +133,9 @@ function writeConfig(dir, { cacheEnabled = false } = {}) {
       'strategy = "all"',
       "",
       "[providers.exa]",
+      ...(exaNumResults !== undefined
+        ? ["[providers.exa.options]", `numResults = ${exaNumResults}`, ""]
+        : []),
       "[providers.exa.keyPool]",
       'keys = ["env:EXA_API_KEY"]',
       "",
@@ -148,6 +156,31 @@ function writeConfig(dir, { cacheEnabled = false } = {}) {
   );
   return configPath;
 }
+
+test("CLI honors Exa numResults when --limit is omitted and explicit --limit overrides it", async () => {
+  const dir = makeDir();
+  const { server, state, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port);
+  try {
+    const configPath = writeConfig(dir, { exaNumResults: 4 });
+    const implicit = await runCli(
+      ["search", "--config", configPath, "--json", "implicit count"],
+      nodeOptions
+    );
+    assert.equal(implicit.status, 0, implicit.stderr);
+    assert.equal(state.searchBodies[0].numResults, 4);
+
+    const explicit = await runCli(
+      ["search", "--config", configPath, "--json", "--limit", "7", "explicit count"],
+      nodeOptions
+    );
+    assert.equal(explicit.status, 0, explicit.stderr);
+    assert.equal(state.searchBodies[1].numResults, 7);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 /**
  * Async CLI spawn. The mock provider server lives in this test process, so the

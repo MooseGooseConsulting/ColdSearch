@@ -8,6 +8,17 @@ import type {
   CrawlCallOptions,
 } from "../types.js";
 
+/** The provider explicitly reported that an accepted crawl job has failed. */
+export class FirecrawlCrawlTerminalError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, detail: string) {
+    super(`Firecrawl crawl job '${jobId}' failed: ${detail}`);
+    this.name = "FirecrawlCrawlTerminalError";
+    this.jobId = jobId;
+  }
+}
+
 /**
  * Live v2 scrape accepts markdown, html, rawHtml, and rawBase64.
  * It rejects the common "text" value. Markdown is the page-content format.
@@ -252,10 +263,6 @@ export class FirecrawlAdapter implements SearchAdapter {
         );
       }
 
-      if (statusData.success === false || statusData.error) {
-        throw new Error(`Firecrawl crawl failed for job ${jobId}: ${statusData.error || "Unknown error"}`);
-      }
-
       if (statusData.status === "completed" && statusData.data) {
         return statusData.data.map((item) => ({
           url: item.metadata?.sourceURL || "",
@@ -267,7 +274,13 @@ export class FirecrawlAdapter implements SearchAdapter {
       }
 
       if (statusData.status === "failed") {
-        throw new Error(`Firecrawl crawl failed: ${statusData.error || "Unknown error"}`);
+        throw new FirecrawlCrawlTerminalError(jobId, statusData.error || "Provider reported terminal failure");
+      }
+
+      if (statusData.success === false || statusData.error) {
+        throw new Error(
+          `Firecrawl crawl poll returned an error for job '${jobId}': ${statusData.error || "Unknown error"}`
+        );
       }
       // If still scraping, continue polling
     }

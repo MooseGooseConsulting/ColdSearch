@@ -197,3 +197,175 @@ test("pending crawl fallback preserves every pending job id and status", async (
   }
 });
 
+test("a confirmed Firecrawl terminal failure drops its saved job before fallback", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "GET https://api.firecrawl.dev/v2/crawl/terminal-job": async () =>
+      jsonResponse({ success: true, status: "failed", error: "crawl was rejected" }),
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl", "exa"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", {
+      limit: 1,
+      resumePendingJobs: [
+        { provider: "firecrawl", jobId: "terminal-job", url: "https://x.example" },
+      ],
+    });
+
+    assert.equal(out.status, "completed");
+    assert.deepEqual(out.pendingJobs, []);
+    assert.equal(out.results.length, 1);
+    assert.match(out.errors.firecrawl, /terminal-job.*crawl was rejected/);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("saved crawl providers resume even when random selection chooses another provider", async () => {
+  const originalRandom = Math.random;
+  const originalSetTimeout = globalThis.setTimeout;
+  Math.random = () => 0;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  let firecrawlPolls = 0;
+  const restore = installFetchMock({
+    "GET https://api.firecrawl.dev/v2/crawl/saved-job": async () => {
+      firecrawlPolls++;
+      return jsonResponse({ success: true, status: "scraping" });
+    },
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["exa", "tavily"], strategy: "random" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", {
+      limit: 1,
+      singleProvider: true,
+      resumePendingJobs: [
+        { provider: "firecrawl", jobId: "saved-job", url: " https://x.example " },
+      ],
+    });
+
+    assert.ok(firecrawlPolls > 0, "saved provider must be resumed despite random selection");
+    assert.equal(out.provider, "exa");
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "saved-job", url: "https://x.example" },
+    ]);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+    Math.random = originalRandom;
+  }
+});
+
+test("a saved job whose provider is no longer configured becomes an actionable non-pending error", async () => {
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] }),
+  });
+
+  try {
+    const config = makeConfig({
+      capabilities: { crawl: { providers: ["exa"], strategy: "all" } },
+    });
+    delete config.providers.firecrawl;
+    const engine = new FanoutEngine(config);
+    const out = await engine.crawl("https://x.example", {
+      limit: 1,
+      resumePendingJobs: [
+        { provider: "firecrawl", jobId: "orphan-job", url: "https://x.example" },
+      ],
+    });
+
+    assert.equal(out.status, "completed");
+    assert.deepEqual(out.pendingJobs, []);
+    assert.match(out.errors.firecrawl, /orphan-job.*no longer configured/);
+    assert.match(out.errors.firecrawl, /Restore the provider configuration/);
+  } finally {
+    restore();
+  }
+});
+
+test("saved Firecrawl jobs remain pending after a poll authorization failure", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "GET https://api.firecrawl.dev/v2/crawl/unauthorized-job": async () =>
+      rawResponse("unauthorized", { status: 401 }),
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["exa"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", {
+      limit: 1,
+      resumePendingJobs: [
+        { provider: "firecrawl", jobId: "unauthorized-job", url: "https://x.example" },
+      ],
+    });
+
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "unauthorized-job", url: "https://x.example" },
+    ]);
+    assert.match(out.errors.firecrawl, /unauthorized-job/);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("provider default Exa result count survives an implicit CLI limit", async () => {
+  const seen = [];
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async ({ init }) => {
+      seen.push(JSON.parse(init.body).numResults);
+      return jsonResponse({ results: [] });
+    },
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { search: { providers: ["exa"], strategy: "all" } },
+        providers: { exa: { keyPool: { keys: ["k"] }, options: { numResults: 4 } } },
+      })
+    );
+    await engine.search("implicit", { limit: 10, limitSet: false });
+    await engine.search("explicit", { limit: 7, limitSet: true });
+    assert.deepEqual(seen, [4, 7]);
+  } finally {
+    restore();
+  }
+});
+

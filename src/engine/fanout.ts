@@ -1,7 +1,8 @@
 import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
-import { resolveCapabilityProviders } from "../providers.js";
+import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
+import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { UsageLogger } from "../logging/usage.js";
 import type {
   CapabilityName,
@@ -24,6 +25,8 @@ export type OperationType = "search" | "extract" | "crawl";
 export interface FanoutOptions {
   /** Maximum results to return */
   limit: number;
+  /** Whether `limit` was supplied by the caller. False preserves provider defaults. */
+  limitSet?: boolean;
   /** Specific providers to use (defaults to all configured) */
   providers?: string[];
   /** Reranker strategy */
@@ -176,7 +179,13 @@ export class FanoutEngine {
 
     // Execute searches in parallel
     const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query, options.limit))
+      providers.map((provider) =>
+        this.searchProvider(
+          provider,
+          query,
+          options.limitSet === false ? undefined : options.limit
+        )
+      )
     );
 
     // Collect results and errors
@@ -346,12 +355,52 @@ export class FanoutEngine {
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
-    const providers = this.getProvidersForCapability("crawl", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
-    const resumePendingJobs = [...(options.resumePendingJobs ?? [])];
+    const requestedUrl = url.trim();
+    const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
+    const resumeProviders = new Set<string>();
+
+    // A batch resume is tied to its saved provider job, even if the current
+    // invocation uses random or single-provider selection. Providers removed
+    // from configuration or without crawl support cannot resume that handle;
+    // report it and discard it instead of keeping it pending forever.
+    for (const job of options.resumePendingJobs ?? []) {
+      let unavailableReason: string | undefined;
+      if (job.url.trim() !== requestedUrl) {
+        unavailableReason = `saved URL ${JSON.stringify(job.url)} does not match requested URL ${JSON.stringify(requestedUrl)}`;
+      } else if (!this.config.providers[job.provider]) {
+        unavailableReason = "provider is no longer configured";
+      } else {
+        try {
+          if (!providerSupportsCapability(job.provider, "crawl")) {
+            unavailableReason = "provider no longer supports crawl";
+          }
+        } catch {
+          unavailableReason = "provider is no longer available in this build";
+        }
+      }
+
+      if (unavailableReason) {
+        const message =
+          `Cannot resume ${job.provider} crawl job '${job.jobId}': ${unavailableReason}. ` +
+          "Restore the provider configuration or remove the stale pending job from the batch output.";
+        errors[job.provider] = message;
+        attempts.push({ provider: job.provider, success: false, error: message });
+        continue;
+      }
+
+      resumePendingJobs.push(job);
+      resumeProviders.add(job.provider);
+    }
+
+    const selectedProviders = this.getProvidersForCapability("crawl", options);
+    const providers = [
+      ...resumeProviders,
+      ...selectedProviders.filter((provider) => !resumeProviders.has(provider)),
+    ];
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -359,10 +408,17 @@ export class FanoutEngine {
       let keyRef = "none";
       let resumeJob: PendingCrawlJob | undefined;
       try {
+        const resumeJobIndex = resumePendingJobs.findIndex(
+          (job) => job.provider === provider && job.url.trim() === requestedUrl
+        );
+        if (resumeJobIndex >= 0) resumeJob = resumePendingJobs.splice(resumeJobIndex, 1)[0];
+
         const adapter = createAdapter(provider);
 
         if (!adapter.crawl) {
-          errors[provider] = "Adapter does not support crawl";
+          errors[provider] = resumeJob
+            ? `Cannot resume ${provider} crawl job '${resumeJob.jobId}': provider adapter no longer supports crawl.`
+            : "Adapter does not support crawl";
           attempts.push({
             provider,
             success: false,
@@ -370,11 +426,6 @@ export class FanoutEngine {
           });
           continue;
         }
-
-        const resumeJobIndex = resumePendingJobs.findIndex(
-          (job) => job.provider === provider && job.url === url.trim()
-        );
-        if (resumeJobIndex >= 0) resumeJob = resumePendingJobs.splice(resumeJobIndex, 1)[0];
 
         // Get API key + safe logging reference (keyless providers return empty string)
         const keyResult = await this.keyPool.getNextKeyWithRefOrEmpty(provider);
@@ -454,7 +505,9 @@ export class FanoutEngine {
         };
       } catch (error) {
         // A failed poll does not prove that an accepted async job stopped.
-        if (resumeJob) pendingJobs.push(resumeJob);
+        if (resumeJob && !(error instanceof FirecrawlCrawlTerminalError)) {
+          pendingJobs.push(resumeJob);
+        }
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
         this.usageLogger.write({
@@ -498,7 +551,7 @@ export class FanoutEngine {
   private async searchProvider(
     provider: string,
     query: string,
-    limit: number
+    limit?: number
   ): Promise<ProviderResult> {
     const start = performance.now();
     let keyRef = "none";

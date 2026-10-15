@@ -10,12 +10,16 @@ import { installFetchMock, jsonResponse, textResponse } from "./adapters/_fetch-
  * Write a temp config.toml that backs `search` with brave + serper and points
  * the result cache at a temp dir (so the test never touches ~/.config).
  */
-function writeTempConfig({ cacheDir, cacheEnabled = true }) {
+function writeTempConfig({ cacheDir, cacheEnabled = true, searchProvider, exaNumResults }) {
   const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-"));
   const configPath = join(dir, "config.toml");
+  const searchProviders = searchProvider === "exa" ? '["exa"]' : '["brave", "serper"]';
+  const exaOptions = exaNumResults === undefined
+    ? ""
+    : `[providers.exa.options]\nnumResults = ${exaNumResults}\n`;
   const toml = `
 [capabilities.search]
-providers = ["brave", "serper"]
+providers = ${searchProviders}
 strategy = "all"
 
 [capabilities.extract]
@@ -39,6 +43,7 @@ keys = ["k"]
 keys = []
 
 [providers.exa]
+${exaOptions}
 [providers.exa.keyPool]
 keys = ["k"]
 
@@ -116,6 +121,43 @@ test("cache ON: two identical searches hit the network once (second served from 
     // Cached payload has errors:{} stripped; compare the payload fields that matter.
     assert.deepEqual(second.results, first.results);
     assert.deepEqual(second.providersUsed, first.providersUsed);
+  } finally {
+    restore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("implicit and explicit default-valued limits use distinct cache entries", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-set-"));
+  const { dir, configPath } = writeTempConfig({
+    cacheDir,
+    searchProvider: "exa",
+    exaNumResults: 4,
+  });
+  const requestedCounts = [];
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async ({ init }) => {
+      const numResults = JSON.parse(init.body).numResults;
+      requestedCounts.push(numResults);
+      return jsonResponse({
+        results: Array.from({ length: numResults }, (_, index) => ({
+          title: `Result ${index}`,
+          url: `https://exa.example/${index}`,
+          text: "content",
+        })),
+      });
+    },
+  });
+
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    const implicit = await backend.search("same query", { limit: 10, limitSet: false });
+    const explicit = await backend.search("same query", { limit: 10, limitSet: true });
+
+    assert.deepEqual(requestedCounts, [4, 10]);
+    assert.equal(implicit.results.length, 4);
+    assert.equal(explicit.results.length, 10);
   } finally {
     restore();
     rmSync(dir, { recursive: true, force: true });

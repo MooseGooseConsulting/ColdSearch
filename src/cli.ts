@@ -618,6 +618,7 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
 
   const result = await backend.search(options.query, {
     limit: options.limit,
+    limitSet: options.limitSet === true,
     providers: options.providers,
     rerankStrategy: options.rerank,
     singleProvider: options.singleProvider,
