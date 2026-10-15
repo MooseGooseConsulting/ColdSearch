@@ -393,7 +393,9 @@ async function dispatchToolCall(
         useTextParser = params.stream === true;
         headers["Accept"] = useTextParser ? "text/event-stream" : "application/json";
         headers["Content-Type"] = "application/json";
-        body = JSON.stringify(params);
+        // Brave defaults this endpoint to streaming. Set false explicitly when
+        // omitted so the ordinary JSON path stays parseable; preserve true.
+        body = JSON.stringify({ ...params, stream: useTextParser });
       } else {
         method = "GET";
         let bravePath = `/res/v1/${tool}`;

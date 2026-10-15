@@ -253,6 +253,58 @@ test("jina reader works without any key configured (keyless)", async () => {
   );
 });
 
+test("Brave Answers explicitly disables default streaming unless requested", async () => {
+  const previousKey = process.env.BRAVE_API_KEY;
+  process.env.BRAVE_API_KEY = "brave-test-key";
+  const requests = [];
+
+  try {
+    await withMockedProviders(
+      (req, res) => {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          requests.push({ method: req.method, url: req.url, body, accept: req.headers.accept });
+          if (body.stream) {
+            res.writeHead(200, { "Content-Type": "text/event-stream" });
+            res.end("data: {\"choices\":[]}\n\n");
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ choices: [] }));
+          }
+        });
+      },
+      async () => {
+        const config = {
+          capabilities: {},
+          providers: { brave: { keyPool: { keys: ["env:BRAVE_API_KEY"] } } },
+          logging: { usage: { path: tmpUsagePath("brave-answers") } },
+          history: { path: tmpUsagePath("brave-answers-history") },
+          cache: { enabled: false },
+        };
+        const messages = [{ role: "user", content: "What is new?" }];
+        for (const params of [{ messages }, { messages, stream: true }, { messages, stream: false }]) {
+          const result = await executeToolCall("brave", "answers", params, config);
+          assert.equal(result.ok, true, result.error?.message);
+        }
+      }
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env.BRAVE_API_KEY;
+    else process.env.BRAVE_API_KEY = previousKey;
+  }
+
+  assert.deepEqual(requests.map((request) => request.body.stream), [false, true, false]);
+  assert.deepEqual(requests.map((request) => request.method), ["POST", "POST", "POST"]);
+  assert.ok(requests.every((request) => request.url === "/res/v1/chat/completions"));
+  assert.deepEqual(requests.map((request) => request.accept), [
+    "application/json",
+    "text/event-stream",
+    "application/json",
+  ]);
+});
+
 test("untrusted provider error bodies stay out of the error message and log", async () => {
   // A provider may echo a secret back in its error body. We prove the body
   // never reaches the returned error string or the usage log — it lives only

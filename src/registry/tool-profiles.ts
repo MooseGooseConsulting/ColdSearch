@@ -111,8 +111,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "directly via `contents`. Category enum current as of 2026-10: company, " +
       "people, publication (replaced research paper), news, personal site, " +
       "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
-      "upstream — maxAgeHours (0=always fetch, -1=cache-only) + livecrawlTimeout " +
-      "are the migration path.",
+      "upstream — `contents.maxAgeHours` (0=always fetch, -1=cache-only) + " +
+      "`contents.livecrawlTimeout` are the migration path.",
     docsUrl: "https://exa.ai/docs/reference/search",
     requiredParams: ["query"],
     optionalParams: [
@@ -122,8 +122,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "excludeDomains",
       "startPublishedDate",
       "endPublishedDate",
-      "maxAgeHours",
-      "livecrawlTimeout",
+      "contents.maxAgeHours",
+      "contents.livecrawlTimeout",
       "category",
       "contents",
       "additionalQueries",
@@ -909,7 +909,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     output: { rawPreserved: true, summarySupported: false, resultEnvelope: "answer" },
     schemaSource: "official-docs",
     schemaLastVerified: "2026-10-11",
-    status: "available",
+    status: "direct",
   },
 
   // ── Serper ─────────────────────────────────────────────────────────────
