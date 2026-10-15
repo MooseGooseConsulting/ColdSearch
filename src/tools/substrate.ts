@@ -657,6 +657,18 @@ const isToolCachePayload = (p: unknown): p is ToolCallResult =>
   typeof (p as ToolCallResult).meta === "object" &&
   Array.isArray((p as ToolCallResult).meta.warnings);
 
+function requestsJinaNoCache(
+  provider: string,
+  tool: string,
+  params: Record<string, unknown>
+): boolean {
+  if (provider !== "jina" || tool !== "reader") return false;
+  return Object.entries(params).some(([name, value]) =>
+    name.toLowerCase() === "x-no-cache" &&
+    (value === true || (typeof value === "string" && value.trim().toLowerCase() === "true"))
+  );
+}
+
 /**
  * Execute a provider tool call with the PR 2 history/replay behavior:
  *
@@ -688,7 +700,7 @@ export async function executeToolCall(
   }
 
   const cacheEnabled = config.cache?.enabled !== false;
-  const noCache = options?.noCache === true;
+  const noCache = options?.noCache === true || requestsJinaNoCache(provider, tool, params);
   const toolTtl = parseDuration(config.cache?.tool_ttl ?? "6h", 21600);
   const effectiveTtl = options?.freshness
     ? parseDuration(options.freshness, toolTtl)

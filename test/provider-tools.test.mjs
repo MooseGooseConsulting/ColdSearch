@@ -236,6 +236,41 @@ test("a replay-safe provider tool obeys --freshness and can produce an exact cac
   }
 });
 
+test("Jina Reader X-No-Cache bypasses local tool replay", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-jina-no-cache-"));
+  const config = {
+    capabilities: {},
+    providers: { jina: { keyPool: { keys: [] } } },
+    cache: { enabled: true, path: path.join(dir, "cache") },
+    history: { path: path.join(dir, "history.jsonl") },
+  };
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  global.fetch = async (input, init) => {
+    fetchCalls++;
+    assert.match(String(input), /^https:\/\/r\.jina\.ai\//);
+    assert.equal(init.headers["X-No-Cache"], "true");
+    return new Response(`reader result ${fetchCalls}`, {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  };
+
+  try {
+    const params = { url: "https://example.com/private", "X-No-Cache": "true" };
+    const first = await executeToolCall("jina", "reader", params, config);
+    const second = await executeToolCall("jina", "reader", params, config);
+
+    assert.equal(first.ok, true, first.error?.message);
+    assert.equal(second.ok, true, second.error?.message);
+    assert.equal(fetchCalls, 2, "each X-No-Cache request must reach Jina");
+    assert.match(String(second.raw), /reader result 2/);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a provider tool without explicit replay eligibility is never served from exact replay cache", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-noreplay-"));
   const cacheDir = path.join(dir, "cache");

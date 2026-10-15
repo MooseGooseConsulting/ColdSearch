@@ -373,3 +373,86 @@ test("extract all-fail: a failed extract throws and writes nothing to the cache 
     rmSync(cacheDir, { recursive: true, force: true });
   }
 });
+
+function writeTempBraveCountConfig({ cacheDir }) {
+  const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-"));
+  const configPath = join(dir, "config.toml");
+  const toml = `
+[capabilities.search]
+providers = ["brave"]
+strategy = "all"
+
+[capabilities.extract]
+providers = ["jina"]
+strategy = "all"
+
+[capabilities.crawl]
+providers = ["exa"]
+strategy = "all"
+
+[providers.brave]
+[providers.brave.keyPool]
+keys = ["k"]
+[providers.brave.options]
+count = 3
+
+[providers.jina]
+[providers.jina.keyPool]
+keys = []
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["k"]
+
+[cache]
+enabled = true
+search_ttl = "6h"
+path = ${JSON.stringify(cacheDir)}
+
+[history]
+path = ${JSON.stringify(join(dir, "history.jsonl"))}
+`;
+  writeFileSync(configPath, toml, "utf8");
+  return { dir, configPath };
+}
+
+
+test("search cache distinguishes implicit and explicit equal limits", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-cache-"));
+  const { dir, configPath } = writeTempBraveCountConfig({ cacheDir });
+  const requestedCounts = [];
+  const restore = installFetchMock({
+    "*": async ({ url }) => {
+      const parsed = new URL(url);
+      requestedCounts.push(parsed.searchParams.get("count"));
+      return jsonResponse({
+        web: {
+          results: [
+            {
+              title: "Brave result",
+              url: "https://brave.example",
+              description: "result",
+              relevance_score: 0.9,
+            },
+          ],
+        },
+      });
+    },
+  });
+
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    await backend.search("same query", { limit: 10, limitSet: false });
+    await backend.search("same query", { limit: 10, limitSet: true });
+
+    assert.deepEqual(
+      requestedCounts,
+      ["3", "10"],
+      "the explicit limit must not replay the implicit configured-count result"
+    );
+  } finally {
+    restore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
