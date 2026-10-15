@@ -300,8 +300,12 @@ async function dispatchToolCall(
     registryProfile?.features?.keyless === true ||
     provider === "searxng"
   );
+  // Keyless tools can still use an explicitly configured key. In particular,
+  // Jina Reader supports unauthenticated requests but offers higher limits
+  // when a key is supplied.
+  const hasConfiguredKey = keyPool.hasKeys(provider);
 
-  if (expectsKey && isConfigured) {
+  if ((expectsKey || hasConfiguredKey) && isConfigured) {
     try {
       keyResult = await keyPool.getNextKeyWithRef(provider);
     } catch (err: any) {
@@ -403,7 +407,6 @@ async function dispatchToolCall(
           urlObj.searchParams.set(k, String(v));
         }
         url = urlObj.toString();
-      }
       }
     } else if (provider === "brightdata") {
       const request = buildBrightDataToolRequest(tool, params, apiKey, config);
