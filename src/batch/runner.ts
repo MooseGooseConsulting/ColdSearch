@@ -187,6 +187,8 @@ export class LocalBatchExecutor implements BatchExecutor {
   private fanoutOptions(record: BatchInputRecord): FanoutOptions {
     return {
       limit: record.limit ?? DEFAULT_BATCH_LIMIT,
+      format: record.format,
+      depth: record.depth,
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,

@@ -5,9 +5,8 @@ import type { CapabilityName } from "../types.js";
  *
  * Exactly one of `capability` | `tool` must be set; `id` is the stable,
  * non-empty identity used as the resume key and duplicate key. Optional
- * execution knobs (`limit`, `providers`, `singleProvider`, `noCache`) mirror
- * the standalone CLI flags so a batch item behaves identically to the
- * equivalent `search` / `extract` / `crawl` / `tool call` invocation.
+ * execution knobs mirror the standalone CLI flags so a batch item behaves
+ * identically to the equivalent capability invocation.
  */
 export interface BatchInputRecord {
   /** Stable, non-empty identity; the resume key and duplicate key. */
@@ -24,6 +23,10 @@ export interface BatchInputRecord {
   input?: Record<string, any>;
   /** Maximum results (default: 10, matching the CLI). */
   limit?: number;
+  /** Extract output format. */
+  format?: "markdown" | "text";
+  /** Crawl link depth. */
+  depth?: number;
   /** Provider scope for capability records. */
   providers?: string[];
   /** Force single-provider mode for capability records. */

@@ -10,7 +10,7 @@ import {
   conflictRecord,
   loadResumeIndex,
 } from "../dist/batch/resume.js";
-import { runBatch, runWithConcurrency } from "../dist/batch/runner.js";
+import { LocalBatchExecutor, runBatch, runWithConcurrency } from "../dist/batch/runner.js";
 import { DUPLICATE_ID_CONFLICT } from "../dist/batch/types.js";
 import { installFetchMock, jsonResponse } from "./adapters/_fetch-mock.mjs";
 
@@ -103,7 +103,12 @@ test("accepts valid search records", () => {
 
 test("accepts valid extract records", () => {
   assert.doesNotThrow(() =>
-    validateBatchInput({ id: "example-extract", capability: "extract", url: "https://example.com" })
+    validateBatchInput({
+      id: "example-extract",
+      capability: "extract",
+      url: "https://example.com",
+      format: "text",
+    })
   );
 });
 
@@ -114,8 +119,87 @@ test("accepts valid crawl records", () => {
       capability: "crawl",
       url: "https://example.com",
       limit: 10,
+      depth: 2,
     })
   );
+});
+
+test("validates batch format and depth options", () => {
+  assert.throws(
+    () => validateBatchInput({ id: "bad-format", capability: "extract", url: "https://example.com", format: "html" }),
+    /'format' must be 'markdown' or 'text'/
+  );
+  for (const depth of [-1, 1.5, "2"]) {
+    assert.throws(
+      () => validateBatchInput({ id: "bad-depth", capability: "crawl", url: "https://example.com", depth }),
+      /'depth' must be a non-negative integer/
+    );
+  }
+  assert.throws(
+    () => validateBatchInput({ id: "wrong-depth", capability: "extract", url: "https://example.com", depth: 2 }),
+    /'depth' is only valid for 'crawl'/
+  );
+  assert.throws(
+    () => validateBatchInput({ id: "wrong-format", capability: "crawl", url: "https://example.com", format: "text" }),
+    /'format' is only valid for 'extract'/
+  );
+});
+
+test("LocalBatchExecutor forwards extract format and crawl depth", async () => {
+  const dir = makeDir("coldsearch-batch-options-");
+  const configPath = path.join(dir, "config.toml");
+  const previousKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "test-tavily-key";
+  fs.writeFileSync(
+    configPath,
+    `[capabilities.extract]\nproviders = ["tavily"]\nstrategy = "all"\n\n` +
+      `[capabilities.crawl]\nproviders = ["tavily"]\nstrategy = "all"\n\n` +
+      `[providers.tavily]\n[providers.tavily.keyPool]\nkeys = ["env:TAVILY_API_KEY"]\n\n` +
+      `[cache]\nenabled = false\n\n` +
+      `[history]\npath = ${JSON.stringify(path.join(dir, "history.jsonl"))}\n\n` +
+      `[logging.usage]\npath = ${JSON.stringify(path.join(dir, "usage.jsonl"))}\n`,
+    "utf8"
+  );
+  const seen = {};
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/extract": async ({ init }) => {
+      seen.extract = JSON.parse(init.body);
+      return jsonResponse({ results: [{ url: "https://example.com", raw_content: "body" }] });
+    },
+    "POST https://api.tavily.com/crawl": async ({ init }) => {
+      seen.crawl = JSON.parse(init.body);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    const executor = new LocalBatchExecutor(configPath);
+    const extractRecord = {
+      id: "extract-text",
+      capability: "extract",
+      url: "https://example.com",
+      format: "text",
+    };
+    validateBatchInput(extractRecord);
+    assert.equal((await executor.execute(extractRecord, {})).status, "success");
+
+    const crawlRecord = {
+      id: "crawl-depth",
+      capability: "crawl",
+      url: "https://example.com",
+      limit: 50,
+      depth: 2,
+    };
+    validateBatchInput(crawlRecord);
+    assert.equal((await executor.execute(crawlRecord, {})).status, "success");
+    assert.equal(seen.extract.format, "text");
+    assert.equal(seen.crawl.limit, 50);
+    assert.equal(seen.crawl.max_depth, 2);
+  } finally {
+    restore();
+    if (previousKey === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = previousKey;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("accepts valid provider-tool records", () => {
