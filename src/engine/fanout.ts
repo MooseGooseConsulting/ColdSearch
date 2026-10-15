@@ -68,6 +68,8 @@ interface ProviderResult {
 export interface FanoutAttempt {
   provider: string;
   success: boolean;
+  /** Provider accepted the crawl but the async job has not completed. */
+  pending?: boolean;
   error?: string;
   duration_ms?: number;
   key_ref?: string;
@@ -335,6 +337,7 @@ export class FanoutEngine {
   async crawl(url: string, options: FanoutOptions): Promise<{
     results: CrawlResult[];
     provider: string;
+    status: "completed" | "pending";
     errors?: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
@@ -343,6 +346,7 @@ export class FanoutEngine {
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
+    let pendingResult: { provider: string; results: CrawlResult[] } | undefined;
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -373,6 +377,34 @@ export class FanoutEngine {
         });
 
         const durationMs = Math.round(performance.now() - start);
+        if (results.some((result) => result.status === "pending")) {
+          const pendingMessage = "Provider crawl is still pending";
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            pending: true,
+            response_time_ms: durationMs,
+            error: pendingMessage,
+          });
+          attempts.push({
+            provider,
+            success: false,
+            pending: true,
+            error: pendingMessage,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+            result_count: results.length,
+          });
+          if (!pendingResult) pendingResult = { provider, results: [] };
+          pendingResult.results.push(...results);
+          // A pending async job is not a completed crawl. Try the next
+          // configured provider so it can produce usable results now.
+          continue;
+        }
+
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
@@ -391,6 +423,7 @@ export class FanoutEngine {
         return {
           results: results,
           provider,
+          status: "completed",
           errors: Object.keys(errors).length > 0 ? errors : undefined,
           attempts,
           secretsUsed,
@@ -415,6 +448,17 @@ export class FanoutEngine {
           key_ref: keyRef,
         });
       }
+    }
+
+    if (pendingResult) {
+      return {
+        results: pendingResult.results,
+        provider: pendingResult.provider,
+        status: "pending",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
     }
 
     throw new AllProvidersFailedError(errors, attempts, secretsUsed);

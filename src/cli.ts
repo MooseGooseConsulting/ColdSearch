@@ -200,14 +200,22 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.format = args[i] as "markdown" | "text";
         break;
 
-      case "--depth":
-        i++;
-        const depth = parseInt(args[i], 10);
-        if (isNaN(depth) || depth < 0) {
-          throw new Error(`Invalid depth: ${args[i]}`);
+      case "--depth": {
+        const rawDepth = args[i + 1];
+        const depth = Number(rawDepth);
+        if (
+          typeof rawDepth !== "string" ||
+          rawDepth.trim() === "" ||
+          !/^-?\d+$/.test(rawDepth) ||
+          !Number.isInteger(depth) ||
+          depth < 0
+        ) {
+          throw new Error(`Invalid depth: ${rawDepth}`);
         }
+        i++;
         options.depth = depth;
         break;
+      }
 
       case "--pretty":
       case "-p":
@@ -713,12 +721,22 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     console.error(`Warning: ${warning}`);
   }
 
+  if (result.status === "pending") {
+    const jobIds = [...new Set(result.results.flatMap((crawlResult) =>
+      crawlResult.status === "pending" && crawlResult.jobId ? [crawlResult.jobId] : []
+    ))];
+    console.error(
+      `Warning: crawl is still pending${jobIds.length ? ` (job ${jobIds.join(", ")})` : ""}; results are not complete.`
+    );
+  }
+
   const output = {
     mode: describeCliOutputMode(config, "crawl", options, 1),
     command: "crawl",
     url: options.query,
     results: result.results,
     provider: result.provider,
+    status: result.status,
     total: result.results.length,
     errors: result.errors ? result.errors : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
@@ -1529,7 +1547,7 @@ async function runBatchMode(options: ExtendedCLIOptions): Promise<void> {
             `  ${r.action === "execute" ? "execute" : r.action === "conflict" ? "conflict" : `skip (${r.reason})`}  ${r.id}  ${r.capability ?? r.tool}`
         ),
       ].join("\n")
-    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
+    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.pending ?? 0} pending, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
   printData({ command: "batch", ...summary }, human, options);
 
   // A batch that finished but had failing items or newly emitted duplicate-ID

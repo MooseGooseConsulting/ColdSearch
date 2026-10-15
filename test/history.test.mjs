@@ -512,6 +512,60 @@ test("crawl executions are recorded but never served from exact replay", async (
   }
 });
 
+test("pending Firecrawl crawls are recorded as pending, not success", async () => {
+  const dir = makeTempDir();
+  const historyPath = join(dir, "history.jsonl");
+  const usagePath = join(dir, "usage.jsonl");
+  const configPath = join(dir, "config.toml");
+  writeFileSync(
+    configPath,
+    `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["firecrawl-test-key"]
+
+[history]
+path = ${JSON.stringify(historyPath)}
+
+[logging.usage]
+path = ${JSON.stringify(usagePath)}
+`,
+    "utf8"
+  );
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "history-pending-job", url: "https://x.example" }),
+    "GET https://api.firecrawl.dev/v2/crawl/history-pending-job": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+  });
+
+  try {
+    const result = await new LocalExecutionBackend(configPath).crawl("https://x.example", { limit: 1 });
+    assert.equal(result.status, "pending");
+    assert.equal(result.results[0].jobId, "history-pending-job");
+
+    const [record] = readRecords(historyPath);
+    assert.equal(record.outcome, "pending");
+    assert.equal(record.result[0].jobId, "history-pending-job");
+    assert.equal(record.attempts[0].success, false);
+    assert.equal(record.attempts[0].pending, true);
+
+    const [usage] = readFileSync(usagePath, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(usage.success, false);
+    assert.equal(usage.pending, true);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("signed caller URLs are redacted from persisted inputs AND echoed results", async () => {
   const { dir, historyPath, configPath } = writeTempConfig();
   const signedUrl = "https://example.com/private?token=supersecrettoken123&sig=abc123&keep=1";

@@ -44,6 +44,7 @@ export type ExtractOutcome = {
 export type CrawlOutcome = {
   results: CrawlResult[];
   provider: string;
+  status: "completed" | "pending";
   errors?: Record<string, string>;
   warnings?: string[];
 };
@@ -446,13 +447,18 @@ export class LocalExecutionBackend implements ExecutionBackend {
           errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome:
-            result.errors && Object.keys(result.errors).length > 0 ? "partial" : "success",
+            result.status === "pending"
+              ? "pending"
+              : result.errors && Object.keys(result.errors).length > 0
+                ? "partial"
+                : "success",
         },
         warnings
       );
       return {
         results: result.results,
         provider: result.provider,
+        status: result.status,
         errors: result.errors,
         warnings,
       };

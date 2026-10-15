@@ -43,7 +43,7 @@ export function braveToolPath(tool: string): string {
     case "video":
       return "/res/v1/videos/search";
     case "llmContext":
-      return "/res/v1/summarizer/llm_context";
+      return "/res/v1/llm/context";
     default:
       throw new Error(
         `Unsupported Brave tool '${tool}'. Supported: webSearch, newsSearch, imageSearch, videoSearch, llmContext.`
@@ -58,12 +58,29 @@ export type JinaDispatch =
 
 /** Reader, s.jina.ai search, or the JSON API. Unknown tools stay on the JSON API. */
 export function jinaDispatch(tool: string, params: Record<string, unknown>): JinaDispatch {
-  if (tool === "reader" || (typeof params.url === "string" && params.url && !params.q)) {
-    const target = String(params.url || params.q || "");
-    return { kind: "reader", url: `https://r.jina.ai/${target}` };
+  if (tool === "reader" || (typeof params.url === "string" && params.url.trim() && !params.q)) {
+    const rawTarget = params.url;
+    if (typeof rawTarget !== "string" || !rawTarget.trim()) {
+      throw new Error("Jina Reader requires a non-empty URL");
+    }
+    const target = rawTarget.trim();
+    const normalizedTarget = /^[a-z][a-z\d+.-]*:\/\//i.test(target)
+      ? target
+      : `https://${target}`;
+    let parsedTarget: URL;
+    try {
+      parsedTarget = new URL(normalizedTarget);
+    } catch {
+      throw new Error("Jina Reader requires a valid HTTP(S) URL");
+    }
+    if (parsedTarget.protocol !== "http:" && parsedTarget.protocol !== "https:") {
+      throw new Error("Jina Reader requires a valid HTTP(S) URL");
+    }
+    return { kind: "reader", url: `https://r.jina.ai/${normalizedTarget}` };
   }
   if (tool === "search") {
     const q = typeof params.q === "string" ? params.q : typeof params.query === "string" ? params.query : "";
+    if (!q.trim()) throw new Error("Jina search requires a non-empty query");
     const url = new URL("https://s.jina.ai/");
     if (q) url.searchParams.set("q", q);
     return { kind: "search", url: url.toString() };

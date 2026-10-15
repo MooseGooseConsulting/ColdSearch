@@ -58,6 +58,7 @@ export interface BatchRunSummary {
   /** Real runs only. */
   executed?: number;
   succeeded?: number;
+  pending?: number;
   failed?: number;
   /** Dry runs only: the planned records. */
   records?: BatchPlanReportEntry[];
@@ -139,10 +140,11 @@ export class LocalBatchExecutor implements BatchExecutor {
         this.warn(result.warnings);
         return {
           ...base,
-          status: "success",
+          status: result.status === "pending" ? "pending" : "success",
           result: {
             results: result.results,
             provider: result.provider,
+            status: result.status,
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
               : {}),
@@ -369,6 +371,7 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
 
   let executed = 0;
   let succeeded = 0;
+  let pending = 0;
   let failed = 0;
   await runWithConcurrency(
     plan.filter((e) => e.action === "execute"),
@@ -378,12 +381,14 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
       await persist(outputRecord);
       executed += 1;
       if (outputRecord.status === "success") succeeded += 1;
+      else if (outputRecord.status === "pending") pending += 1;
       else failed += 1;
     }
   );
 
   summary.executed = executed;
   summary.succeeded = succeeded;
+  summary.pending = pending;
   summary.failed = failed;
   return summary;
 }

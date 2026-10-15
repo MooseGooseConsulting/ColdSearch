@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Provider hosts batch items dispatch to; redirected to the local mock. */
-const PROVIDER_HOSTS = ["https://api.exa.ai", "https://api.tavily.com"];
+const PROVIDER_HOSTS = ["https://api.exa.ai", "https://api.tavily.com", "https://api.firecrawl.dev"];
 
 function makeDir(tag = "coldsearch-batch-cli-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), tag));
@@ -44,6 +44,10 @@ function startMockServer() {
           results: [{ url: "https://mock.example/page", title: "Mock Page", text: "mock body content" }],
         })
       );
+    } else if (req.method === "POST" && url.pathname === "/v2/crawl") {
+      res.end(JSON.stringify({ success: true, id: "cli-pending-job", url: "https://example.com" }));
+    } else if (req.method === "GET" && url.pathname === "/v2/crawl/cli-pending-job") {
+      res.end(JSON.stringify({ success: true, status: "scraping" }));
     } else {
       res.writeHead(404);
       res.end(JSON.stringify({ error: `unexpected ${req.method} ${url.pathname}` }));
@@ -77,7 +81,7 @@ function closeServer(server) {
  * preload loaded via `--require` keeps this portable across Node 18+ (the
  * project's engine floor); `--import` would require Node >= 20.6.
  */
-function preloadOptions(dir, port) {
+function preloadOptions(dir, port, { fastPolls = false } = {}) {
   const preloadPath = path.join(dir, "mock-fetch.cjs");
   const hosts = JSON.stringify(PROVIDER_HOSTS);
   fs.writeFileSync(
@@ -93,6 +97,13 @@ globalThis.fetch = (input, init) => {
 `,
     "utf8"
   );
+  if (fastPolls) {
+    fs.appendFileSync(
+      preloadPath,
+      "const originalSetTimeout = globalThis.setTimeout;\nglobalThis.setTimeout = (fn, delay, ...args) => originalSetTimeout(fn, delay === 2000 ? 0 : delay, ...args);\n",
+      "utf8"
+    );
+  }
   return `--require ${JSON.stringify(preloadPath)}`;
 }
 
@@ -152,6 +163,7 @@ function runCli(args, nodeOptions) {
         ...process.env,
         EXA_API_KEY: "test-exa-key",
         TAVILY_API_KEY: "test-tavily-key",
+        FIRECRAWL_API_KEY: "test-firecrawl-key",
         ...(nodeOptions
           ? { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} ${nodeOptions}`.trim() }
           : {}),
@@ -260,6 +272,51 @@ test("runs a mixed search/extract/crawl/provider-tool batch with mocked provider
       .filter(Boolean)
       .map(JSON.parse);
     assert.equal(history.length, 4, "one history record per executed item");
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("crawl CLI warns visibly when Firecrawl returns a pending job", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const configPath = path.join(dir, "firecrawl.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["crawl", "--config", configPath, "--json", "https://example.com"],
+      nodeOptions
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "pending");
+    assert.equal(output.results[0].status, "pending");
+    assert.equal(output.results[0].jobId, "cli-pending-job");
   } finally {
     await closeServer(server);
     fs.rmSync(dir, { recursive: true, force: true });

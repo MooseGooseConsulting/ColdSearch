@@ -124,3 +124,70 @@ test("sequential crawl tries providers in order and returns on first success", a
   }
 });
 
+test("pending Firecrawl crawl falls through to a completed provider", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "job-pending", url: "https://x.example" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-pending": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "a" }] }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl", "exa"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", { limit: 1 });
+    assert.equal(out.provider, "exa");
+    assert.equal(out.status, "completed");
+    assert.equal(out.results[0].url, "https://x.example/a");
+    assert.equal(out.attempts[0].provider, "firecrawl");
+    assert.equal(out.attempts[0].success, false);
+    assert.equal(out.attempts[0].pending, true);
+    assert.equal(out.attempts[1].provider, "exa");
+    assert.equal(out.attempts[1].success, true);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("pending crawl fallback preserves every pending job id and status", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  let nextJob = 0;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: `job-${++nextJob}`, url: "https://x.example" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-1": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-2": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl", "firecrawl"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", { limit: 1 });
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.results.map((result) => result.jobId), ["job-1", "job-2"]);
+    assert.ok(out.results.every((result) => result.status === "pending"));
+    assert.ok(out.attempts.every((attempt) => attempt.pending && !attempt.success));
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+

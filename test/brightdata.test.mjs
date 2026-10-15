@@ -118,6 +118,7 @@ test("Unlocker adapter requests Markdown and returns extracted text", async () =
     });
   }, async () => {
     const result = await adapter.extract("https://example.com/page", "secret", {
+      format: "text",
       providerOptions: config().providers.brightdata.options,
     });
     assert.equal(result.content, "# Extracted page\nHello");

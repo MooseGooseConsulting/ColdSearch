@@ -12,7 +12,7 @@ export type ExecutionCommand = "search" | "extract" | "crawl" | "tool";
 /** `live`: providers were called. `cache`: exact replay, zero provider calls. */
 export type ExecutionSource = "live" | "cache";
 
-export type ExecutionOutcome = "success" | "partial" | "failed";
+export type ExecutionOutcome = "success" | "partial" | "pending" | "failed";
 
 /**
  * One provider/tool attempt inside an execution. Carries only what the runtime
@@ -22,6 +22,8 @@ export interface ProviderAttempt {
   provider: string;
   tool?: string;
   success: boolean;
+  /** Provider accepted an asynchronous job that has not completed yet. */
+  pending?: boolean;
   error?: string;
   duration_ms?: number;
   key_ref?: string;

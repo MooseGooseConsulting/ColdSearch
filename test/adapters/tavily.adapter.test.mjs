@@ -25,6 +25,20 @@ test("tavily search normalizes results", async () => {
   }
 });
 
+test("tavily search caps max_results at the provider limit", async () => {
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/search": async ({ init }) => {
+      assert.equal(JSON.parse(init.body).max_results, 20);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    await new TavilyAdapter().search("q", "k", { limit: 100 });
+  } finally {
+    restore();
+  }
+});
+
 test("tavily crawl uses native /crawl endpoint", async () => {
   const restore = installFetchMock({
     "POST https://api.tavily.com/crawl": async ({ init }) => {
@@ -64,6 +78,32 @@ test("tavily errors on invalid JSON", async () => {
   try {
     const adapter = new TavilyAdapter();
     await assert.rejects(() => adapter.search("q", "k"), /invalid json/i);
+  } finally {
+    restore();
+  }
+});
+
+test("tavily crawl validates the supported depth range", async () => {
+  let fetchCalled = false;
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/crawl": async ({ init }) => {
+      fetchCalled = true;
+      assert.equal(JSON.parse(init.body).max_depth, 5);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    const adapter = new TavilyAdapter();
+    await adapter.crawl("https://example.com", "k", { depth: 5 });
+    await assert.rejects(
+      () => adapter.crawl("https://example.com", "k", { depth: 6 }),
+      /integer from 1 to 5/
+    );
+    await assert.rejects(
+      () => adapter.crawl("https://example.com", "k", { depth: 1.5 }),
+      /integer from 1 to 5/
+    );
+    assert.equal(fetchCalled, true, "only valid depths reach the provider");
   } finally {
     restore();
   }

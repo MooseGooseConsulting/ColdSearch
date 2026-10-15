@@ -43,6 +43,7 @@ export interface BatchError {
  * One batch output record (one JSON object per line of the output JSONL).
  *
  * - `status: "success"` records have `result` set and `error: null`.
+ * - `status: "pending"` records preserve an async job but are not resumable successes.
  * - `status: "error"` records have `result: null` and a non-null `error`.
  * - Duplicate/conflict records carry `error.code === DUPLICATE_ID_CONFLICT`
  *   and are never retried by `--retry-errors`.
@@ -51,7 +52,7 @@ export interface BatchOutputRecord {
   id: string;
   capability?: CapabilityName;
   tool?: string;
-  status: "success" | "error";
+  status: "success" | "pending" | "error";
   /** Execution result; `null` on error. */
   result: unknown;
   /** `null` on success; `{ message }` (or conflict details) on error. */

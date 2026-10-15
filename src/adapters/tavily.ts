@@ -52,7 +52,7 @@ export class TavilyAdapter implements SearchAdapter {
       return 10;
     }
 
-    return Math.max(1, Math.floor(limit));
+    return Math.min(20, Math.max(1, Math.floor(limit)));
   }
 
   async search(
@@ -143,9 +143,9 @@ export class TavilyAdapter implements SearchAdapter {
     const limit = this.sanitizeLimit(options?.limit);
     let depth: number | undefined;
     if (options?.depth !== undefined) {
-      depth = Math.floor(options.depth);
-      if (!Number.isFinite(depth) || depth < 1) {
-        throw new Error("Tavily crawl does not support depth 0; the minimum depth is 1");
+      depth = options.depth;
+      if (!Number.isInteger(depth) || depth < 1 || depth > 5) {
+        throw new Error("Tavily crawl depth must be an integer from 1 to 5");
       }
     }
     const normalizedUrl = url.trim();

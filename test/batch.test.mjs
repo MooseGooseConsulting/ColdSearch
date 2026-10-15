@@ -12,6 +12,7 @@ import {
 } from "../dist/batch/resume.js";
 import { runBatch, runWithConcurrency } from "../dist/batch/runner.js";
 import { DUPLICATE_ID_CONFLICT } from "../dist/batch/types.js";
+import { installFetchMock, jsonResponse } from "./adapters/_fetch-mock.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -687,6 +688,77 @@ test("contract-invalid output lines do not count as completed outcomes", async (
     assert.equal(summary.skipped, 0);
     assert.equal(outputRecords(outputPath).length, 2, "invalid line kept verbatim; valid record appended");
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pending crawl batch records are preserved and re-executed on resume", async () => {
+  const dir = makeDir();
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  let nextJob = 0;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: `batch-job-${++nextJob}`, url: "https://example.com" }),
+    "*": async ({ url, method }) => {
+      assert.equal(method, "GET");
+      assert.match(url, /\/v2\/crawl\/batch-job-\d+$/);
+      return jsonResponse({ success: true, status: "scraping" });
+    },
+  });
+
+  try {
+    const configPath = path.join(dir, "config.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["firecrawl-test-key"]
+
+[cache]
+enabled = false
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+`,
+      "utf8"
+    );
+    const inputPath = writeInput(dir, [
+      { id: "crawl-pending", capability: "crawl", url: "https://example.com" },
+    ]);
+    const outputPath = path.join(dir, "out.jsonl");
+    const options = {
+      input: inputPath,
+      output: outputPath,
+      concurrency: 1,
+      retryErrors: false,
+      configPath,
+    };
+
+    const first = await runBatch(options);
+    assert.equal(first.succeeded, 0);
+    assert.equal(first.pending, 1);
+    assert.equal(first.failed, 0);
+    assert.equal(outputRecords(outputPath)[0].status, "pending");
+    assert.equal(outputRecords(outputPath)[0].result.results[0].jobId, "batch-job-1");
+
+    const second = await runBatch(options);
+    assert.equal(second.executed, 1, "pending output is not treated as completed on resume");
+    assert.equal(second.pending, 1);
+    assert.equal(nextJob, 2, "resume creates a fresh crawl instead of skipping the pending job");
+    assert.deepEqual(outputRecords(outputPath).map((record) => record.status), ["pending", "pending"]);
+    assert.equal(outputRecords(outputPath)[1].result.results[0].jobId, "batch-job-2");
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

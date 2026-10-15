@@ -379,7 +379,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          numResults: normalizeResultCount(options?.numResults ?? opts.numResults),
+          numResults: normalizeResultCount(options?.numResults ?? options?.limit ?? opts.numResults),
           contents: opts.highlights
             ? { highlights: true }
             : { text: { maxCharacters: opts.maxCharacters ?? 15000 } },

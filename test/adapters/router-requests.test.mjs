@@ -128,7 +128,7 @@ test("crawl depth is sent for Tavily and Firecrawl and Exa results stay derived"
     assert.equal(seen.tavily.max_depth, 2);
     await assert.rejects(
       () => new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 0 }),
-      /does not support depth 0/
+      /depth must be an integer from 1 to 5/
     );
     await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 2, depth: 1 });
     const exa = await new ExaAdapter().crawl("https://example.com", "k", { limit: 2, depth: 4 });
@@ -155,12 +155,17 @@ test("dispatch path table covers Serper verticals, Brave images, and Jina search
   assert.equal(braveToolPath("newsSearch"), "/res/v1/news/search");
   assert.equal(braveToolPath("imageSearch"), "/res/v1/images/search");
   assert.equal(braveToolPath("videoSearch"), "/res/v1/videos/search");
-  assert.equal(braveToolPath("llmContext"), "/res/v1/summarizer/llm_context");
+  assert.equal(braveToolPath("llmContext"), "/res/v1/llm/context");
   const search = jinaDispatch("search", { q: "openai" });
   assert.equal(search.kind, "search");
   assert.equal(search.url, "https://s.jina.ai/?q=openai");
   const reader = jinaDispatch("reader", { url: "https://example.com" });
   assert.equal(reader.url, "https://r.jina.ai/https://example.com");
+  assert.equal(jinaDispatch("reader", { url: "example.com/path" }).url,
+    "https://r.jina.ai/https://example.com/path");
+  assert.throws(() => jinaDispatch("reader", {}), /non-empty URL/);
+  assert.throws(() => jinaDispatch("reader", { url: "ftp://example.com" }), /HTTP\(S\) URL/);
+  assert.throws(() => jinaDispatch("search", { q: " " }), /non-empty query/);
   const embeddings = jinaDispatch("embeddings", { input: ["q"] });
   assert.equal(embeddings.kind, "json");
   assert.equal(embeddings.url, "https://api.jina.ai/v1/embeddings");

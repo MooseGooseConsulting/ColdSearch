@@ -148,7 +148,9 @@ export class BrightDataAdapter implements SearchAdapter {
           format: "raw",
           method: "GET",
           country,
-          data_format: options?.format ?? "markdown",
+          // Web Unlocker returns markdown for readable text. `text` is a
+          // ColdSearch output preference, not a valid Web Unlocker format.
+          data_format: options?.format === "text" ? "markdown" : options?.format ?? "markdown",
         }),
       },
       {

@@ -49,6 +49,20 @@ test("exa crawl discovers then fetches contents", async () => {
   }
 });
 
+test("exa findSimilar maps common limit to numResults", async () => {
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/findSimilar": async ({ init }) => {
+      assert.equal(JSON.parse(init.body).numResults, 7);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    await new ExaAdapter().findSimilar("https://example.com", "k", { limit: 7 });
+  } finally {
+    restore();
+  }
+});
+
 test("exa search highlights mode sets contents.highlights and joins highlights into snippet", async () => {
   let capturedBody;
 

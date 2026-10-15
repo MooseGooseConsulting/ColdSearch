@@ -911,6 +911,27 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     schemaLastVerified: "2026-10-11",
     status: "direct",
   },
+  "brave.newsSearch": deferredCandidateProfile(
+    "brave",
+    "newsSearch",
+    "GET /res/v1/news/search",
+    "search",
+    "https://api.search.brave.com/app/documentation/"
+  ),
+  "brave.imageSearch": deferredCandidateProfile(
+    "brave",
+    "imageSearch",
+    "GET /res/v1/images/search",
+    "search",
+    "https://api.search.brave.com/app/documentation/"
+  ),
+  "brave.videoSearch": deferredCandidateProfile(
+    "brave",
+    "videoSearch",
+    "GET /res/v1/videos/search",
+    "search",
+    "https://api.search.brave.com/app/documentation/"
+  ),
 
   // ── Serper ─────────────────────────────────────────────────────────────
   "serper.search": {

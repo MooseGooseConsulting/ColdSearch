@@ -1,7 +1,7 @@
 {
   "issue": 81,
   "date": "2026-10-11",
-  "launch": "doppler run --project ai-automation --config dev, cwd on C:\\",
+  "launch": "local development launch command",
   "notes": "Statuses and counts only. No response bodies, no secret values.",
   "calls": [
     { "name": "tavily.search", "result": "ok", "detail": "1 result" },
