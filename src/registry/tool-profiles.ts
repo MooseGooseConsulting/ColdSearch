@@ -882,7 +882,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
     schemaLastVerified: VERIFIED,
-    status: "available",
+    status: "direct",
   },
   "brave.answers": {
     provider: "brave",

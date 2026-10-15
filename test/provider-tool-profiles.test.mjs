@@ -24,8 +24,9 @@ test("every profile key equals `<provider>.<tool>`", () => {
   }
 });
 
-test("direct Brave Answers and nested Exa freshness schema match dispatch", () => {
+test("direct Brave tools and nested Exa freshness schema match dispatch", () => {
   assert.equal(getToolProfile("brave.answers")?.status, "direct");
+  assert.equal(getToolProfile("brave.llmContext")?.status, "direct");
 
   const exaSearchParams = getToolProfile("exa.search")?.optionalParams ?? [];
   assert.ok(exaSearchParams.includes("contents.maxAgeHours"));
