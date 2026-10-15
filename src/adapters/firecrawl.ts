@@ -268,8 +268,12 @@ export class FirecrawlAdapter implements SearchAdapter {
       // If still scraping, continue polling
     }
 
-    throw new Error(
-      `Firecrawl crawl job ${jobId} is still pending after ${maxAttempts} polls`
-    );
+    return [{
+      url: normalizedUrl,
+      title: "",
+      content: "",
+      status: "pending",
+      jobId,
+    }];
   }
 }

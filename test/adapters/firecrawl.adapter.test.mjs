@@ -64,7 +64,7 @@ test("firecrawl crawl polls until completion", async () => {
   }
 });
 
-test("firecrawl crawl keeps the 30-poll budget and visibly fails while pending", async () => {
+test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending job", async () => {
   const originalSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
 
@@ -78,10 +78,14 @@ test("firecrawl crawl keeps the 30-poll budget and visibly fails while pending",
     },
   });
   try {
-    await assert.rejects(
-      () => new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 1 }),
-      /job job-pending is still pending after 30 polls/
-    );
+    const results = await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 1 });
+    assert.deepEqual(results, [{
+      url: "https://example.com",
+      title: "",
+      content: "",
+      status: "pending",
+      jobId: "job-pending",
+    }]);
     assert.equal(pollCount, 30);
   } finally {
     restore();
