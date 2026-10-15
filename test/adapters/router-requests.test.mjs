@@ -169,4 +169,10 @@ test("dispatch path table covers Serper verticals, Brave images, and Jina search
   const embeddings = jinaDispatch("embeddings", { input: ["q"] });
   assert.equal(embeddings.kind, "json");
   assert.equal(embeddings.url, "https://api.jina.ai/v1/embeddings");
+  const embeddingsWithUrl = jinaDispatch("embeddings", {
+    url: "https://example.com",
+    input: ["q"],
+  });
+  assert.equal(embeddingsWithUrl.kind, "json");
+  assert.equal(embeddingsWithUrl.url, "https://api.jina.ai/v1/embeddings");
 });

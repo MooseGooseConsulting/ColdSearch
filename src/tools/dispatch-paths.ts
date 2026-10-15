@@ -58,7 +58,7 @@ export type JinaDispatch =
 
 /** Reader, s.jina.ai search, or the JSON API. Unknown tools stay on the JSON API. */
 export function jinaDispatch(tool: string, params: Record<string, unknown>): JinaDispatch {
-  if (tool === "reader" || (typeof params.url === "string" && params.url.trim() && !params.q)) {
+  if (tool === "reader") {
     const rawTarget = params.url;
     if (typeof rawTarget !== "string" || !rawTarget.trim()) {
       throw new Error("Jina Reader requires a non-empty URL");
