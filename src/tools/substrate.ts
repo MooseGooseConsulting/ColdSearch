@@ -152,7 +152,12 @@ function buildToolSummary(provider: string, tool: string, raw: any): Record<stri
     if (provider === "jina") {
       if (tool === "reader") {
         return {
-          length: typeof raw === "string" ? raw.length : 0,
+          length:
+            typeof raw === "string"
+              ? raw.length
+              : typeof raw.data?.content === "string"
+                ? raw.data.content.length
+                : 0,
         };
       }
     }
@@ -169,6 +174,14 @@ function buildToolSummary(provider: string, tool: string, raw: any): Record<stri
   }
 
   return null;
+}
+
+function normalizeJinaReaderAccept(value: unknown): string {
+  if (typeof value !== "string") return "text/plain";
+  const mediaType = value.split(";", 1)[0].trim().toLowerCase();
+  return ["application/json", "text/event-stream", "text/plain"].includes(mediaType)
+    ? mediaType
+    : "text/plain";
 }
 
 /**
@@ -368,25 +381,36 @@ async function dispatchToolCall(
       headers["Authorization"] = `Bearer ${apiKey}`;
       body = JSON.stringify(params);
     } else if (provider === "brave") {
-      method = "GET";
       headers = {
         Accept: "application/json",
         "Accept-Encoding": "gzip",
         "X-Subscription-Token": apiKey,
       };
-      
-      let bravePath = `/res/v1/${tool}`;
-      if (tool === "webSearch") bravePath = "/res/v1/web/search";
-      else if (tool === "llmContext") bravePath = "/res/v1/summarizer/llm_context";
-      else if (tool === "newsSearch") bravePath = "/res/v1/news/search";
-      else if (tool === "videoSearch") bravePath = "/res/v1/video/search";
-      else if (tool === "imageSearch") bravePath = "/res/v1/image/search";
 
-      const urlObj = new URL(`https://api.search.brave.com${bravePath}`);
-      for (const [k, v] of Object.entries(params)) {
-        urlObj.searchParams.set(k, String(v));
+      if (tool === "answers") {
+        method = "POST";
+        url = "https://api.search.brave.com/res/v1/chat/completions";
+        useTextParser = params.stream === true;
+        headers["Accept"] = useTextParser ? "text/event-stream" : "application/json";
+        headers["Content-Type"] = "application/json";
+        // Brave defaults this endpoint to streaming. Set false explicitly when
+        // omitted so the ordinary JSON path stays parseable; preserve true.
+        body = JSON.stringify({ ...params, stream: useTextParser });
+      } else {
+        method = "GET";
+        let bravePath = `/res/v1/${tool}`;
+        if (tool === "webSearch") bravePath = "/res/v1/web/search";
+        else if (tool === "llmContext") bravePath = "/res/v1/llm/context";
+        else if (tool === "newsSearch") bravePath = "/res/v1/news/search";
+        else if (tool === "videoSearch") bravePath = "/res/v1/video/search";
+        else if (tool === "imageSearch") bravePath = "/res/v1/image/search";
+
+        const urlObj = new URL(`https://api.search.brave.com${bravePath}`);
+        for (const [k, v] of Object.entries(params)) {
+          urlObj.searchParams.set(k, String(v));
+        }
+        url = urlObj.toString();
       }
-      url = urlObj.toString();
     } else if (provider === "brightdata") {
       const request = buildBrightDataToolRequest(tool, params, apiKey, config);
       url = request.url;
@@ -406,8 +430,27 @@ async function dispatchToolCall(
       }
       
       if (tool === "reader" || (params.url && !params.q)) {
-        useTextParser = true;
-        headers["Accept"] = "text/plain";
+        delete headers["Content-Type"];
+        const acceptEntry = Object.entries(params)
+          .filter(([key]) => key.toLowerCase() === "accept")
+          .at(-1);
+        const accept = normalizeJinaReaderAccept(acceptEntry?.[1]);
+        headers["Accept"] = accept;
+        useTextParser = accept !== "application/json";
+        // Reader options are HTTP headers, not query or JSON-body fields.
+        // Only forward the documented header surface so arbitrary parameters
+        // cannot change transport-level headers such as Host or Authorization.
+        const readerProfileParams = new Map(
+          (registryProfile?.optionalParams ?? []).map((param) => [param.toLowerCase(), param])
+        );
+        for (const [key, value] of Object.entries(params)) {
+          const normalized = key.toLowerCase();
+          if (normalized === "accept") continue;
+          const headerName = readerProfileParams.get(normalized);
+          if (headerName && value != null) {
+            headers[headerName] = String(value);
+          }
+        }
         method = "GET";
         const targetUrl = params.url || params.q || "";
         // r.jina.ai takes the target URL appended raw (matches JinaAdapter).

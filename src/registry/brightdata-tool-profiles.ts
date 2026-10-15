@@ -1,7 +1,10 @@
 import type { ProviderToolProfile } from "../types.js";
 import { providerToolProfiles } from "./tool-profiles.js";
 
-const VERIFIED = "2026-08-10";
+/** Re-inspected against current provider docs on 2026-10-11
+ * (see docs/reviews/2026-10-11-provider-contract-audit.md). Doc-reinspection
+ * date, not live verification. */
+const VERIFIED = "2026-10-11";
 
 const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
   "brightdata.serp": {

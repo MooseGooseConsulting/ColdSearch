@@ -25,6 +25,78 @@ const VERIFIED = "2026-06-26";
 /** Profiles re-verified against current provider docs on 2026-10-07. */
 const REVERIFIED = "2026-10-07";
 
+function deferredCandidateProfile(
+  provider: string,
+  tool: string,
+  nativeName: string,
+  category: CapabilityCategory,
+  docsUrl: string
+): ProviderToolProfile {
+  return {
+    provider,
+    tool,
+    nativeName: `Candidate ${nativeName} (unverified)`,
+    categories: [category],
+    description:
+      "Unverified provider-tool candidate. The endpoint and parameter schema " +
+      "must be confirmed from authoritative docs or an authenticated request " +
+      "before implementation.",
+    docsUrl,
+    requiredParams: [],
+    optionalParams: [],
+    commonViews: [
+      {
+        category,
+        semanticFit: "not-recommended",
+        mapsCommonOptions: {},
+        unsupportedCommonOptions: [],
+        notes: "The route and native parameter schema are unverified; do not route as a supported tool.",
+      },
+    ],
+    features: {},
+    execution: { mode: "sync" },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "raw" },
+    schemaSource: "handwritten",
+    schemaLastVerified: null,
+    status: "deferred",
+  };
+}
+
+function directPassThroughProfile(
+  provider: string,
+  tool: string,
+  nativeName: string,
+  docsUrl: string
+): ProviderToolProfile {
+  return {
+    provider,
+    tool,
+    nativeName,
+    categories: ["research"],
+    description:
+      "Direct provider-native JSON pass-through. ColdSearch preserves the " +
+      "response without validating the request schema or normalizing the result.",
+    docsUrl,
+    requiredParams: [],
+    optionalParams: [],
+    commonViews: [
+      {
+        category: "research",
+        semanticFit: "not-recommended",
+        mapsCommonOptions: {},
+        unsupportedCommonOptions: [],
+        notes: "Provider-native request and response; no normalized research mapping.",
+      },
+    ],
+    features: {},
+    execution: { mode: "sync" },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "raw" },
+    schemaSource: "handwritten",
+    schemaLastVerified: null,
+    status: "direct",
+  };
+}
+
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
   "exa.search": {
@@ -36,7 +108,11 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "Unified web search behind one endpoint. The `type` knob spans " +
       "instant/fast/auto/deep-lite/deep/deep-reasoning, so the same tool covers " +
       "fast retrieval and research-grade reasoning. Content can be attached " +
-      "directly via `contents`.",
+      "directly via `contents`. Category enum current as of 2026-10: company, " +
+      "people, publication (replaced research paper), news, personal site, " +
+      "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
+      "upstream — `contents.maxAgeHours` (0=always fetch, -1=cache-only) + " +
+      "`contents.livecrawlTimeout` are the migration path.",
     docsUrl: "https://exa.ai/docs/reference/search",
     requiredParams: ["query"],
     optionalParams: [
@@ -46,6 +122,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "excludeDomains",
       "startPublishedDate",
       "endPublishedDate",
+      "contents.maxAgeHours",
+      "contents.livecrawlTimeout",
       "category",
       "contents",
       "additionalQueries",
@@ -108,7 +186,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: REVERIFIED,
+    schemaLastVerified: "2026-10-11",
     status: "wired",
     adapterMethod: "search",
   },
@@ -177,8 +255,10 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /findSimilar",
     categories: ["search"],
     description:
-      "Semantic neighbors of a known URL (unique to Exa). Reachable via the " +
-      "adapter method; not yet a CLI category command.",
+      "DEPRECATED upstream (OpenAPI-marked; absent from the current reference " +
+      "sidebar) in favor of describing the source page in /search. Still " +
+      "callable as of 2026-10. Semantic neighbors of a known URL (unique to Exa). " +
+      "Reachable via the adapter method; not yet a CLI category command.",
     docsUrl: "https://exa.ai/docs/reference/find-similar-links",
     requiredParams: ["url"],
     optionalParams: ["numResults", "includeDomains", "excludeDomains", "contents"],
@@ -250,7 +330,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "include_images",
       "include_domains",
       "exclude_domains",
+      "include_domains_mode",
       "country",
+      "language",
       "auto_parameters",
       "exact_match",
       "safe_search",
@@ -283,7 +365,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: "2026-10-11",
     status: "wired",
     adapterMethod: "search",
   },
@@ -765,12 +847,14 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   "brave.llmContext": {
     provider: "brave",
     tool: "llmContext",
-    nativeName: "GET /res/v1/summarizer/llm_context",
+    nativeName: "GET /res/v1/llm/context",
     categories: ["search", "research"],
     description:
       "NOT plain SERP search: search plus extracted, relevance-ranked context " +
-      "chunks for LLM grounding. Query-based, not arbitrary known-URL extraction.",
-    docsUrl: "https://api-dashboard.search.brave.com/api-reference/summarizer/llm_context/get",
+      "chunks for LLM grounding. Query-based, not arbitrary known-URL extraction. " +
+      "Moved from /res/v1/summarizer/llm_context (~2026-02 repackaging); ships " +
+      "in the standard Brave Search plan, no longer a separate paid Data-for-AI tier.",
+    docsUrl: "https://api-dashboard.search.brave.com/api-reference/",
     requiredParams: ["q"],
     optionalParams: [
       "country",
@@ -798,7 +882,34 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
     schemaLastVerified: VERIFIED,
-    status: "available",
+    status: "direct",
+  },
+  "brave.answers": {
+    provider: "brave",
+    tool: "answers",
+    nativeName: "POST /res/v1/chat/completions",
+    categories: ["answer"],
+    description:
+      "OpenAI-compatible web-grounded Answers endpoint. This separate product " +
+      "uses the Brave Answers plan and is not wired into normalized routing.",
+    docsUrl: "https://api-dashboard.search.brave.com/api-reference/",
+    requiredParams: ["messages"],
+    optionalParams: ["model", "stream"],
+    commonViews: [
+      {
+        category: "answer",
+        semanticFit: "partial",
+        mapsCommonOptions: { question: "messages[0].content" },
+        unsupportedCommonOptions: ["url"],
+        notes: "The endpoint accepts a single user message; response is provider-native.",
+      },
+    ],
+    features: { synthesizedAnswer: true, webGrounding: true },
+    execution: { mode: "streaming", supportsWait: true },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "answer" },
+    schemaSource: "official-docs",
+    schemaLastVerified: "2026-10-11",
+    status: "direct",
   },
 
   // ── Serper ─────────────────────────────────────────────────────────────
@@ -810,7 +921,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description: "Google web SERP. Search-only vendor surface in ColdSearch today.",
     docsUrl: "https://serper.dev/docs",
     requiredParams: ["q"],
-    optionalParams: ["gl", "hl", "num", "page", "tbs", "autocorrect"],
+    optionalParams: ["gl", "hl", "num", "page", "tbs", "location", "autocorrect"],
     commonViews: [
       {
         category: "search",
@@ -827,10 +938,28 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: "2026-10-11",
     status: "wired",
     adapterMethod: "search",
   },
+
+  // These Serper surfaces were named in the audit but could not be validated
+  // from unauthenticated probes: 403 does not prove a route exists. Keep them
+  // visible as deferred candidates without inventing a parameter schema.
+  "serper.images": deferredCandidateProfile("serper", "images", "POST /images", "search", "https://serper.dev/"),
+  "serper.news": deferredCandidateProfile("serper", "news", "POST /news", "search", "https://serper.dev/"),
+  "serper.videos": deferredCandidateProfile("serper", "videos", "POST /videos", "search", "https://serper.dev/"),
+  "serper.shopping": deferredCandidateProfile("serper", "shopping", "POST /shopping", "search", "https://serper.dev/"),
+  "serper.maps": deferredCandidateProfile("serper", "maps", "POST /maps", "search", "https://serper.dev/"),
+  "serper.places": deferredCandidateProfile("serper", "places", "POST /places", "search", "https://serper.dev/"),
+  "serper.scholar": deferredCandidateProfile("serper", "scholar", "POST /scholar", "search", "https://serper.dev/"),
+  "serper.patents": deferredCandidateProfile("serper", "patents", "POST /patents", "search", "https://serper.dev/"),
+  "serper.autocomplete": deferredCandidateProfile("serper", "autocomplete", "POST /autocomplete", "search", "https://serper.dev/"),
+  "serper.reviews": deferredCandidateProfile("serper", "reviews", "POST /reviews", "search", "https://serper.dev/"),
+  "serper.lens": deferredCandidateProfile("serper", "lens", "POST /lens", "search", "https://serper.dev/"),
+  "serper.webpage": deferredCandidateProfile("serper", "webpage", "POST scrape.serper.dev/webpage", "extract", "https://serper.dev/"),
+  "serper.shots": deferredCandidateProfile("serper", "shots", "POST scrape.serper.dev/shots", "extract", "https://serper.dev/"),
+  "serper.locations": deferredCandidateProfile("serper", "locations", "GET api.serper.dev/locations", "search", "https://serper.dev/"),
 
   // ── Jina ───────────────────────────────────────────────────────────────
   "jina.reader": {
@@ -838,10 +967,46 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     tool: "reader",
     nativeName: "GET r.jina.ai",
     categories: ["extract"],
-    description: "Keyless Reader extraction of a single URL to clean text/markdown.",
+    description:
+      "Keyless Reader extraction of a single URL to clean text/markdown. " +
+      "X-Respond-With now targets jina-ocr-v1 (~40x output tokens; ReaderLM-v2 " +
+      "de-emphasized). Direct calls can set reader headers and select JSON or " +
+      "event-stream responses; event streams are preserved as text, not yielded " +
+      "incrementally. Local-file POST upload is not exposed by this JSON call.",
     docsUrl: "https://jina.ai/reader",
     requiredParams: ["url"],
-    optionalParams: ["x-respond-with", "x-target-selector", "x-with-links-summary"],
+    optionalParams: [
+      "X-Engine",
+      "X-Return-Format",
+      "X-Timeout",
+      "X-Token-Budget",
+      "X-Respond-With",
+      "X-Page",
+      "X-Target-Selector",
+      "X-Wait-For-Selector",
+      "X-Remove-Selector",
+      "X-Retain-Images",
+      "X-Retain-Links",
+      "X-With-Links-Summary",
+      "X-With-Images-Summary",
+      "X-Set-Cookie",
+      "X-With-Generated-Alt",
+      "X-Proxy",
+      "X-No-Cache",
+      "X-Cache-Tolerance",
+      "X-Respond-Timing",
+      "X-User-Agent",
+      "X-Referer",
+      "X-Keep-Img-Data-Url",
+      "DNT",
+      "X-No-Gfm",
+      "X-Locale",
+      "X-Robots-Txt",
+      "X-With-Iframe",
+      "X-With-Shadow-Dom",
+      "X-Base",
+      "Accept",
+    ],
     commonViews: [
       {
         category: "extract",
@@ -854,10 +1019,24 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "extract" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: "2026-10-11",
     status: "wired",
     adapterMethod: "extract",
   },
+  "jina.search": deferredCandidateProfile("jina", "search", "GET s.jina.ai", "search", "https://jina.ai/"),
+  "jina.embeddings": directPassThroughProfile(
+    "jina",
+    "embeddings",
+    "POST /v1/embeddings",
+    "https://jina.ai/embeddings"
+  ),
+  "jina.rerank": directPassThroughProfile(
+    "jina",
+    "rerank",
+    "POST /v1/rerank",
+    "https://jina.ai/reranker"
+  ),
+  "jina.deepSearch": deferredCandidateProfile("jina", "deepSearch", "POST deepsearch.jina.ai/v1/chat/completions", "research", "https://jina.ai/deepsearch"),
 
   // ── SearXNG ────────────────────────────────────────────────────────────
   "searxng.search": {
@@ -868,7 +1047,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     description: "Self-hosted metasearch. Operator-configured `baseUrl`.",
     docsUrl: "https://docs.searxng.org",
     requiredParams: ["q"],
-    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "format"],
+    optionalParams: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "theme", "format"],
     commonViews: [
       {
         category: "search",
@@ -876,13 +1055,17 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { freshness: "time_range" },
         unsupportedCommonOptions: ["includeDomains", "excludeDomains"],
         nativeOptionsWithoutCommonEquivalent: ["engines", "categories"],
+        notes:
+          "format=json must be enabled in the instance's settings.yml; a " +
+          "disabled format returns 403. `engines` works in practice but is " +
+          "absent from the official params table.",
       },
     ],
     features: { rankedLinks: true, integratedContent: false, selfHosted: true, keyless: true, vertical: true },
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: VERIFIED,
+    schemaLastVerified: "2026-10-11",
     status: "wired",
     adapterMethod: "search",
   },

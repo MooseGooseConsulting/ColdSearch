@@ -24,6 +24,17 @@ test("every profile key equals `<provider>.<tool>`", () => {
   }
 });
 
+test("direct Brave tools and nested Exa freshness schema match dispatch", () => {
+  assert.equal(getToolProfile("brave.answers")?.status, "direct");
+  assert.equal(getToolProfile("brave.llmContext")?.status, "direct");
+
+  const exaSearchParams = getToolProfile("exa.search")?.optionalParams ?? [];
+  assert.ok(exaSearchParams.includes("contents.maxAgeHours"));
+  assert.ok(exaSearchParams.includes("contents.livecrawlTimeout"));
+  assert.ok(!exaSearchParams.includes("maxAgeHours"));
+  assert.ok(!exaSearchParams.includes("livecrawlTimeout"));
+});
+
 test("every registered provider has at least one tool profile", () => {
   for (const provider of Object.keys(providerRegistry)) {
     const profiles = listToolProfiles({ provider });
