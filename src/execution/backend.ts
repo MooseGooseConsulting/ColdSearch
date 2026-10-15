@@ -20,6 +20,7 @@ import type {
   CapabilityName,
   Config,
   CrawlResult,
+  PendingCrawlJob,
   ExtractResult,
   NormalizedResult,
 } from "../types.js";
@@ -43,6 +44,7 @@ export type ExtractOutcome = {
 
 export type CrawlOutcome = {
   results: CrawlResult[];
+  pendingJobs: PendingCrawlJob[];
   provider: string;
   status: "completed" | "pending";
   errors?: Record<string, string>;
@@ -443,6 +445,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
           result: redactForPersistence(result.results, secrets) ?? undefined,
           result_count: result.results.length,
+          pending_jobs: redactSensitive(result.pendingJobs, secrets),
           raw_available: false,
           errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
           duration_ms: Math.round(performance.now() - start),
@@ -457,6 +460,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       );
       return {
         results: result.results,
+        pendingJobs: result.pendingJobs,
         provider: result.provider,
         status: result.status,
         errors: result.errors,

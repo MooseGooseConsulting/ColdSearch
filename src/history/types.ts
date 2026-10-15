@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { NormalizedResult } from "../types.js";
+import type { NormalizedResult, PendingCrawlJob } from "../types.js";
 
 /**
  * One top-level history execution is recorded per `coldsearch search`,
@@ -68,6 +68,8 @@ export interface ExecutionRecord {
   partitions?: Record<string, NormalizedResult[]>;
   /** Final normalized/merged output returned to the caller, redacted. */
   result?: unknown;
+  /** Async crawl handles, separate from page results and safe to resume. */
+  pending_jobs?: PendingCrawlJob[];
   result_count?: number;
   /**
    * Raw provider detail, only where the execution path already preserves it

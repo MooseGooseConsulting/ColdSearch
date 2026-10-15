@@ -161,37 +161,41 @@ export class FirecrawlAdapter implements SearchAdapter {
         ? Math.max(1, Math.floor(rawLimit))
         : 10;
 
-    // Start crawl job
-    const startData = await fetchJson<{
-      success?: boolean;
-      id?: string;
-      error?: string;
-    }>(`${this.baseUrl}/crawl`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        url: normalizedUrl,
-        limit,
-        ...(options?.depth !== undefined
-          ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
-          : {}),
-        scrapeOptions: {
-          formats: ["markdown"],
+    // Resume an existing batch job when a prior output record retained its
+    // handle. Starting another job here would duplicate provider work.
+    let jobId = options?.resumeJobId;
+    if (!jobId) {
+      const startData = await fetchJson<{
+        success?: boolean;
+        id?: string;
+        error?: string;
+      }>(`${this.baseUrl}/crawl`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
-      }),
-    }, {
-      label: "Firecrawl crawl start",
-    });
+        body: JSON.stringify({
+          url: normalizedUrl,
+          limit,
+          ...(options?.depth !== undefined
+            ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
+            : {}),
+          scrapeOptions: {
+            formats: ["markdown"],
+          },
+        }),
+      }, {
+        label: "Firecrawl crawl start",
+      });
 
-    if (!startData.success || !startData.id) {
-      throw new Error(`Firecrawl crawl failed: ${startData.error || "No job ID"}`);
+      if (!startData.success || !startData.id) {
+        throw new Error(`Firecrawl crawl failed: ${startData.error || "No job ID"}`);
+      }
+      jobId = startData.id;
     }
 
     // Poll for completion
-    const jobId = startData.id;
     const maxAttempts = 30;
     const pollInterval = 2000; // 2 seconds
 
@@ -212,7 +216,7 @@ export class FirecrawlAdapter implements SearchAdapter {
       };
 
       try {
-        statusData = await fetchJson(`${this.baseUrl}/crawl/${jobId}`, {
+        statusData = await fetchJson(`${this.baseUrl}/crawl/${encodeURIComponent(jobId)}`, {
           headers: {
             Authorization: `Bearer ${apiKey}`,
           },

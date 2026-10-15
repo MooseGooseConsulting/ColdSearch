@@ -147,12 +147,13 @@ test("pending Firecrawl crawl falls through to a completed provider", async () =
     );
     const out = await engine.crawl("https://x.example", { limit: 1 });
     assert.equal(out.provider, "exa");
-    assert.equal(out.status, "completed");
-    assert.equal(out.results.length, 2);
-    assert.equal(out.results[0].status, "pending");
-    assert.equal(out.results[0].jobId, "job-pending");
-    assert.equal(out.results[1].url, "https://x.example/a");
-    assert.equal(out.results[1].status, "completed");
+    assert.equal(out.status, "pending");
+    assert.equal(out.results.length, 1, "pending jobs are not counted as crawled pages");
+    assert.equal(out.results[0].url, "https://x.example/a");
+    assert.equal(out.results[0].status, "completed");
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "job-pending", url: "https://x.example" },
+    ]);
     assert.equal(out.attempts[0].provider, "firecrawl");
     assert.equal(out.attempts[0].success, false);
     assert.equal(out.attempts[0].pending, true);
@@ -186,8 +187,9 @@ test("pending crawl fallback preserves every pending job id and status", async (
     );
     const out = await engine.crawl("https://x.example", { limit: 1 });
     assert.equal(out.status, "pending");
-    assert.deepEqual(out.results.map((result) => result.jobId), ["job-1", "job-2"]);
-    assert.ok(out.results.every((result) => result.status === "pending"));
+    assert.deepEqual(out.results, [], "pending handles are not page results");
+    assert.deepEqual(out.pendingJobs.map((job) => job.jobId), ["job-1", "job-2"]);
+    assert.ok(out.pendingJobs.every((job) => job.provider === "firecrawl"));
     assert.ok(out.attempts.every((attempt) => attempt.pending && !attempt.success));
   } finally {
     restore();

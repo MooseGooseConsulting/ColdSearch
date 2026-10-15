@@ -6,12 +6,14 @@ import {
   type BatchInputRecord,
   type BatchOutputRecord,
 } from "./types.js";
+import type { PendingCrawlJob } from "../types.js";
 
-/** Compact per-id resume outcome: planning needs status + conflict flag only. */
+/** Compact per-id resume outcome; pending crawls retain only handles to poll. */
 export interface ResumeOutcome {
-  status: "success" | "error";
+  status: "success" | "pending" | "error";
   /** True for duplicate/conflict error records, which --retry-errors never retries. */
   conflict: boolean;
+  pendingJobs?: PendingCrawlJob[];
 }
 
 /** Maps batch `id` -> compact outcomes already present in the output file. */
@@ -23,6 +25,8 @@ export type BatchPlanAction = "execute" | "skip" | "conflict";
 export interface BatchPlanEntry {
   record: BatchInputRecord;
   action: BatchPlanAction;
+  /** Existing async jobs to poll instead of starting duplicate work. */
+  resumePendingJobs?: PendingCrawlJob[];
   /** For `skip`: stable machine reason. */
   reason?: "resume-success" | "resume-error" | "resume-conflict" | "duplicate-identical";
   /** For `conflict`: the output record to append (never executed, never retried). */
@@ -33,7 +37,8 @@ export interface BatchPlanEntry {
  * Load the resume index from an existing output file. Malformed, partial, or
  * contract-invalid lines (an interrupted run's last write, foreign data) are
  * ignored — they carry no resumable outcome. A missing file yields an empty
- * index. Payloads are discarded: planning only needs status + conflict flag.
+ * index. Result payloads are discarded except for pending-job handles needed
+ * to poll an accepted crawl on resume.
  */
 export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> {
   const index: ResumeIndex = new Map();
@@ -68,12 +73,12 @@ export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> 
  * Validate one parsed output line against the batch output contract and reduce
  * it to the compact resume outcome. A success must have `error: null` and a
  * present, non-null `result`; an error must have `result: null` and an `error`
- * object with a string `message`. Anything else is ignored like a malformed
- * line — it is not a completed outcome and must not cause a resume skip.
+ * object with a string `message`. Pending records are valid non-successes and
+ * retain only their job handles for same-job polling on resume.
  */
 function toResumeOutcome(
   raw: unknown
-): { id: string; status: "success" | "error"; conflict: boolean } | null {
+): { id: string; status: "success" | "pending" | "error"; conflict: boolean; pendingJobs?: PendingCrawlJob[] } | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   if (typeof record.id !== "string" || record.id === "") return null;
@@ -82,6 +87,27 @@ function toResumeOutcome(
     if (record.error !== null) return null;
     if (record.result === undefined || record.result === null) return null;
     return { id: record.id, status: "success", conflict: false };
+  }
+
+  if (record.status === "pending") {
+    if (record.error !== null) return null;
+    const result = record.result;
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+    const rawJobs = (result as Record<string, unknown>).pendingJobs;
+    const pendingJobs = Array.isArray(rawJobs)
+      ? rawJobs.filter((job): job is PendingCrawlJob => {
+          if (!job || typeof job !== "object" || Array.isArray(job)) return false;
+          const candidate = job as Record<string, unknown>;
+          return (
+            typeof candidate.provider === "string" &&
+            typeof candidate.jobId === "string" &&
+            candidate.jobId.length > 0 &&
+            typeof candidate.url === "string" &&
+            candidate.url.length > 0
+          );
+        })
+      : [];
+    return { id: record.id, status: "pending", conflict: false, pendingJobs };
   }
 
   if (record.status === "error") {
@@ -171,7 +197,14 @@ export function buildBatchPlan(
         // Execute, including when the id only has a conflict record so far
         // (the primary never produced its own outcome) and retriable-error
         // retries when --retry-errors is set.
-        plan.push({ record, action: "execute" });
+        const latest = existing[existing.length - 1];
+        plan.push({
+          record,
+          action: "execute",
+          ...(latest?.status === "pending" && latest.pendingJobs?.length
+            ? { resumePendingJobs: latest.pendingJobs }
+            : {}),
+        });
       }
       continue;
     }

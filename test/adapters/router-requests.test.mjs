@@ -33,7 +33,7 @@ test("search adapters send the caller limit on the provider's count field", asyn
       return jsonResponse({ web: { results: [] } });
     },
     "POST https://google.serper.dev/search": async ({ init }) => {
-      seen.serper = bodyOf(init);
+      (seen.serper ??= []).push(bodyOf(init));
       return jsonResponse({ organic: [] });
     },
   });
@@ -45,11 +45,12 @@ test("search adapters send the caller limit on the provider's count field", asyn
     await new BraveAdapter().search("q", "k", { limit: 3 });
     await new BraveAdapter().search("q", "k", { limit: 50 });
     await new SerperAdapter().search("q", "k", { limit: 3 });
+    await new SerperAdapter().search("q", "k", { limit: 500 });
     assert.equal(seen.tavily.max_results, 3);
     assert.equal(seen.firecrawl.limit, 3);
     assert.deepEqual(seen.exa.map((request) => request.numResults), [3, 100]);
     assert.deepEqual(seen.brave, ["3", "20"]);
-    assert.equal(seen.serper.num, 3);
+    assert.deepEqual(seen.serper.map((request) => request.num), [3, 100]);
   } finally {
     restore();
   }

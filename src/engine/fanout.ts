@@ -9,6 +9,7 @@ import type {
   NormalizedResult,
   ExtractResult,
   CrawlResult,
+  PendingCrawlJob,
 } from "../types.js";
 import { performance } from "node:perf_hooks";
 
@@ -46,6 +47,8 @@ export interface FanoutOptions {
   format?: "markdown" | "text";
   /** Crawl `--depth`. Search and extract ignore it. */
   depth?: number;
+  /** Existing async jobs supplied by batch resume. */
+  resumePendingJobs?: PendingCrawlJob[];
 }
 
 /**
@@ -336,6 +339,7 @@ export class FanoutEngine {
    */
   async crawl(url: string, options: FanoutOptions): Promise<{
     results: CrawlResult[];
+    pendingJobs: PendingCrawlJob[];
     provider: string;
     status: "completed" | "pending";
     errors?: Record<string, string>;
@@ -346,12 +350,14 @@ export class FanoutEngine {
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
-    let pendingResult: { provider: string; results: CrawlResult[] } | undefined;
+    const resumePendingJobs = [...(options.resumePendingJobs ?? [])];
+    const pendingJobs: PendingCrawlJob[] = [];
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
       const start = performance.now();
       let keyRef = "none";
+      let resumeJob: PendingCrawlJob | undefined;
       try {
         const adapter = createAdapter(provider);
 
@@ -365,6 +371,11 @@ export class FanoutEngine {
           continue;
         }
 
+        const resumeJobIndex = resumePendingJobs.findIndex(
+          (job) => job.provider === provider && job.url === url.trim()
+        );
+        if (resumeJobIndex >= 0) resumeJob = resumePendingJobs.splice(resumeJobIndex, 1)[0];
+
         // Get API key + safe logging reference (keyless providers return empty string)
         const keyResult = await this.keyPool.getNextKeyWithRefOrEmpty(provider);
         const apiKey = keyResult.value;
@@ -374,10 +385,24 @@ export class FanoutEngine {
           limit: options.limit,
           depth: options.depth,
           providerOptions: this.config.providers[provider]?.options,
+          ...(resumeJob ? { resumeJobId: resumeJob.jobId } : {}),
         });
 
         const durationMs = Math.round(performance.now() - start);
-        if (results.some((result) => result.status === "pending")) {
+        const pendingResults = results.filter((result) => result.status === "pending");
+        const pageResults = results.filter((result) => result.status !== "pending");
+        if (pendingResults.length > 0) {
+          const providerPendingJobs = pendingResults.map((result) => {
+            if (!result.jobId) {
+              throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
+            }
+            return {
+              provider,
+              jobId: result.jobId,
+              url: result.url || url,
+            };
+          });
+          pendingJobs.push(...providerPendingJobs);
           const pendingMessage = "Provider crawl is still pending";
           this.usageLogger.write({
             timestamp: new Date().toISOString(),
@@ -396,10 +421,8 @@ export class FanoutEngine {
             error: pendingMessage,
             duration_ms: durationMs,
             key_ref: keyRef,
-            result_count: results.length,
+            result_count: pageResults.length,
           });
-          if (!pendingResult) pendingResult = { provider, results: [] };
-          pendingResult.results.push(...results);
           // A pending async job is not a completed crawl. Try the next
           // configured provider so it can produce usable results now.
           continue;
@@ -418,21 +441,20 @@ export class FanoutEngine {
           success: true,
           duration_ms: durationMs,
           key_ref: keyRef,
-          result_count: results.length,
+          result_count: pageResults.length,
         });
         return {
-          // Keep earlier async job handles visible even when a later
-          // provider supplies a completed result.
-          results: pendingResult
-            ? [...pendingResult.results, ...results]
-            : results,
+          results: pageResults,
+          pendingJobs: [...pendingJobs, ...resumePendingJobs],
           provider,
-          status: "completed",
+          status: pendingJobs.length + resumePendingJobs.length > 0 ? "pending" : "completed",
           errors: Object.keys(errors).length > 0 ? errors : undefined,
           attempts,
           secretsUsed,
         };
       } catch (error) {
+        // A failed poll does not prove that an accepted async job stopped.
+        if (resumeJob) pendingJobs.push(resumeJob);
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
         this.usageLogger.write({
@@ -454,10 +476,12 @@ export class FanoutEngine {
       }
     }
 
-    if (pendingResult) {
+    const remainingPendingJobs = [...pendingJobs, ...resumePendingJobs];
+    if (remainingPendingJobs.length > 0) {
       return {
-        results: pendingResult.results,
-        provider: pendingResult.provider,
+        results: [],
+        pendingJobs: remainingPendingJobs,
+        provider: remainingPendingJobs[0]!.provider,
         status: "pending",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,

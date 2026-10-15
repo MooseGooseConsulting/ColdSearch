@@ -315,8 +315,11 @@ path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
     assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
     const output = JSON.parse(result.stdout);
     assert.equal(output.status, "pending");
-    assert.equal(output.results[0].status, "pending");
-    assert.equal(output.results[0].jobId, "cli-pending-job");
+    assert.deepEqual(output.results, []);
+    assert.deepEqual(output.pendingJobs, [
+      { provider: "firecrawl", jobId: "cli-pending-job", url: "https://example.com" },
+    ]);
+    assert.equal(output.total, 0);
   } finally {
     await closeServer(server);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -363,11 +366,14 @@ path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
     const output = JSON.parse(result.stdout);
-    assert.equal(output.status, "completed");
+    assert.equal(output.status, "pending");
     assert.equal(output.provider, "exa");
-    assert.equal(output.results[0].status, "pending");
-    assert.equal(output.results[0].jobId, "cli-pending-job");
-    assert.equal(output.results[1].status, "completed");
+    assert.deepEqual(output.pendingJobs, [
+      { provider: "firecrawl", jobId: "cli-pending-job", url: "https://example.com" },
+    ]);
+    assert.equal(output.results.length, 1);
+    assert.equal(output.results[0].status, "completed");
+    assert.equal(output.total, 1, "job handles do not inflate page count");
   } finally {
     await closeServer(server);
     fs.rmSync(dir, { recursive: true, force: true });

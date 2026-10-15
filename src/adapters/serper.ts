@@ -42,7 +42,7 @@ export class SerperAdapter implements SearchAdapter {
       body: JSON.stringify({
         q: query,
         num: typeof options?.limit === "number" && Number.isFinite(options.limit)
-          ? Math.max(1, Math.floor(options.limit))
+          ? Math.min(100, Math.max(1, Math.floor(options.limit)))
           : 10,
       }),
     }, {

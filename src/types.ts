@@ -21,11 +21,18 @@ export interface CrawlResult {
   url: string;
   title: string;
   content: string;
-  /** Set when the provider job has not finished. Pages may be empty. */
+  /** Internal adapter marker: the accepted crawl job has not finished. */
   status?: "completed" | "pending";
   jobId?: string;
   /** True when crawl is synthesized (Exa search + contents), not a native crawler. */
   derived?: boolean;
+}
+
+/** A provider crawl accepted for asynchronous processing but not yet complete. */
+export interface PendingCrawlJob {
+  provider: string;
+  jobId: string;
+  url: string;
 }
 
 export type ContentFormat = "markdown" | "text";
@@ -45,6 +52,8 @@ export interface AdapterCallOptions {
 export interface CrawlCallOptions extends AdapterCallOptions {
   limit?: number;
   depth?: number;
+  /** Resume polling this provider job without starting a duplicate crawl. */
+  resumeJobId?: string;
 }
 
 export interface SearchAdapter {

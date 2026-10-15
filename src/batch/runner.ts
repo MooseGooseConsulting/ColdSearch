@@ -6,14 +6,18 @@ import { KeyPoolManager } from "../engine/keypool.js";
 import type { FanoutOptions } from "../engine/fanout.js";
 import { redactSensitive } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
-import type { CapabilityName, Config } from "../types.js";
+import type { CapabilityName, Config, PendingCrawlJob } from "../types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
 import { buildBatchPlan, loadResumeIndex, type BatchPlanEntry } from "./resume.js";
 import { DEFAULT_BATCH_LIMIT, type BatchInputRecord, type BatchOutputRecord } from "./types.js";
 
 /** Executes one validated batch input record into an output record. */
 export interface BatchExecutor {
-  execute(record: BatchInputRecord, config: Config): Promise<BatchOutputRecord>;
+  execute(
+    record: BatchInputRecord,
+    config: Config,
+    resumePendingJobs?: PendingCrawlJob[]
+  ): Promise<BatchOutputRecord>;
 }
 
 export interface BatchRunOptions {
@@ -95,7 +99,11 @@ export class LocalBatchExecutor implements BatchExecutor {
     this.backend = new LocalExecutionBackend(configPath);
   }
 
-  async execute(record: BatchInputRecord, config: Config): Promise<BatchOutputRecord> {
+  async execute(
+    record: BatchInputRecord,
+    config: Config,
+    resumePendingJobs?: PendingCrawlJob[]
+  ): Promise<BatchOutputRecord> {
     const base = {
       id: record.id,
       ...(record.capability ? { capability: record.capability } : {}),
@@ -136,13 +144,17 @@ export class LocalBatchExecutor implements BatchExecutor {
         };
       }
       if (record.capability === "crawl") {
-        const result = await this.backend.crawl(record.url!, this.fanoutOptions(record));
+        const result = await this.backend.crawl(record.url!, {
+          ...this.fanoutOptions(record),
+          resumePendingJobs,
+        });
         this.warn(result.warnings);
         return {
           ...base,
           status: result.status === "pending" ? "pending" : "success",
           result: {
             results: result.results,
+            pendingJobs: result.pendingJobs,
             provider: result.provider,
             status: result.status,
             ...(result.errors && Object.keys(result.errors).length > 0
@@ -379,7 +391,12 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
     plan.filter((e) => e.action === "execute"),
     options.concurrency,
     async (entry) => {
-      const outputRecord = await safeExecute(executor, entry.record, config);
+      const outputRecord = await safeExecute(
+        executor,
+        entry.record,
+        config,
+        entry.resumePendingJobs
+      );
       await persist(outputRecord);
       executed += 1;
       if (outputRecord.status === "success") succeeded += 1;
@@ -399,10 +416,11 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
 async function safeExecute(
   executor: BatchExecutor,
   record: BatchInputRecord,
-  config: Config
+  config: Config,
+  resumePendingJobs?: PendingCrawlJob[]
 ): Promise<BatchOutputRecord> {
   try {
-    return await executor.execute(record, config);
+    return await executor.execute(record, config, resumePendingJobs);
   } catch (error) {
     return {
       id: record.id,

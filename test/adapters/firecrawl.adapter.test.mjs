@@ -111,3 +111,34 @@ test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending j
   }
 });
 
+test("firecrawl resume polls the encoded job ID without starting a duplicate crawl", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
+
+  let startCount = 0;
+  const jobId = "job/a?b#c";
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () => {
+      startCount++;
+      return jsonResponse({ success: true, id: "unexpected-new-job" });
+    },
+    "GET https://api.firecrawl.dev/v2/crawl/job%2Fa%3Fb%23c": async () =>
+      jsonResponse({
+        success: true,
+        status: "completed",
+        data: [{ markdown: "# Resumed", metadata: { title: "Resumed", sourceURL: "https://x.example" } }],
+      }),
+  });
+  try {
+    const results = await new FirecrawlAdapter().crawl("  https://x.example  ", "k", {
+      limit: 1,
+      resumeJobId: jobId,
+    });
+    assert.equal(startCount, 0, "resume must not POST a duplicate crawl");
+    assert.equal(results[0].content, "# Resumed");
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+

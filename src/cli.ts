@@ -721,11 +721,8 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     console.error(`Warning: ${warning}`);
   }
 
-  const pendingResults = result.results.filter((crawlResult) => crawlResult.status === "pending");
-  if (pendingResults.length > 0) {
-    const jobIds = [...new Set(pendingResults.flatMap((crawlResult) =>
-      crawlResult.jobId ? [crawlResult.jobId] : []
-    ))];
+  if (result.pendingJobs.length > 0) {
+    const jobIds = [...new Set(result.pendingJobs.map((job) => job.jobId))];
     console.error(
       `Warning: crawl is still pending${jobIds.length ? ` (job ${jobIds.join(", ")})` : ""}; results are not complete.`
     );
@@ -736,6 +733,7 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     command: "crawl",
     url: options.query,
     results: result.results,
+    pendingJobs: result.pendingJobs,
     provider: result.provider,
     status: result.status,
     total: result.results.length,
@@ -1233,6 +1231,7 @@ function summarizeExecution(record: ExecutionRecord) {
     source: record.source,
     outcome: record.outcome,
     result_count: record.result_count ?? null,
+    pending_jobs: record.pending_jobs?.length ? record.pending_jobs : undefined,
     duration_ms: record.duration_ms,
     origin_execution_id: record.origin_execution_id ?? undefined,
   };
@@ -1250,9 +1249,12 @@ function printData(data: unknown, human: string, options: ExtendedCLIOptions): v
 function formatRecentRow(record: ExecutionRecord): string {
   const providers = (record.routing?.providers_attempted ?? []).join(",") || "-";
   const count = record.result_count !== undefined ? ` results=${record.result_count}` : "";
+  const pending = record.pending_jobs?.length
+    ? ` pending_jobs=${record.pending_jobs.map((job) => `${job.provider}:${job.jobId}`).join(",")}`
+    : "";
   return (
     `${record.timestamp}  ${record.id}  ${record.command.padEnd(7)} ` +
-    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}  ` +
+    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}${pending}  ` +
     `"${abbrev(record.input, 60)}"`
   );
 }
@@ -1337,6 +1339,11 @@ function formatShowHuman(record: ExecutionRecord): string {
       `  Cache:     exact replay of ${record.origin_execution_id ?? "unknown origin"} ` +
         `(created=${record.cache?.created_at ?? "unknown"}, age=${record.cache?.age_seconds ?? "?"}s, ` +
         `zero provider calls)`
+    );
+  }
+  if (record.pending_jobs?.length) {
+    lines.push(
+      `  Pending:   ${record.pending_jobs.map((job) => `${job.provider} job ${job.jobId} (${job.url})`).join(", ")}`
     );
   }
   for (const attempt of record.attempts) {
