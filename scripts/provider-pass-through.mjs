@@ -526,6 +526,7 @@ function boundedRawEvidence(raw, target) {
     stable[name] = rawSchemaShape(raw[name], stableBudget, 1);
   }
   const resultArrayItemTypes = {};
+  const resultArraySchemas = {};
   for (const { name, path } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
     let value = raw;
     for (const part of path) value = value && typeof value === "object" ? value[part] : undefined;
@@ -533,12 +534,16 @@ function boundedRawEvidence(raw, target) {
       resultArrayItemTypes[name] = [...new Set(value.map((item) =>
         item === null ? "null" : Array.isArray(item) ? "array" : typeof item
       ))].sort();
+      const arrayBudget = { remaining: 80, truncated: false };
+      resultArraySchemas[name] = rawSchemaShape(value, arrayBudget);
+      if (arrayBudget.truncated) budget.truncated = true;
     }
   }
   const sample = {
     schema: shape,
     stable,
     result_array_item_types: resultArrayItemTypes,
+    result_array_schemas: resultArraySchemas,
     truncated: budget.truncated,
   };
   while (Buffer.byteLength(JSON.stringify(sample), "utf8") > MAX_RAW_EVIDENCE_BYTES) {
@@ -548,6 +553,12 @@ function boundedRawEvidence(raw, target) {
     if (stableKey && trimRawSchemaShape(sample.stable[stableKey])) continue;
     if (stableKey) {
       delete sample.stable[stableKey];
+      continue;
+    }
+    const resultArrayKey = Object.keys(sample.result_array_schemas).at(-1);
+    if (resultArrayKey && trimRawSchemaShape(sample.result_array_schemas[resultArrayKey])) continue;
+    if (resultArrayKey) {
+      delete sample.result_array_schemas[resultArrayKey];
       continue;
     }
     if (sample.schema.type !== "object" || !sample.schema.fields_truncated) {
@@ -1417,6 +1428,10 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     "native and ColdSearch tool result arrays retain expected item types"
   ));
   checks.push(check(
+    compareToolRawResultArraySchemas(target, nativeResult.raw_sample, coldResult.raw_sample),
+    "ColdSearch tool result arrays preserve sampled native object schemas"
+  ));
+  checks.push(check(
     coldResult.catalogued,
     "ColdSearch tool call row remained catalogued in the registry"
   ));
@@ -1510,6 +1525,40 @@ function compareToolRawResultArrayTypes(target, nativeSample, coldSample) {
     }
   }
   return true;
+}
+
+function compareToolRawResultArraySchemas(target, nativeSample, coldSample) {
+  const nativeTypesByArray = nativeSample?.result_array_item_types || {};
+  for (const { name } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
+    if (!nativeTypesByArray[name]?.includes("object")) continue;
+
+    const nativeArray = nativeSample?.result_array_schemas?.[name];
+    const coldArray = coldSample?.result_array_schemas?.[name];
+    const nativeObjects = nativeArray?.type === "array"
+      ? (nativeArray.items || []).filter((item) => item.type === "object")
+      : [];
+    const coldObjects = coldArray?.type === "array"
+      ? (coldArray.items || []).filter((item) => item.type === "object")
+      : [];
+
+    if (!nativeObjects.length || !coldObjects.length) return false;
+    if (!nativeObjects.every((expected) =>
+      !schemaShapeIsTruncated(expected) &&
+      coldObjects.some((actual) => schemaShapeContains(expected, actual))
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function schemaShapeIsTruncated(shape) {
+  if (!shape || shape.type === "truncated") return true;
+  if (shape.fields_truncated) return true;
+  return Boolean(
+    (shape.fields && Object.values(shape.fields).some(schemaShapeIsTruncated)) ||
+    (shape.items && shape.items.some(schemaShapeIsTruncated))
+  );
 }
 
 function schemaShapeContains(expected, actual) {

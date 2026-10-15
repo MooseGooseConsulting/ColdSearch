@@ -725,6 +725,10 @@ test("stable raw metadata uses an independent schema budget", () => {
   });
   assert.equal(native.raw_sample.schema.fields.query, undefined);
   assert.deepEqual(Object.keys(native.raw_sample.stable.query.fields), ["original", "show_strict_warning"]);
+  assert.deepEqual(
+    Object.keys(native.raw_sample.result_array_schemas.results.items[0].fields),
+    ["description", "title", "url"]
+  );
   assert.equal(compareToolTarget(target, native, cold).passed, true);
 });
 
@@ -810,6 +814,86 @@ test("tool conformance rejects invalid provider result-array item types", () => 
     comparison.checks.find(({ label }) => label === "native and ColdSearch tool result arrays retain expected item types").pass,
     false
   );
+});
+
+test("tool conformance checks nested raw schemas when provider result values vary", () => {
+  const cases = [
+    {
+      target: { provider: "brave", tool: "webSearch", kind: "tool" },
+      nativeRaw: {
+        query: { original: "query" },
+        web: { results: [{
+          title: "Native result",
+          url: "https://native.example",
+          description: "provider description",
+          profile: { name: "provider profile" },
+        }] },
+      },
+      coldRaw: {
+        query: { original: "query" },
+        web: { results: [{ title: "Different result", url: "https://cold.example" }] },
+      },
+    },
+    {
+      target: { provider: "exa", tool: "contents", kind: "tool" },
+      nativeRaw: {
+        results: [{
+          url: "https://example.com",
+          title: "Native title",
+          text: "Native content",
+          page: { language: "en" },
+        }],
+      },
+      coldRaw: {
+        results: [{
+          url: "https://example.com",
+          title: "ColdSearch title",
+          text: "ColdSearch content",
+          page: {},
+        }],
+      },
+    },
+    {
+      target: { provider: "firecrawl", tool: "map", kind: "tool" },
+      nativeRaw: {
+        success: true,
+        metadata: { creditsUsed: 1 },
+        links: [{
+          url: "https://native.example",
+          title: "Native result",
+          metadata: { source: "provider catalog" },
+        }],
+      },
+      coldRaw: {
+        success: true,
+        metadata: { creditsUsed: 1 },
+        links: [{ url: "https://cold.example", title: "Different result" }],
+      },
+    },
+  ];
+
+  for (const { target, nativeRaw, coldRaw } of cases) {
+    const native = makeColdSearchToolResult(target, { ok: true, raw: nativeRaw });
+    const cold = makeColdSearchToolResult(target, {
+      ok: true,
+      catalogued: true,
+      provider: target.provider,
+      tool: target.tool,
+      meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+      raw: coldRaw,
+    });
+    const comparison = compareToolTarget(target, native, cold);
+    assert.equal(
+      comparison.checks.find(({ label }) => label === "ColdSearch tool output retains populated native fields for overlapping results").pass,
+      true,
+      targetId(target)
+    );
+    assert.equal(
+      comparison.checks.find(({ label }) => label === "ColdSearch tool result arrays preserve sampled native object schemas").pass,
+      false,
+      targetId(target)
+    );
+  }
 });
 
 test("raw provider id and status values are omitted from schema-only evidence", () => {
