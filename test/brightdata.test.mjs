@@ -174,7 +174,7 @@ test("adapter fails closed without configured zones", async () => {
   );
   await assert.rejects(
     () => adapter.extract("https://example.com/page", "secret", { providerOptions: {} }),
-    /providers\.brightdata\.options\.zone \(legacy alias: unlockerZone\)/
+    /providers\.brightdata\.options\.unlockerZone \(legacy alias: zone\)/
   );
 });
 
