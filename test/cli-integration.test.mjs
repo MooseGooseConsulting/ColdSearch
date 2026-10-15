@@ -204,8 +204,10 @@ keys = ["env:EXA_API_KEY"]
   assert.equal(result.status, 0, result.stderr);
   const out = JSON.parse(result.stdout);
   assert.equal(out.providers.length, 1);
-  assert.equal(out.estimated_api_calls, 1);
-  assert.equal(out.max_api_calls, 3);
+  assert.equal(out.estimated_provider_attempts, 1);
+  assert.equal(out.max_provider_attempts, 3);
+  assert.equal(out.estimated_api_calls, undefined);
+  assert.equal(out.max_api_calls, undefined);
   assert.equal(out.quota_fallback_providers.length, 2);
   assert.deepEqual(new Set([out.providers[0].provider, ...out.quota_fallback_providers]), new Set(["firecrawl", "tavily", "exa"]));
 });

@@ -829,8 +829,8 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
     query_or_url: options.query,
     providers: plannedProviders,
     ...(quotaFallbackProviders?.length ? { quota_fallback_providers: quotaFallbackProviders } : {}),
-    estimated_api_calls: plannedProviders.length,
-    max_api_calls: plannedProviders.length + (quotaFallbackProviders?.length ?? 0),
+    estimated_provider_attempts: plannedProviders.length,
+    max_provider_attempts: plannedProviders.length + (quotaFallbackProviders?.length ?? 0),
   };
 }
 
