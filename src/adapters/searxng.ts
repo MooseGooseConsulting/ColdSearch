@@ -48,6 +48,7 @@ export class SearXNGAdapter implements SearchAdapter {
       "pageno",
       "time_range",
       "safesearch",
+      "theme",
     ] as const) {
       const value = providerOptions[key];
       if (value === undefined || value === null) continue;
