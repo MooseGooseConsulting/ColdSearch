@@ -62,6 +62,41 @@ function deferredCandidateProfile(
   };
 }
 
+function directPassThroughProfile(
+  provider: string,
+  tool: string,
+  nativeName: string,
+  docsUrl: string
+): ProviderToolProfile {
+  return {
+    provider,
+    tool,
+    nativeName,
+    categories: ["research"],
+    description:
+      "Direct provider-native JSON pass-through. ColdSearch preserves the " +
+      "response without validating the request schema or normalizing the result.",
+    docsUrl,
+    requiredParams: [],
+    optionalParams: [],
+    commonViews: [
+      {
+        category: "research",
+        semanticFit: "not-recommended",
+        mapsCommonOptions: {},
+        unsupportedCommonOptions: [],
+        notes: "Provider-native request and response; no normalized research mapping.",
+      },
+    ],
+    features: {},
+    execution: { mode: "sync" },
+    output: { rawPreserved: true, summarySupported: false, resultEnvelope: "raw" },
+    schemaSource: "handwritten",
+    schemaLastVerified: null,
+    status: "direct",
+  };
+}
+
 export const providerToolProfiles: Record<string, ProviderToolProfile> = {
   // ── Exa ────────────────────────────────────────────────────────────────
   "exa.search": {
@@ -957,7 +992,6 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "X-Set-Cookie",
       "X-With-Generated-Alt",
       "X-Proxy",
-      "X-Proxy-Url",
       "X-No-Cache",
       "X-Cache-Tolerance",
       "X-Respond-Timing",
@@ -990,8 +1024,18 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     adapterMethod: "extract",
   },
   "jina.search": deferredCandidateProfile("jina", "search", "GET s.jina.ai", "search", "https://jina.ai/"),
-  "jina.embeddings": deferredCandidateProfile("jina", "embeddings", "POST /v1/embeddings", "research", "https://jina.ai/embeddings"),
-  "jina.rerank": deferredCandidateProfile("jina", "rerank", "POST /v1/rerank", "research", "https://jina.ai/reranker"),
+  "jina.embeddings": directPassThroughProfile(
+    "jina",
+    "embeddings",
+    "POST /v1/embeddings",
+    "https://jina.ai/embeddings"
+  ),
+  "jina.rerank": directPassThroughProfile(
+    "jina",
+    "rerank",
+    "POST /v1/rerank",
+    "https://jina.ai/reranker"
+  ),
   "jina.deepSearch": deferredCandidateProfile("jina", "deepSearch", "POST deepsearch.jina.ai/v1/chat/completions", "research", "https://jina.ai/deepsearch"),
 
   // ── SearXNG ────────────────────────────────────────────────────────────

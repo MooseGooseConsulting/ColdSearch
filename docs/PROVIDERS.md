@@ -203,7 +203,8 @@ they go stale fast and are intentionally not mirrored here.
 ### Jina — `src/adapters/jina.ts` · [docs](https://jina.ai)
 - `r.jina.ai` Reader → **extract** ✅ (keyless: 20 RPM no key / 500 RPM free key; rich `X-*` header surface — see registry profile)
 - `s.jina.ai` search — deferred candidate; key-gated
-- DeepSearch (`deepsearch.jina.ai`), `/v1/embeddings` (v5), `/v1/rerank` (v3.5) — deferred candidates pending request-schema and dispatch reconciliation; no standalone `summarize` endpoint exists
+- `/v1/embeddings` (v5) and `/v1/rerank` (v3.5) remain callable as direct JSON pass-throughs; ColdSearch preserves provider-native responses but does not validate their request schemas or normalize results
+- `s.jina.ai` search and DeepSearch (`deepsearch.jina.ai`) — deferred candidates pending schema and dispatch reconciliation; no standalone `summarize` endpoint exists
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
 - `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
@@ -215,7 +216,7 @@ These are design choices, not bugs — the adapters expose the common denominato
 skip vendor specialties. Highest-leverage gaps:
 
 - **Serper** — candidate verticals are catalogued as deferred until routes and schemas are validated with authoritative or authenticated evidence.
-- **Jina** — `embeddings` (v5), `rerank` (v3.5), search, and DeepSearch are catalogued as deferred candidates pending schema and dispatch reconciliation.
+- **Jina** — `embeddings` (v5) and `rerank` (v3.5) are callable as direct JSON pass-throughs without request-schema validation or normalized output; search and DeepSearch remain deferred pending reconciliation.
 - **Tavily `answer`/`research`** and **Exa `answer`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`); Exa's standalone `/research` was retired 2026-05-01 (deep modes live on `/search`).
 - **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-11 audit.
 - **Bright Data** Crawl/Discover/Browser/Marketplace expansion should be driven by concrete workflows and spend controls, not by surface-area completion.

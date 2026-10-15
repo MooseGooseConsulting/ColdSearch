@@ -23,7 +23,7 @@ export const REDACTED = "[REDACTED]";
 
 /** Object field names whose string values are always redacted. */
 const SENSITIVE_FIELD_PATTERN =
-  /(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|authorization|credential|pass(word|phrase)|secret|signature|bearer)/i;
+  /(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|authorization|credential|pass(word|phrase)|secret|signature|bearer|cookie|proxy[_-]?url)/i;
 
 /**
  * Exact field names that are credential material on their own — e.g. a
