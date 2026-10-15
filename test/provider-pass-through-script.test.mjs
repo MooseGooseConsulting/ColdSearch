@@ -307,6 +307,26 @@ test("short credential values are removed from failure text and raw samples", ()
   }
 });
 
+test("smoke agent and Doppler credentials are redacted from error text", () => {
+  const credentials = {
+    OPENROUTER_API_KEY: "openrouter-smoke-secret",
+    ISOQUANT_API_KEY: "isoquant-smoke-secret",
+    DOPPLER_TOKEN: "doppler-smoke-secret",
+  };
+  const previous = Object.fromEntries(Object.keys(credentials).map((name) => [name, process.env[name]]));
+  try {
+    for (const [name, secret] of Object.entries(credentials)) {
+      process.env[name] = secret;
+      assert.equal(redactSensitiveText(`CLI error echoed ${secret}`), "CLI error echoed REDACTED", name);
+    }
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("raw provider evidence stores bounded schema without provider values", () => {
   const fields = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [
     `field_${index}`,
