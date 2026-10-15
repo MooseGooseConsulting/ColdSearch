@@ -266,7 +266,7 @@ test("firecrawl crawl returns pending and the jobId after the short poll cap", a
   const restore = installFetchMock({
     "POST https://api.firecrawl.dev/v2/crawl": async ({ init }) => {
       const body = JSON.parse(init.body);
-      assert.deepEqual(body.scrapeOptions.formats, ["html", "markdown"]); // retain normalized content
+      assert.deepEqual(body.scrapeOptions.formats, ["html", "markdown"]); // normalized calls retain text content
       return jsonResponse({ success: true, id: "job-42" });
     },
     "GET https://api.firecrawl.dev/v2/crawl/job-42": async () =>
