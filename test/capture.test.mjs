@@ -13,7 +13,7 @@ import {
   clearCaptureSecrets,
   captureEnabled,
 } from "../dist/testing/capture.js";
-import { installFetchMock, jsonResponse, textResponse } from "./adapters/_fetch-mock.mjs";
+import { installFetchMock, jsonResponse, rawResponse, textResponse } from "./adapters/_fetch-mock.mjs";
 
 /**
  * Capture integration tests (issue #79, PR-E): the COLDSEARCH_CAPTURE_DIR
@@ -78,6 +78,8 @@ test("buildCaptureRecord redacts sensitive headers and secret-bearing header val
       "X-API-Key": SECRET2,
       "X-Subscription-Token": "sub-token",
       "X-Custom": `prefix-${SECRET}-suffix`,
+      "X-Provider-Token": "custom-header-secret",
+      "X-Tavily-Key": "provider-key-secret",
       "Content-Type": "application/json",
     },
     requestBody: JSON.stringify({ api_key: SECRET }),
@@ -98,6 +100,8 @@ test("buildCaptureRecord redacts sensitive headers and secret-bearing header val
   assert.equal(record.requestHeaders["x-api-key"], "REDACTED");
   assert.equal(record.requestHeaders["x-subscription-token"], "REDACTED");
   assert.equal(record.requestHeaders["x-custom"], "REDACTED");
+  assert.equal(record.requestHeaders["x-provider-token"], "REDACTED");
+  assert.equal(record.requestHeaders["x-tavily-key"], "REDACTED");
   assert.equal(record.requestHeaders["content-type"], "application/json");
   assert.deepEqual(record.responseHeaders, {
     "content-type": "application/json",
@@ -120,6 +124,86 @@ test("buildCaptureRecord truncates response bodies at 64 KiB", () => {
   });
   assert.ok(Buffer.byteLength(record.responseBodyText, "utf8") < 80 * 1024);
   assert.match(record.responseBodyText, /\[truncated at 64 KiB\]$/);
+});
+
+test("buildCaptureRecord redacts known secrets before truncating response bodies", () => {
+  const body = `${"a".repeat(64 * 1024 - 5)}${SECRET}tail`;
+  const record = buildCaptureRecord({
+    method: "GET",
+    url: "https://api.example.com/big",
+    responseBodyText: body,
+    durationMs: 1,
+    secrets: [SECRET],
+  });
+  assert.ok(!record.responseBodyText.includes(SECRET.slice(0, 5)));
+  assert.match(record.responseBodyText, /\[truncated at 64 KiB\]$/);
+});
+
+test("bounded response capture drops a secret fragment split at the 64 KiB boundary", async (t) => {
+  const previous = process.env.COLDSEARCH_CAPTURE_DIR;
+  const dir = makeTempDir();
+  process.env.COLDSEARCH_CAPTURE_DIR = dir;
+  const body = `${"a".repeat(64 * 1024 - 4)}${SECRET}tail`;
+  const restore = installFetchMock({ "*": async () => textResponse(body) });
+  t.after(() => {
+    restore();
+    if (previous === undefined) delete process.env.COLDSEARCH_CAPTURE_DIR;
+    else process.env.COLDSEARCH_CAPTURE_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const response = await fetchWithPolicy(
+    "https://capture.example/boundary",
+    {},
+    { retries: 0, secrets: [SECRET] }
+  );
+  assert.equal(await response.text(), body, "capture must not consume the caller response");
+  await flushCaptures();
+
+  const { lines } = readCaptureLines(dir);
+  assert.equal(lines.length, 1);
+  assert.ok(!lines[0].responseBodyText.includes(SECRET.slice(0, 4)));
+  assert.ok(!JSON.stringify(lines[0]).includes(SECRET));
+});
+
+test("retryable HTTP responses capture their response body before retrying", async (t) => {
+  const previous = process.env.COLDSEARCH_CAPTURE_DIR;
+  const dir = makeTempDir();
+  process.env.COLDSEARCH_CAPTURE_DIR = dir;
+  let calls = 0;
+  const restore = installFetchMock({
+    "*": async () => {
+      calls++;
+      if (calls === 1) {
+        return rawResponse(JSON.stringify({ message: "slow down", token: SECRET }), { status: 429 });
+      }
+      return jsonResponse({ ok: true });
+    },
+  });
+  t.after(() => {
+    restore();
+    if (previous === undefined) delete process.env.COLDSEARCH_CAPTURE_DIR;
+    else process.env.COLDSEARCH_CAPTURE_DIR = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const response = await fetchWithPolicy(
+    "https://capture.example/retry",
+    {},
+    { retries: 1, retryDelayMs: 0, secrets: [SECRET] }
+  );
+  assert.deepEqual(await response.json(), { ok: true });
+  await flushCaptures();
+
+  const { lines } = readCaptureLines(dir);
+  assert.equal(calls, 2);
+  assert.equal(lines.length, 2);
+  const [transient, final] = lines;
+  assert.equal(transient.status, 429);
+  assert.match(transient.responseBodyText, /slow down/);
+  assert.ok(!JSON.stringify(transient).includes(SECRET));
+  assert.equal(final.status, 200);
+  assert.ok(final.responseBodyText.includes("ok"));
 });
 
 test("end-to-end capture: success + 429 + timeout lines with redaction; unset env writes nothing", async (t) => {

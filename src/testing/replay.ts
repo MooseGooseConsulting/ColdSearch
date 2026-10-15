@@ -63,6 +63,9 @@ export async function loadFixtures(targetPath: string): Promise<ProviderEnvelope
 
 /** Rebuild a Response exactly as captured (status, headers, body text). */
 export function fixtureResponse(fixture: ProviderEnvelopeFixture): Response {
+  if (fixture.status === undefined && fixture.error) {
+    throw new Error(`Captured transport failure: ${fixture.error}`);
+  }
   const status = fixture.status ?? 200;
   const body = [204, 205, 304].includes(status)
     ? null

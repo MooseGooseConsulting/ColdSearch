@@ -209,6 +209,37 @@ export async function fetchWithPolicy(
         ...outcome,
       });
     };
+    const recordResponse = (response: Response, durationMs: number): void => {
+      if (!captureOn || attemptCaptured) return;
+      let captureResponse: Response;
+      try {
+        captureResponse = response.clone();
+      } catch {
+        recordAttempt(
+          { status: response.status, responseHeaders: response.headers },
+          durationMs
+        );
+        return;
+      }
+      attemptCaptured = true;
+      trackCaptureTask(
+        readCaptureResponsePrefix(captureResponse, policy.secrets).then(
+          (responseBodyText) =>
+            recordCapture({
+              label: policy.label,
+              method,
+              url: requestUrl,
+              requestHeaders: init.headers,
+              requestBody: init.body,
+              durationMs,
+              secrets: policy.secrets,
+              status: response.status,
+              responseHeaders: response.headers,
+              responseBodyText,
+            })
+        )
+      );
+    };
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -235,27 +266,15 @@ export async function fetchWithPolicy(
           // for receiving the response headers; capture must not delay or
           // abort the caller while it consumes the original body.
           const captureDurationMs = Date.now() - attemptStart;
-          const captureResponse = response.clone();
-          trackCaptureTask(
-            readCaptureResponsePrefix(captureResponse).then((bodyText) => {
-              recordAttempt(
-                {
-                  status: response.status,
-                  responseHeaders: response.headers,
-                  responseBodyText: bodyText,
-                },
-                captureDurationMs
-              );
-            })
-          );
+          recordResponse(response, captureDurationMs);
         }
         return response;
       }
 
       if (attempt < retries && shouldRetryStatus(response.status)) {
-        // Record the transient exchange (status + headers only; the body is
-        // discarded unread on the retry path).
-        recordAttempt({ status: response.status, responseHeaders: response.headers });
+        // Record the complete transient exchange from a clone before the
+        // original response is discarded for retry.
+        recordResponse(response, Date.now() - attemptStart);
         await response.body?.cancel();
         // Honor the server's Retry-After hint on 429/503 (capped); otherwise
         // fall back to linear backoff. Jitter spreads retries of parallel

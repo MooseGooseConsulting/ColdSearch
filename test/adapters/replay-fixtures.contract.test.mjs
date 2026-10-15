@@ -54,6 +54,18 @@ test("layer-2 fixtures load and are versioned", async () => {
   }
 });
 
+test("replay preserves transport failures instead of synthesizing HTTP 200", () => {
+  const fixture = {
+    fixtureVersion: 1,
+    provider: "tavily",
+    method: "GET",
+    url: "https://api.tavily.com/search",
+    durationMs: 12,
+    error: "Tavily search timed out after 10000ms",
+  };
+  assert.throws(() => fixtureResponse(fixture), /Captured transport failure: Tavily search timed out/);
+});
+
 test("replay: Firecrawl /v2/search 200 envelope normalizes (position/category preserved on the wire)", async () => {
   const fixture = await loadFixture("firecrawl-search-200.json");
 

@@ -10,8 +10,9 @@ import path from "node:path";
  * recorder is a complete no-op — the only cost is one env lookup per call.
  *
  * Redaction guarantees (a capture line must NEVER contain a secret value):
- * - the `authorization`, `proxy-authorization`, `x-api-key`, and
- *   `x-subscription-token` request headers are always replaced by "REDACTED";
+ * - known authorization headers and custom header names containing credential
+ *   segments (key, token, secret, credential, password, or cookie) are
+ *   replaced by "REDACTED";
  * - every configured secret value (RequestPolicy.secrets and/or
  *   setCaptureSecrets) is replaced by "REDACTED" wherever it appears in
  *   request/response headers, URLs, bodies, or error messages;
@@ -30,6 +31,8 @@ const SENSITIVE_HEADER_NAMES = new Set([
   "x-api-key",
   "x-subscription-token",
 ]);
+const SENSITIVE_HEADER_NAME_PATTERN =
+  /(?:^|[-_])(?:auth(?:orization|entication)?|api[-_]?key|apikey|key|token|secret|credential|password|cookie)(?:$|[-_])/i;
 
 /** Query/body keys whose values carry credentials on keyless probes. */
 const SENSITIVE_VALUE_KEYS = [
@@ -111,6 +114,10 @@ function redactKnownSecrets(text: string, secrets: string[]): string {
   return out;
 }
 
+function captureSecrets(secrets: string[] = []): string[] {
+  return [...globalCaptureSecrets, ...secrets].filter(Boolean);
+}
+
 /**
  * Defense-in-depth: redact the VALUE of well-known credential keys in
  * `key=value` (query string) and `"key":"value"` (JSON body) shapes, even
@@ -142,7 +149,10 @@ function normalizeHeaders(
 
   const set = (name: string, value: string) => {
     const lower = name.toLowerCase();
-    if (SENSITIVE_HEADER_NAMES.has(lower)) {
+    if (
+      SENSITIVE_HEADER_NAMES.has(lower) ||
+      SENSITIVE_HEADER_NAME_PATTERN.test(lower)
+    ) {
       out[lower] = REDACTED;
       return;
     }
@@ -221,7 +231,7 @@ function captureFileName(now: Date): string {
  * tests can verify redaction without touching the filesystem.
  */
 export function buildCaptureRecord(input: CaptureInput, now = new Date()): CaptureRecord {
-  const secrets = [...globalCaptureSecrets, ...(input.secrets ?? [])].filter(Boolean);
+  const secrets = captureSecrets(input.secrets);
   const record: CaptureRecord = {
     ts: now.toISOString(),
     method: input.method.toUpperCase(),
@@ -241,7 +251,7 @@ export function buildCaptureRecord(input: CaptureInput, now = new Date()): Captu
   );
   if (responseHeaders) record.responseHeaders = responseHeaders;
   if (input.responseBodyText !== undefined) {
-    record.responseBodyText = redactText(truncateBody(input.responseBodyText), secrets);
+    record.responseBodyText = truncateBody(redactText(input.responseBodyText, secrets));
   }
   if (input.error) record.error = redactText(input.error, secrets);
   return record;
@@ -261,8 +271,11 @@ export function trackCaptureTask(task: Promise<void>): void {
   void tracked.then(() => pendingCaptureTasks.delete(tracked));
 }
 
-/** Read and decode at most the capture limit without consuming the caller's response. */
-export async function readCaptureResponsePrefix(response: Response): Promise<string> {
+/** Read a bounded prefix without exposing a partial known secret at its edge. */
+export async function readCaptureResponsePrefix(
+  response: Response,
+  secrets: string[] = []
+): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return "";
 
@@ -298,7 +311,20 @@ export async function readCaptureResponsePrefix(response: Response): Promise<str
     offset += chunk.byteLength;
   }
   const text = new TextDecoder().decode(bytes);
-  return truncated ? `${text}…[capture truncated at 64 KiB]` : text;
+  const allSecrets = captureSecrets(secrets);
+  if (!truncated) return text;
+
+  // A known secret may straddle the bounded read boundary, leaving only its
+  // leading fragment in `text`. Drop enough trailing characters to ensure
+  // that incomplete fragment cannot be written to the capture file.
+  const longestSecret = allSecrets.reduce(
+    (longest, secret) => Math.max(longest, secret.length),
+    0
+  );
+  const safePrefix = longestSecret > 1
+    ? text.slice(0, Math.max(0, text.length - longestSecret + 1))
+    : text;
+  return `${safePrefix}…[capture truncated at 64 KiB]`;
 }
 
 /**

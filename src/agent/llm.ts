@@ -204,6 +204,7 @@ export class OpenAIClient implements LLMClient {
       },
       {
         label: "OpenAI completion",
+        secrets: apiKey ? [apiKey] : [],
       }
     );
 
