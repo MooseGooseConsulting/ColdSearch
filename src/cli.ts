@@ -721,9 +721,10 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     console.error(`Warning: ${warning}`);
   }
 
-  if (result.status === "pending") {
-    const jobIds = [...new Set(result.results.flatMap((crawlResult) =>
-      crawlResult.status === "pending" && crawlResult.jobId ? [crawlResult.jobId] : []
+  const pendingResults = result.results.filter((crawlResult) => crawlResult.status === "pending");
+  if (pendingResults.length > 0) {
+    const jobIds = [...new Set(pendingResults.flatMap((crawlResult) =>
+      crawlResult.jobId ? [crawlResult.jobId] : []
     ))];
     console.error(
       `Warning: crawl is still pending${jobIds.length ? ` (job ${jobIds.join(", ")})` : ""}; results are not complete.`

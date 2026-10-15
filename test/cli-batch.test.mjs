@@ -323,6 +323,57 @@ path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
   }
 });
 
+test("crawl CLI warns about a pending Firecrawl job when Exa fallback completes", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const configPath = path.join(dir, "firecrawl-fallback.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl", "exa"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["env:EXA_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["crawl", "--config", configPath, "--json", "https://example.com"],
+      nodeOptions
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "completed");
+    assert.equal(output.provider, "exa");
+    assert.equal(output.results[0].status, "pending");
+    assert.equal(output.results[0].jobId, "cli-pending-job");
+    assert.equal(output.results[1].status, "completed");
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("batch with pending crawl items exits nonzero", async () => {
   const dir = makeDir();
   const { server, port } = await startMockServer();
