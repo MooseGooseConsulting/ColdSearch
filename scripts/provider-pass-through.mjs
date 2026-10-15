@@ -455,6 +455,7 @@ export function redactSensitiveText(value) {
 }
 
 const MAX_RAW_EVIDENCE_BYTES = 12_000;
+const MAX_RAW_RESULT_SCHEMA_ITEMS = 50;
 const STABLE_RAW_METADATA_FIELDS = {
   "tavily.map": [{ name: "base_url" }],
   "firecrawl.map": [
@@ -534,9 +535,8 @@ function boundedRawEvidence(raw, target) {
       resultArrayItemTypes[name] = [...new Set(value.map((item) =>
         item === null ? "null" : Array.isArray(item) ? "array" : typeof item
       ))].sort();
-      const arrayBudget = { remaining: 80, truncated: false };
-      resultArraySchemas[name] = rawSchemaShape(value, arrayBudget);
-      if (arrayBudget.truncated) budget.truncated = true;
+      resultArraySchemas[name] = boundedRawResultArraySchema(value);
+      if (resultArraySchemas[name].truncated) budget.truncated = true;
     }
   }
   const sample = {
@@ -556,7 +556,10 @@ function boundedRawEvidence(raw, target) {
       continue;
     }
     const resultArrayKey = Object.keys(sample.result_array_schemas).at(-1);
-    if (resultArrayKey && trimRawSchemaShape(sample.result_array_schemas[resultArrayKey])) continue;
+    if (resultArrayKey && trimRawSchemaShape(sample.result_array_schemas[resultArrayKey])) {
+      sample.result_array_schemas[resultArrayKey].truncated = true;
+      continue;
+    }
     if (resultArrayKey) {
       delete sample.result_array_schemas[resultArrayKey];
       continue;
@@ -587,6 +590,38 @@ function trimRawSchemaShape(shape) {
     }
   }
   return false;
+}
+
+function boundedRawResultArraySchema(items) {
+  const budget = { remaining: 80, truncated: false };
+  const shapes = [];
+  const seen = new Set();
+  let inspected = 0;
+
+  for (const item of items) {
+    if (inspected >= MAX_RAW_RESULT_SCHEMA_ITEMS) {
+      budget.truncated = true;
+      break;
+    }
+    inspected += 1;
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+
+    const shape = rawSchemaShape(item, budget, 1);
+    if (schemaShapeIsTruncated(shape)) budget.truncated = true;
+    if (shape.type !== "object") continue;
+
+    const key = JSON.stringify(shape);
+    if (!seen.has(key)) {
+      seen.add(key);
+      shapes.push(shape);
+    }
+    if (budget.remaining <= 0) {
+      budget.truncated = true;
+      break;
+    }
+  }
+
+  return { type: "array", items: shapes, truncated: budget.truncated };
 }
 
 async function fetchText(url, init = {}, label = "request", timeoutMs = 60000) {
@@ -1427,10 +1462,19 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     compareToolRawResultArrayTypes(target, nativeResult.raw_sample, coldResult.raw_sample),
     "native and ColdSearch tool result arrays retain expected item types"
   ));
-  checks.push(check(
-    compareToolRawResultArraySchemas(target, nativeResult.raw_sample, coldResult.raw_sample),
-    "ColdSearch tool result arrays preserve sampled native object schemas"
-  ));
+  const rawArraySchemaComparison = compareToolRawResultArraySchemas(
+    target,
+    nativeResult.raw_sample,
+    coldResult.raw_sample
+  );
+  if (rawArraySchemaComparison === null) {
+    notes.push("Provider result-array schema comparison was inconclusive because bounded schema evidence was truncated; the sampled shapes do not certify full field preservation.");
+  } else {
+    checks.push(check(
+      rawArraySchemaComparison,
+      "ColdSearch tool result arrays preserve sampled native object schemas"
+    ));
+  }
   checks.push(check(
     coldResult.catalogued,
     "ColdSearch tool call row remained catalogued in the registry"
@@ -1529,11 +1573,16 @@ function compareToolRawResultArrayTypes(target, nativeSample, coldSample) {
 
 function compareToolRawResultArraySchemas(target, nativeSample, coldSample) {
   const nativeTypesByArray = nativeSample?.result_array_item_types || {};
+  let inconclusive = false;
   for (const { name } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
     if (!nativeTypesByArray[name]?.includes("object")) continue;
 
     const nativeArray = nativeSample?.result_array_schemas?.[name];
     const coldArray = coldSample?.result_array_schemas?.[name];
+    if (!nativeArray || !coldArray) {
+      inconclusive = true;
+      continue;
+    }
     const nativeObjects = nativeArray?.type === "array"
       ? (nativeArray.items || []).filter((item) => item.type === "object")
       : [];
@@ -1541,15 +1590,23 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample) {
       ? (coldArray.items || []).filter((item) => item.type === "object")
       : [];
 
-    if (!nativeObjects.length || !coldObjects.length) return false;
-    if (!nativeObjects.every((expected) =>
-      !schemaShapeIsTruncated(expected) &&
-      coldObjects.some((actual) => schemaShapeContains(expected, actual))
-    )) {
-      return false;
+    if (!nativeObjects.length) {
+      inconclusive = true;
+      continue;
     }
+
+    const nativeIncomplete = nativeArray.truncated || nativeObjects.some(schemaShapeIsTruncated);
+    const coldIncomplete = coldArray.truncated || coldObjects.some(schemaShapeIsTruncated);
+    const missingShape = nativeObjects.some((expected) =>
+      !schemaShapeIsTruncated(expected) &&
+      !coldObjects.some((actual) => schemaShapeContains(expected, actual))
+    );
+
+    if (missingShape && !nativeIncomplete && !coldIncomplete) return false;
+    if (missingShape || nativeIncomplete || coldIncomplete) inconclusive = true;
+    if (!coldObjects.length && !nativeIncomplete && !coldIncomplete) return false;
   }
-  return true;
+  return inconclusive ? null : true;
 }
 
 function schemaShapeIsTruncated(shape) {

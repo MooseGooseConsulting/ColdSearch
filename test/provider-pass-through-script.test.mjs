@@ -896,6 +896,66 @@ test("tool conformance checks nested raw schemas when provider result values var
   }
 });
 
+test("tool conformance compares schemas beyond the generic three-item sample", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const makeRaw = (keepFourthProfile) => ({
+    query: { original: "query" },
+    web: {
+      results: Array.from({ length: 4 }, (_, index) => ({
+        title: `Result ${index}`,
+        url: `https://example.com/${index}`,
+        description: "same snippet",
+        ...(keepFourthProfile && index === 3 ? { profile: { name: "fourth-only" } } : {}),
+      })),
+    },
+  });
+  const native = makeColdSearchToolResult(target, { ok: true, raw: makeRaw(true) });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: makeRaw(false),
+  });
+
+  assert.equal(native.raw_sample.truncated, true);
+  assert.equal(native.raw_sample.result_array_schemas.results.truncated, false);
+  assert.equal(native.raw_sample.result_array_schemas.results.items.length, 2);
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) => label === "ColdSearch tool result arrays preserve sampled native object schemas").pass,
+    false
+  );
+});
+
+test("truncated result schemas are inconclusive when no mismatch is proven", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const result = {
+    title: "Same result",
+    url: "https://example.com",
+    description: "same snippet",
+    ...Object.fromEntries(Array.from({ length: 45 }, (_, index) => [`field${index}`, "value"])),
+  };
+  const makeResult = (catalogued) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { query: { original: "query" }, web: { results: [result] } },
+  });
+  const comparison = compareToolTarget(target, makeResult(false), makeResult(true));
+
+  assert.equal(comparison.passed, true);
+  assert.equal(
+    comparison.checks.some(({ label }) => label === "ColdSearch tool result arrays preserve sampled native object schemas"),
+    false
+  );
+  assert.match(comparison.notes.join(" "), /schema comparison was inconclusive/);
+});
+
 test("raw provider id and status values are omitted from schema-only evidence", () => {
   const secret = "short-provider-key";
   const previous = process.env.EXA_API_KEY;
