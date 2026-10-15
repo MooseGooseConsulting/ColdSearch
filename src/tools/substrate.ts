@@ -303,28 +303,33 @@ async function dispatchToolCall(
   // Keyless tools can still use an explicitly configured key. In particular,
   // Jina Reader supports unauthenticated requests but offers higher limits
   // when a key is supplied.
-  const hasConfiguredKey = keyPool.hasKeys(provider);
+  const supportsOptionalKey = provider === "jina" && tool === "reader";
+  const hasConfiguredKey = supportsOptionalKey && keyPool.hasKeys(provider);
 
   if ((expectsKey || hasConfiguredKey) && isConfigured) {
     try {
       keyResult = await keyPool.getNextKeyWithRef(provider);
     } catch (err: any) {
-      return {
-        result: {
-          provider,
-          tool,
-          ok: false,
-          catalogued,
-          summary: null,
-          raw: null,
-          error: {
-            code: "KEY_RESOLUTION_FAILED",
-            message: `Key resolution failed: ${err.message}`,
+      if (!expectsKey && supportsOptionalKey) {
+        warnings.push("Optional Jina Reader key could not be resolved; continuing keyless.");
+      } else {
+        return {
+          result: {
+            provider,
+            tool,
+            ok: false,
+            catalogued,
+            summary: null,
+            raw: null,
+            error: {
+              code: "KEY_RESOLUTION_FAILED",
+              message: `Key resolution failed: ${err.message}`,
+            },
+            meta: { duration_ms: 0, safe_key_ref: null, warnings },
           },
-          meta: { duration_ms: 0, safe_key_ref: null, warnings },
-        },
-        secrets: [],
-      };
+          secrets: [],
+        };
+      }
     }
   }
 

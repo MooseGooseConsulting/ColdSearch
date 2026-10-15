@@ -323,6 +323,54 @@ path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
   }
 });
 
+test("batch with pending crawl items exits nonzero", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const inputPath = writeInput(dir, [
+      { id: "crawl-pending", capability: "crawl", url: "https://example.com" },
+    ]);
+    const outputPath = path.join(dir, "pending-out.jsonl");
+    const configPath = path.join(dir, "firecrawl.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["batch", "--input", inputPath, "--output", outputPath, "--config", configPath, "--json"],
+      nodeOptions
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.pending, 1);
+    assert.equal(summary.succeeded, 0);
+    assert.equal(outputRecords(outputPath)[0].status, "pending");
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resumes a partial output file", async () => {
   const dir = makeDir();
   const { server, state, port } = await startMockServer();

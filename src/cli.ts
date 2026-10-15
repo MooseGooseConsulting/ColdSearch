@@ -1550,11 +1550,14 @@ async function runBatchMode(options: ExtendedCLIOptions): Promise<void> {
     : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.pending ?? 0} pending, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
   printData({ command: "batch", ...summary }, human, options);
 
-  // A batch that finished but had failing items or newly emitted duplicate-ID
-  // conflicts still signals failure to scripts, without ever aborting sibling
-  // items. Conflicts from prior runs are skipped on resume (resume-conflict)
-  // and do not re-flag, so reruns stay deterministic.
-  if (!summary.dry_run && ((summary.failed ?? 0) > 0 || summary.conflicts > 0)) {
+  // A batch with failures, pending work, or newly emitted duplicate-ID
+  // conflicts signals an incomplete run to scripts, without ever aborting
+  // sibling items. Conflicts from prior runs are skipped on resume
+  // (resume-conflict) and do not re-flag, so reruns stay deterministic.
+  if (
+    !summary.dry_run &&
+    ((summary.failed ?? 0) > 0 || (summary.pending ?? 0) > 0 || summary.conflicts > 0)
+  ) {
     process.exitCode = 1;
   }
 }
