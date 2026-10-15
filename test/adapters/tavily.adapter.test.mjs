@@ -135,12 +135,17 @@ test("tavily search honors providerOptions (max_results clamped, depth/topic/ans
     const adapter = new TavilyAdapter();
     // Defaults: unchanged wire contract when nothing is configured.
     await adapter.search("q", "k");
+    await assert.rejects(
+      () => adapter.search("q", "k", {
+        providerOptions: { include_answer: true },
+      }),
+      /cannot be represented in normalized search results/
+    );
     await adapter.search("q", "k", {
       providerOptions: {
         max_results: 500,
         search_depth: "advanced",
         topic: "news",
-        include_answer: true,
         time_range: "week",
       },
     });
@@ -158,7 +163,7 @@ test("tavily search honors providerOptions (max_results clamped, depth/topic/ans
     query: "q",
     max_results: 20, // Tavily accepts at most 20 search results
     search_depth: "advanced",
-    include_answer: true,
+    include_answer: false,
     topic: "news",
     time_range: "week",
   });

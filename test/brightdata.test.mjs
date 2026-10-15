@@ -220,13 +220,14 @@ test("unlocker adapter honors format/data_format providerOptions", async () => {
     await adapter.extract("https://example.com/page", "secret", {
       providerOptions: {
         ...config().providers.brightdata.options,
-        format: "raw",
+        format: "json",
         data_format: "html",
       },
     });
   });
 
   assert.equal(bodies[0].format, "raw");
+  assert.equal(bodies[1].format, "raw");
   assert.equal(bodies[0].data_format, "markdown");
   assert.equal(bodies[1].data_format, "html");
 });
