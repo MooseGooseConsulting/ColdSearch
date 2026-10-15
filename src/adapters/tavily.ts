@@ -47,12 +47,22 @@ export class TavilyAdapter implements SearchAdapter {
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
   private readonly baseUrl = "https://api.tavily.com";
 
-  private sanitizeLimit(limit?: number): number {
+  private sanitizeSearchLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
       return 10;
     }
 
     return Math.min(20, Math.max(1, Math.floor(limit)));
+  }
+
+  private sanitizeCrawlLimit(limit?: number): number {
+    if (typeof limit !== "number" || !Number.isFinite(limit)) {
+      return 10;
+    }
+
+    // Tavily's crawl `limit` is a link-processing budget, not search's
+    // `max_results` field; do not apply the search endpoint's 20-result cap.
+    return Math.max(1, Math.floor(limit));
   }
 
   async search(
@@ -72,7 +82,7 @@ export class TavilyAdapter implements SearchAdapter {
           query,
           search_depth: "basic",
           include_answer: false,
-          max_results: this.sanitizeLimit(options?.limit),
+          max_results: this.sanitizeSearchLimit(options?.limit),
         }),
       },
       { label: "Tavily search" }
@@ -140,7 +150,7 @@ export class TavilyAdapter implements SearchAdapter {
       throw new Error("URL is required");
     }
 
-    const limit = this.sanitizeLimit(options?.limit);
+    const limit = this.sanitizeCrawlLimit(options?.limit);
     let depth: number | undefined;
     if (options?.depth !== undefined) {
       depth = options.depth;

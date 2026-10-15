@@ -28,6 +28,24 @@ test("firecrawl search normalizes results", async () => {
   }
 });
 
+test("firecrawl search clamps the provider limit to 1 through 100", async () => {
+  const seen = [];
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/search": async ({ init }) => {
+      seen.push(JSON.parse(init.body).limit);
+      return jsonResponse({ success: true, data: { web: [] } });
+    },
+  });
+  try {
+    const adapter = new FirecrawlAdapter();
+    await adapter.search("q", "k", { limit: 101 });
+    await adapter.search("q", "k", { limit: 0 });
+    assert.deepEqual(seen, [100, 1]);
+  } finally {
+    restore();
+  }
+});
+
 test("firecrawl crawl polls until completion", async () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;

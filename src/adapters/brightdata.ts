@@ -115,6 +115,11 @@ export class BrightDataAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     if (!url?.trim()) throw new Error("URL is required");
+    if (options?.format === "text") {
+      throw new Error(
+        'Bright Data Web Unlocker does not support plain-text extract output; use format "markdown" or select another provider'
+      );
+    }
 
     const zone = requireStringOption(options, "unlockerZone", "BRIGHTDATA_UNLOCKER_ZONE");
     const country = optionalStringOption(options, "searchCountry", "us");
@@ -148,9 +153,7 @@ export class BrightDataAdapter implements SearchAdapter {
           format: "raw",
           method: "GET",
           country,
-          // Web Unlocker returns markdown for readable text. `text` is a
-          // ColdSearch output preference, not a valid Web Unlocker format.
-          data_format: options?.format === "text" ? "markdown" : options?.format ?? "markdown",
+          data_format: options?.format ?? "markdown",
         }),
       },
       {

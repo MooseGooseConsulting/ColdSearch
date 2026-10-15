@@ -65,7 +65,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         body: JSON.stringify({
           query,
           limit: typeof options?.limit === "number" && Number.isFinite(options.limit)
-            ? Math.max(1, Math.floor(options.limit))
+            ? Math.min(100, Math.max(1, Math.floor(options.limit)))
             : 10,
           scrapeOptions: {
             formats: ["markdown"],

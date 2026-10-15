@@ -106,7 +106,27 @@ test("SERP adapter sends configured zone and normalizes organic results", async 
   assert.match(requestBody.url, /google\.com\/search\?q=bright%20data%20test/);
 });
 
-test("Unlocker adapter requests Markdown and returns extracted text", async () => {
+test("Bright Data rejects plain-text output it cannot return", async () => {
+  const adapter = new BrightDataAdapter();
+  let fetchCalled = false;
+
+  await withMockFetch(async (_url, init) => {
+    fetchCalled = true;
+    return new Response("# Extracted page\nHello", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+  }, async () => {
+    await assert.rejects(() => adapter.extract("https://example.com/page", "secret", {
+      format: "text",
+      providerOptions: config().providers.brightdata.options,
+    }), /does not support plain-text extract output/);
+  });
+
+  assert.equal(fetchCalled, false, "unsupported output is rejected before the provider call");
+});
+
+test("Unlocker adapter requests Markdown when markdown output is requested", async () => {
   const adapter = new BrightDataAdapter();
   let requestBody;
 
@@ -118,7 +138,7 @@ test("Unlocker adapter requests Markdown and returns extracted text", async () =
     });
   }, async () => {
     const result = await adapter.extract("https://example.com/page", "secret", {
-      format: "text",
+      format: "markdown",
       providerOptions: config().providers.brightdata.options,
     });
     assert.equal(result.content, "# Extracted page\nHello");

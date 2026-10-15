@@ -39,6 +39,20 @@ test("tavily search caps max_results at the provider limit", async () => {
   }
 });
 
+test("tavily crawl does not reuse the search max_results cap", async () => {
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/crawl": async ({ init }) => {
+      assert.equal(JSON.parse(init.body).limit, 50);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    await new TavilyAdapter().crawl("https://example.com", "k", { limit: 50 });
+  } finally {
+    restore();
+  }
+});
+
 test("tavily crawl uses native /crawl endpoint", async () => {
   const restore = installFetchMock({
     "POST https://api.tavily.com/crawl": async ({ init }) => {
