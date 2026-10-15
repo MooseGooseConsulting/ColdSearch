@@ -64,10 +64,22 @@ function requireZone(
 ): string {
   const explicit = typeof params.zone === "string" ? params.zone.trim() : "";
   if (explicit) return explicit;
-  const configured = configuredString(config, optionKey, envName);
-  if (configured) return configured;
+
+  const optionKeys =
+    optionKey === "serpZone" ? ["zone", "serpZone"] : ["unlockerZone", "zone"];
+  for (const key of optionKeys) {
+    const configured = configuredString(config, key);
+    if (configured) return configured;
+  }
+  const envValue = process.env[envName]?.trim();
+  if (envValue) return envValue;
+
+  const configOption =
+    optionKey === "serpZone"
+      ? "providers.brightdata.options.zone (legacy alias: serpZone)"
+      : "providers.brightdata.options.unlockerZone (legacy alias: zone)";
   throw new Error(
-    `Bright Data requires params.zone, providers.brightdata.options.${optionKey}, or ${envName}`
+    `Bright Data requires params.zone, ${configOption}, or ${envName}`
   );
 }
 
@@ -191,7 +203,9 @@ export function buildBrightDataToolRequest(
     const country =
       typeof params.country === "string"
         ? params.country
-        : configuredString(config, "searchCountry") || "us";
+        : configuredString(config, "country") ||
+          configuredString(config, "searchCountry") ||
+          "us";
     const format = params.format || "json";
 
     const payload: Record<string, any> = {

@@ -50,6 +50,7 @@ test("searxng wires optional query params from providerOptions only when present
         pageno: 2,
         time_range: "week",
         safesearch: 1,
+        theme: "dark",
       },
     });
   } finally {
@@ -57,7 +58,15 @@ test("searxng wires optional query params from providerOptions only when present
   }
 
   const [plain, configured] = urls.map((u) => new URL(u).searchParams);
-  for (const key of ["categories", "engines", "language", "pageno", "time_range", "safesearch"]) {
+  for (const key of [
+    "categories",
+    "engines",
+    "language",
+    "pageno",
+    "time_range",
+    "safesearch",
+    "theme",
+  ]) {
     assert.equal(plain.get(key), null, `${key} must not be sent when unconfigured`);
   }
   assert.equal(configured.get("categories"), "general");
@@ -66,4 +75,5 @@ test("searxng wires optional query params from providerOptions only when present
   assert.equal(configured.get("pageno"), "2");
   assert.equal(configured.get("time_range"), "week");
   assert.equal(configured.get("safesearch"), "1");
+  assert.equal(configured.get("theme"), "dark");
 });

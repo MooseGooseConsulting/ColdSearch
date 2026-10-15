@@ -421,6 +421,31 @@ test("unlocker direct tool uses the text parser for non-JSON formats and honors 
   );
 });
 
+test("direct SERP and Unlocker tools honor canonical Bright Data config keys", () => {
+  const canonical = config({ zone: "shared_zone", country: "de" });
+  const serp = buildBrightDataToolRequest("serp", { query: "pizza" }, "secret", canonical);
+  const serpPayload = JSON.parse(serp.body);
+  assert.equal(serpPayload.zone, "shared_zone");
+  assert.equal(serpPayload.country, "de");
+
+  const unlocker = buildBrightDataToolRequest(
+    "unlocker",
+    { url: "https://example.com/page" },
+    "secret",
+    canonical
+  );
+  assert.equal(JSON.parse(unlocker.body).zone, "unlocker_test");
+
+  const sharedZoneFallback = config({ zone: "shared_zone", unlockerZone: "" });
+  const unlockerFallback = buildBrightDataToolRequest(
+    "unlocker",
+    { url: "https://example.com/page" },
+    "secret",
+    sharedZoneFallback
+  );
+  assert.equal(JSON.parse(unlockerFallback.body).zone, "shared_zone");
+});
+
 test("discover requires a query and normalizes the q alias", () => {
   assert.throws(
     () => buildBrightDataToolRequest("discover", {}, "secret", config()),
