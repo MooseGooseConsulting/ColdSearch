@@ -177,6 +177,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
     if (!this.cacheEnabled || options.noCache) return false;
     if (options.singleProvider) return false;
     if (Array.isArray(options.providers) && options.providers.length > 0) return false;
+    if (
+      capability === "search" &&
+      options.limitSet === false &&
+      options.commonOptions?.limit !== undefined
+    ) return false;
     if (options.requireFeatures && options.requireFeatures.length > 0) return false;
     const defaultIntent = {
       search: "web-link-search",
