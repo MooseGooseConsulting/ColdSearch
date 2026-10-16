@@ -639,10 +639,11 @@ function enqueueCaptureWrite(
       } else {
         // Non-unsafe failures (read-only FS, full disk, quota) still must
         // not fail the request, but emit a warning so loss is visible. The
-        // directory itself is redacted: it may contain credentials (Devin).
+        // resolved directory is passed as a known secret so its literal
+        // path (which may contain credentials) is redacted (CodeRabbit).
         const raw = error instanceof Error ? error.message : String(error);
         process.emitWarning(
-          `ColdSearch capture write failed: ${redactText(raw, [])}`,
+          `ColdSearch capture write failed: ${redactText(raw, [dir])}`,
           { code: "COLDSEARCH_CAPTURE_WRITE_FAILED" }
         );
       }
