@@ -25,6 +25,7 @@ import {
   listSearchIntents,
   rejectIntent,
   resolveIntent,
+  validateIntentCategory,
   type IntentResolution,
   type SearchIntent,
 } from "./dispatch/intents.js";
@@ -663,15 +664,7 @@ function resolveCommandIntent(
   config: Config
 ): IntentResolution {
   const intent = options.intent ?? DEFAULT_COMMAND_INTENTS[command];
-  const category = INTENT_DEFS[intent].category;
-  if (category !== command) {
-    throw new Error(
-      `Invalid intent for '${command}': '${intent}' backs the '${category}' category. ` +
-        `Intents for '${command}': ${listSearchIntents()
-          .filter((id) => INTENT_DEFS[id].category === command)
-          .join(", ")}.`
-    );
-  }
+  validateIntentCategory(command, intent);
   return rejectIntent(resolveIntent(intent, config, options.providers));
 }
 

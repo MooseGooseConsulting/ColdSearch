@@ -234,11 +234,14 @@ export type IntentRejectReason =
   | "no-tools-for-category"
   | "documented-but-unwired"
   | "required-features-unsatisfied"
-  | "not-in-configured-pool";
+  | "not-in-configured-pool"
+  | "category-mismatch";
 
 export interface IntentRejection {
   intent: SearchIntent;
   reason: IntentRejectReason;
+  /** Capability the caller selected when an intent belongs to another category. */
+  capability?: CapabilityName;
   /** Ids of documented-but-unwired tools that would otherwise qualify. */
   documentedOnly: string[];
 }
@@ -256,18 +259,44 @@ export interface IntentDispatchOptions {
  */
 export class IntentRejectionError extends Error {
   /** Error taxonomy category for CLI/status classification. */
-  readonly category = "unsupported_capability" as const;
+  readonly category: "unsupported_capability" | "config";
 
   constructor(readonly rejection: IntentRejection) {
+    const categoryMismatch = rejection.reason === "category-mismatch";
+    const requestedCapability = rejection.capability;
+    const allowedIntents = requestedCapability
+      ? Object.entries(INTENT_DEFS)
+          .filter(([, definition]) => definition.category === requestedCapability)
+          .map(([intent]) => intent)
+          .join(", ")
+      : "";
     const documented =
       rejection.documentedOnly.length > 0
         ? ` Registry tools without a wired normalized path: ${rejection.documentedOnly.join(", ")}.`
         : "";
     super(
-      `Intent '${rejection.intent}' is not routable (${rejection.reason}).${documented}`
+      categoryMismatch && requestedCapability
+        ? `Invalid intent for '${requestedCapability}': '${rejection.intent}' backs the '${INTENT_DEFS[rejection.intent].category}' category. ` +
+            `Intents for '${requestedCapability}': ${allowedIntents}.`
+        : `Intent '${rejection.intent}' is not routable (${rejection.reason}).${documented}`
     );
     this.name = "IntentRejectionError";
+    this.category = categoryMismatch ? "config" : "unsupported_capability";
   }
+}
+
+/** Reject an intent that belongs to a different normalized capability. */
+export function validateIntentCategory(
+  capability: CapabilityName,
+  intent: SearchIntent
+): void {
+  if (INTENT_DEFS[intent].category === capability) return;
+  throw new IntentRejectionError({
+    intent,
+    reason: "category-mismatch",
+    capability,
+    documentedOnly: [],
+  });
 }
 
 /**
@@ -321,12 +350,7 @@ export function resolveOptionsForIntent<T extends IntentDispatchOptions>(
 ): T {
   if (!options.intent) return options;
 
-  const def = INTENT_DEFS[options.intent];
-  if (def.category !== capability) {
-    throw new Error(
-      `Invalid intent for '${capability}': '${options.intent}' backs the '${def.category}' category.`
-    );
-  }
+  validateIntentCategory(capability, options.intent);
 
   const providerOverride = options.providers?.length ? options.providers : undefined;
   const resolution = rejectIntent(resolveIntent(options.intent, config, providerOverride));
