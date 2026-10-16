@@ -146,12 +146,14 @@ export class AllProvidersFailedError extends Error {
   readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
   readonly discardedResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
   readonly providerHttpErrors: Record<string, HTTPRequestError>;
+  readonly skippedProviders: Record<string, string>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
     secretsUsed: string[],
     providerHttpErrors: Record<string, HTTPRequestError> = {},
+    skippedProviders: Record<string, string> = {},
     terminalResumeJobs: PendingCrawlJob[] = [],
     discardedResumeJobs: PendingCrawlJob[] = []
   ) {
@@ -163,6 +165,7 @@ export class AllProvidersFailedError extends Error {
     this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     this.discardedResumeJobs = discardedResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     this.providerHttpErrors = providerHttpErrors;
+    this.skippedProviders = skippedProviders;
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
@@ -391,7 +394,13 @@ export class FanoutEngine {
 
     // If all providers failed, throw error
     if (providersUsed.length === 0) {
-      throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
+      throw new AllProvidersFailedError(
+        errors,
+        attempts,
+        secretsUsed,
+        providerHttpErrors,
+        plan.skippedProviders
+      );
     }
 
     // Rerank results
@@ -1003,6 +1012,7 @@ export class FanoutEngine {
       attempts,
       secretsUsed,
       providerHttpErrors,
+      {},
       terminalResumeJobs,
       discardedResumeJobs
     );

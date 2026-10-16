@@ -805,7 +805,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
       routing: this.routingInfo(
         command,
         options,
-        (allFailed?.attempts ?? []).map((a) => a.provider)
+        (allFailed?.attempts ?? []).map((a) => a.provider),
+        undefined,
+        allFailed?.skippedProviders
       ),
       source: "live",
       attempts: allFailed ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets) : [],
