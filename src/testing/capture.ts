@@ -37,15 +37,36 @@ const SENSITIVE_HEADER_NAMES = new Set([
 const SENSITIVE_HEADER_NAME_PATTERN =
   /(?:^|[-_])(?:auth(?:orization|entication)?|api[-_]?key|apikey|key|token|secret|credential|password|cookie)(?:$|[-_])/i;
 
-/** Query/body keys whose values carry credentials on keyless probes. */
-const SENSITIVE_VALUE_KEYS = [
+/** URL parameters whose values carry credentials, matching history redaction. */
+const SENSITIVE_URL_PARAMETER_NAMES = new Set([
   "api_key",
   "apikey",
   "access_token",
+  "auth_token",
+  "client_secret",
+  "credential",
   "redir_token",
   "jwt",
+  "key",
+  "password",
+  "secret",
+  "sessionid",
+  "sig",
+  "signature",
   "token",
-];
+  "x-amz-credential",
+  "x-amz-security-token",
+  "x-amz-signature",
+]);
+const SENSITIVE_FIELD_NAME_PATTERN =
+  /(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|authorization|credential|pass(word|phrase)|secret|signature|bearer|cookie|proxy[_-]?url)/i;
+const SENSITIVE_EXACT_FIELD_NAME_PATTERN = /^(token|key|jwt|sig|session(id)?|zone)$/i;
+
+function isSensitiveCredentialKey(key: string): boolean {
+  return SENSITIVE_FIELD_NAME_PATTERN.test(key) ||
+    SENSITIVE_EXACT_FIELD_NAME_PATTERN.test(key) ||
+    SENSITIVE_URL_PARAMETER_NAMES.has(key.toLowerCase());
+}
 
 export interface CaptureRecord {
   /** ISO-8601 timestamp of the exchange. */
@@ -141,32 +162,36 @@ function captureSecrets(secrets: string[] = []): string[] {
 }
 
 /**
- * Defense-in-depth: redact the VALUE of well-known credential keys in
- * `key=value` (query string) and `"key":"value"` (JSON body) shapes, even
- * when the concrete secret was never threaded through.
+ * Defense-in-depth: redact values for credential-like keys recognized by
+ * history redaction, plus signed-URL parameters, even when the concrete secret
+ * was never threaded through.
  */
 function redactCredentialKeys(text: string): string {
-  const keys = SENSITIVE_VALUE_KEYS.join("|");
   return text
     .replace(
-      new RegExp(`(^|[?&])((?:${keys})=)[^&#"\\s]+`, "gi"),
-      `$1$2${REDACTED}`
-    )
-    .replace(
-      new RegExp(`("(?:${keys})"\\s*:\\s*")[^"]*(")`, "gi"),
-      `$1${REDACTED}$2`
+      /(^|[?&])([^=&#"'\\s]+)=([^&#"'\\s]+)/gi,
+      (match, boundary: string, key: string) =>
+        isSensitiveCredentialKey(key)
+          ? `${boundary}${key}=${REDACTED}`
+          : match
     );
 }
 
 function redactJsonCredentialValues(text: string): string {
-  const keys = SENSITIVE_VALUE_KEYS.join("|");
-  const keyPattern = new RegExp('"(?:' + keys + ')"\\s*:\\s*"', "gi");
+  const keyPattern = /"((?:[^"\\]|\\.)*)"\s*:\s*"/g;
   let output = "";
   let cursor = 0;
   let match: RegExpExecArray | null;
 
   while ((match = keyPattern.exec(text)) !== null) {
     const valueStart = keyPattern.lastIndex;
+    let key = match[1]!;
+    try {
+      key = JSON.parse(`"${key}"`) as string;
+    } catch {
+      // A malformed key is not a credential key we can safely identify.
+    }
+    const sensitive = isSensitiveCredentialKey(key);
     let valueEnd = valueStart;
     while (valueEnd < text.length) {
       if (text[valueEnd] === "\\") {
@@ -179,6 +204,12 @@ function redactJsonCredentialValues(text: string): string {
     }
 
     const complete = valueEnd < text.length;
+    if (!sensitive) {
+      if (!complete) break;
+      keyPattern.lastIndex = valueEnd + 1;
+      continue;
+    }
+
     output += text.slice(cursor, valueStart) + REDACTED;
     if (complete) {
       output += "\"";

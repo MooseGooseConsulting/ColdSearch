@@ -347,7 +347,10 @@ export async function fetchWithPolicy(
         throw timedOut;
       }
 
-      recordAttempt({ error: error instanceof Error ? error.message : String(error) });
+      recordAttempt({
+        error: error instanceof Error ? error.message : String(error),
+        errorName: retryableTransportErrorName(error),
+      });
       throw error;
     } finally {
       clearTimeout(timeout);
