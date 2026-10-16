@@ -25,10 +25,19 @@ test("assertNormalizedResult accepts well-formed search/extract/crawl results", 
     assertNormalizedResult("crawl", "exa", [{ url: "https://x.example", title: "", content: "" }])
   );
   assert.doesNotThrow(() =>
-    assertNormalizedResult("extract", "jina", { content: "body", url: "https://x.example" })
+    assertNormalizedResult("extract", "jina", {
+      content: "body",
+      url: "https://x.example",
+      source: "jina",
+    })
   );
   assert.doesNotThrow(() =>
-    assertNormalizedResult("extract", "jina", { content: "body", title: "T" })
+    assertNormalizedResult("extract", "jina", {
+      content: "body",
+      url: "https://x.example",
+      title: "T",
+      source: "jina",
+    })
   );
 });
 
@@ -50,14 +59,20 @@ test("assertNormalizedResult rejects malformed search results", () => {
 test("assertNormalizedResult rejects malformed extract and crawl results", () => {
   assert.throws(
     () => assertNormalizedResult("extract", "jina", []),
-    /expected an object with \{ content \}/
+    /expected an object with \{ content, url, source \}/
   );
   assert.throws(
-    () => assertNormalizedResult("extract", "jina", { url: "https://x.example" }),
+    () => assertNormalizedResult("extract", "jina", { url: "https://x.example", source: "jina" }),
     /missing\/invalid 'content'/
   );
   assert.throws(
-    () => assertNormalizedResult("extract", "jina", { content: "c", title: 42 }),
+    () =>
+      assertNormalizedResult("extract", "jina", {
+        content: "c",
+        url: "https://x.example",
+        source: "jina",
+        title: 42,
+      }),
     /optional 'title' must be a string/
   );
   assert.throws(

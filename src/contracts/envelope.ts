@@ -100,5 +100,35 @@ export function assertNormalizedResult(
           `missing/invalid finite 'score' in item ${describeItem(item)}`
       );
     }
+    if (capability === "crawl") {
+      if (
+        record.status !== undefined &&
+        record.status !== "completed" &&
+        record.status !== "pending"
+      ) {
+        throw new Error(
+          `Provider '${provider}' returned a malformed ${capability} result: ` +
+            `invalid 'status' in item ${describeItem(item)}`
+        );
+      }
+      if (record.jobId !== undefined && typeof record.jobId !== "string") {
+        throw new Error(
+          `Provider '${provider}' returned a malformed ${capability} result: ` +
+            `invalid 'jobId' in item ${describeItem(item)}`
+        );
+      }
+      if (record.status === "pending" && (typeof record.jobId !== "string" || !record.jobId.trim())) {
+        throw new Error(
+          `Provider '${provider}' returned a malformed ${capability} result: ` +
+            `pending item requires a non-empty 'jobId' in ${describeItem(item)}`
+        );
+      }
+      if (record.derived !== undefined && typeof record.derived !== "boolean") {
+        throw new Error(
+          `Provider '${provider}' returned a malformed ${capability} result: ` +
+            `invalid 'derived' in item ${describeItem(item)}`
+        );
+      }
+    }
   }
 }
