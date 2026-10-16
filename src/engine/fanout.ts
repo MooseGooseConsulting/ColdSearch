@@ -52,6 +52,8 @@ export interface FanoutOptions {
   depth?: number;
   /** Existing async jobs supplied by batch resume. */
   resumePendingJobs?: PendingCrawlJob[];
+  /** Pages retained from a prior pending batch attempt, used to suppress duplicate fallback crawls. */
+  resumeCompletedResults?: CrawlResult[];
 }
 
 /**
@@ -524,6 +526,21 @@ export class FanoutEngine {
         pendingJobs,
         provider: completedResumeProvider,
         status: pendingJobs.length > 0 ? "pending" : "completed",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    // Batch output may already contain pages from a completed fallback
+    // provider. Keep those pages in the runner and wait for the saved async
+    // handle instead of launching the same fallback again on each resume.
+    if (pendingJobs.length > 0 && options.resumeCompletedResults?.length) {
+      return {
+        results: [],
+        pendingJobs,
+        provider: pendingJobs[0]!.provider,
+        status: "pending",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,

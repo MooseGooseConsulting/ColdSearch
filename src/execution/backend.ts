@@ -51,6 +51,33 @@ export type CrawlOutcome = {
   warnings?: string[];
 };
 
+const SEARCH_PROVIDER_LIMIT_OPTIONS = [
+  "numResults",
+  "max_results",
+  "count",
+  "num",
+  "limit",
+] as const;
+
+/** Cache identity for provider-defined search counts when the CLI limit is implicit. */
+function searchProviderLimitIdentity(config: Config): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return {
+    providers,
+    configuredLimits: Object.fromEntries(
+      providers.map((provider) => {
+        const options = config.providers[provider]?.options ?? {};
+        const configured = Object.fromEntries(
+          SEARCH_PROVIDER_LIMIT_OPTIONS
+            .filter((key) => options[key] !== undefined)
+            .map((key) => [key, options[key]])
+        );
+        return [provider, configured];
+      })
+    ),
+  };
+}
+
 /** Shape guards so a malformed cache file is a miss, never a replay crash. */
 const isSearchCachePayload = (p: unknown): p is SearchResult =>
   !!p &&
@@ -183,6 +210,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
   private requestOptions(options: FanoutOptions): Record<string, unknown> {
     return {
       limit: options.limit,
+      limitSet: options.limitSet !== false,
       ...(options.rerankStrategy ? { rerankStrategy: options.rerankStrategy } : {}),
       ...(options.providers?.length ? { providers: options.providers } : {}),
       ...(options.singleProvider ? { singleProvider: true } : {}),
@@ -238,6 +266,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           limit: options.limit,
           limitSet: options.limitSet !== false,
           rerankStrategy: reranker,
+          searchProviderLimitIdentity: searchProviderLimitIdentity(this.config),
         })
       : null;
 

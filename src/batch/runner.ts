@@ -21,7 +21,8 @@ export interface BatchExecutor {
   execute(
     record: BatchInputRecord,
     config: Config,
-    resumePendingJobs?: PendingCrawlJob[]
+    resumePendingJobs?: PendingCrawlJob[],
+    resumeCompletedResults?: CrawlResult[]
   ): Promise<BatchOutputRecord>;
 }
 
@@ -107,7 +108,8 @@ export class LocalBatchExecutor implements BatchExecutor {
   async execute(
     record: BatchInputRecord,
     config: Config,
-    resumePendingJobs?: PendingCrawlJob[]
+    resumePendingJobs?: PendingCrawlJob[],
+    resumeCompletedResults?: CrawlResult[]
   ): Promise<BatchOutputRecord> {
     const base = {
       id: record.id,
@@ -152,6 +154,7 @@ export class LocalBatchExecutor implements BatchExecutor {
         const result = await this.backend.crawl(record.url!, {
           ...this.fanoutOptions(record),
           resumePendingJobs,
+          resumeCompletedResults,
         });
         this.warn(result.warnings);
         return {
@@ -402,7 +405,8 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
         executor,
         entry.record,
         config,
-        entry.resumePendingJobs
+        entry.resumePendingJobs,
+        entry.resumeCompletedResults
       );
       const outputRecord = mergeResumedCrawlResults(
         entry.record,
@@ -512,10 +516,11 @@ async function safeExecute(
   executor: BatchExecutor,
   record: BatchInputRecord,
   config: Config,
-  resumePendingJobs?: PendingCrawlJob[]
+  resumePendingJobs?: PendingCrawlJob[],
+  resumeCompletedResults?: CrawlResult[]
 ): Promise<BatchOutputRecord> {
   try {
-    return await executor.execute(record, config, resumePendingJobs);
+    return await executor.execute(record, config, resumePendingJobs, resumeCompletedResults);
   } catch (error) {
     return {
       id: record.id,
