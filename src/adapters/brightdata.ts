@@ -148,7 +148,10 @@ export class BrightDataAdapter implements SearchAdapter {
     // Normalized extract returns page text, so request the raw unlocker body
     // even when shared provider config selects a JSON envelope for other tools.
     const format = "raw";
-    const dataFormat = optionalStringOption(options, ["data_format"], "markdown");
+    const dataFormat =
+      options?.format === "markdown"
+        ? "markdown"
+        : optionalStringOption(options, ["data_format"], "markdown");
     if (dataFormat === "screenshot") {
       throw new Error(
         "Bright Data unlocker data_format 'screenshot' returns binary PNG that cannot be normalized as text; " +

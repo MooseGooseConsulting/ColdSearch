@@ -211,9 +211,9 @@ export class FirecrawlAdapter implements SearchAdapter {
 
     const normalizedUrl = url.trim();
     const formats =
-      options?.format !== undefined
-        ? [firecrawlScrapeFormat(options.format)]
-        : normalizedTextFormats(options?.providerOptions?.formats);
+      options?.format === undefined || options.format === "markdown"
+        ? normalizedTextFormats(options?.providerOptions?.formats)
+        : [firecrawlScrapeFormat(options.format)];
 
     const data = await fetchJson<{
       success?: boolean;
