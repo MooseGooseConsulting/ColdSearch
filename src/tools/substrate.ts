@@ -12,6 +12,7 @@ import { redactForPersistence, redactSensitive } from "../history/redact.js";
 import { newExecutionId, type ExecutionRecord } from "../history/types.js";
 import { isReplaySafeTool } from "./replay.js";
 import type { Config } from "../types.js";
+import { endpointKeyMaterial } from "../contracts/endpoint-identity.js";
 import { performance } from "node:perf_hooks";
 import {
   buildBrightDataSummary,
@@ -616,32 +617,6 @@ export interface ToolCallOptions {
    * normal live execution.
    */
   noCache?: boolean;
-}
-
-/**
- * Non-secret request-shaping provider config that must participate in an
- * exact tool cache key. A provider's resolved endpoint (configured base URL or
- * `<PROVIDER>_BASE_URL` env fallback) decides which instance answers the
- * request; a cache entry sourced from one instance would replay stale results
- * after the endpoint changes. Only endpoint-like option values are included —
- * never credential material. Kept generic: any configured endpoint-like option
- * shapes the key, not a searxng-specific carve-out.
- */
-function endpointKeyMaterial(config: Config, provider: string): Record<string, string> {
-  const options = (config.providers[provider]?.options ?? {}) as Record<string, unknown>;
-  const material: Record<string, string> = {};
-  for (const [name, value] of Object.entries(options)) {
-    if (typeof value !== "string" || value === "") continue;
-    if (!/(base|endpoint|api|url|host|origin)/i.test(name)) continue;
-    // Endpoint-like NAME only: exclude anything that could be credential
-    // material (e.g. an api_key option) from the key material.
-    if (/(key|token|secret|credential|password|authorization)/i.test(name)) continue;
-    material[name] = value;
-  }
-  const envName = `${provider.toUpperCase()}_BASE_URL`;
-  const envValue = process.env[envName];
-  if (envValue) material[envName] = envValue;
-  return material;
 }
 
 function isFreshEntry(meta: CacheEntryMeta, ttlSeconds: number): boolean {
