@@ -23,6 +23,7 @@ import path from "node:path";
 
 const REDACTED = "REDACTED";
 const RESPONSE_BODY_LIMIT_BYTES = 64 * 1024;
+const RESPONSE_BODY_READ_TIMEOUT_MS = 500;
 
 /** Header names whose values are always redacted (compared lowercase). */
 const SENSITIVE_HEADER_NAMES = new Set([
@@ -104,12 +105,27 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function encodedSecretVariants(secret: string): string[] {
+  const formEncoded = new URLSearchParams({ value: secret }).toString().slice("value=".length);
+  return [...new Set([secret, encodeURIComponent(secret), formEncoded])].filter(Boolean);
+}
+
+function secretPattern(secret: string): string {
+  return escapeRegExp(secret).replace(/%([0-9a-f]{2})/gi, (_match, byte: string) => {
+    const first = byte[0]!;
+    const second = byte[1]!;
+    return `%[${first.toLowerCase()}${first.toUpperCase()}][${second.toLowerCase()}${second.toUpperCase()}]`;
+  });
+}
+
 /** Replace every occurrence of each known secret with REDACTED. */
 function redactKnownSecrets(text: string, secrets: string[]): string {
   let out = text;
   for (const secret of secrets) {
     if (!secret) continue;
-    out = out.replace(new RegExp(escapeRegExp(secret), "g"), REDACTED);
+    for (const variant of encodedSecretVariants(secret)) {
+      out = out.replace(new RegExp(secretPattern(variant), "g"), REDACTED);
+    }
   }
   return out;
 }
@@ -282,9 +298,41 @@ export async function readCaptureResponsePrefix(
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
   let truncated = false;
+  let releaseAfterRead = false;
+  const deadline = Date.now() + RESPONSE_BODY_READ_TIMEOUT_MS;
   try {
     while (totalBytes < RESPONSE_BODY_LIMIT_BYTES) {
-      const { done, value } = await reader.read();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        truncated = true;
+        break;
+      }
+
+      const pendingRead = reader.read();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        pendingRead.then(
+          (read) => ({ kind: "read" as const, read }),
+          () => ({ kind: "read-error" as const })
+        ),
+        new Promise<{ kind: "timeout" }>((resolve) => {
+          timeout = setTimeout(() => resolve({ kind: "timeout" }), remainingMs);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      if (result.kind === "timeout") {
+        truncated = true;
+        releaseAfterRead = true;
+        // A pending read cannot be released synchronously. Cancellation should
+        // settle it; release later without making capture wait for the stream.
+        void pendingRead.then(
+          () => reader.releaseLock(),
+          () => reader.releaseLock()
+        ).catch(() => undefined);
+        break;
+      }
+      if (result.kind === "read-error") break;
+      const { done, value } = result.read;
       if (done) break;
       const remaining = RESPONSE_BODY_LIMIT_BYTES - totalBytes;
       const length = Math.min(value.byteLength, remaining);
@@ -301,7 +349,7 @@ export async function readCaptureResponsePrefix(
     // A capture read is best effort and must not affect the provider response.
   } finally {
     if (truncated) void reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    if (!releaseAfterRead) reader.releaseLock();
   }
 
   const bytes = new Uint8Array(totalBytes);
@@ -317,10 +365,9 @@ export async function readCaptureResponsePrefix(
   // A known secret may straddle the bounded read boundary, leaving only its
   // leading fragment in `text`. Drop enough trailing characters to ensure
   // that incomplete fragment cannot be written to the capture file.
-  const longestSecret = allSecrets.reduce(
-    (longest, secret) => Math.max(longest, secret.length),
-    0
-  );
+  const longestSecret = allSecrets
+    .flatMap(encodedSecretVariants)
+    .reduce((longest, secret) => Math.max(longest, secret.length), 0);
   const safePrefix = longestSecret > 1
     ? text.slice(0, Math.max(0, text.length - longestSecret + 1))
     : text;
@@ -342,7 +389,6 @@ export function recordCapture(input: CaptureInput): Promise<void> {
       const now = new Date();
       const record = buildCaptureRecord(input, now);
       await mkdir(dir, { recursive: true, mode: 0o700 });
-      await chmod(dir, 0o700);
       const file = path.join(dir, captureFileName(now));
       await appendFile(
         file,

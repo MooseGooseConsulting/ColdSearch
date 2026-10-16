@@ -75,7 +75,7 @@ test("firecrawl crawl: failed job throws with the upstream error", async () => {
       const adapter = new FirecrawlAdapter();
       await assert.rejects(
         adapter.crawl("https://x.example", "k", { limit: 1 }),
-        /Firecrawl crawl failed for job job-lc2: Upstream render exploded/
+        /Firecrawl crawl job 'job-lc2' failed: Upstream render exploded/
       );
     });
   } finally {
