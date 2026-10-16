@@ -62,7 +62,7 @@ const URL_PARAM_PATTERN = new RegExp(
   `([?&](?:${SENSITIVE_URL_PARAMS.join("|")})=)[^&\\s"'\\])}]*`,
   "gi"
 );
-const URL_USER_INFO_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)[^/?#\s@]+@/gi;
+const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^\/?#\s"'<>]*)/gi;
 
 /**
  * Secrets shorter than this are not substring-replaced inside larger strings:
@@ -86,8 +86,12 @@ function redactString(text: string, secrets: string[]): string {
 /** Redact URL authority credentials in arbitrary text, preserving the scheme and host. */
 export function redactUrlUserInfo(text: string, replacement = REDACTED): string {
   return text.replace(
-    URL_USER_INFO_PATTERN,
-    (_match, scheme: string) => `${scheme}${replacement}@`
+    URL_AUTHORITY_PATTERN,
+    (_match, scheme: string, authority: string) => {
+      const userInfoEnd = authority.lastIndexOf("@");
+      if (userInfoEnd < 0) return `${scheme}${authority}`;
+      return `${scheme}${replacement}@${authority.slice(userInfoEnd + 1)}`;
+    }
   );
 }
 
