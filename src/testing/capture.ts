@@ -169,7 +169,7 @@ function captureSecrets(secrets: string[] = []): string[] {
 function redactCredentialKeys(text: string): string {
   return text
     .replace(
-      /(^|[?&])([^=&#"'\\s]+)=([^&#"'\\s]+)/gi,
+      /(^|[?&])([^=&#"'\s]+)=([^&#"'\s]+)/gi,
       (match, boundary: string, key: string) =>
         isSensitiveCredentialKey(key)
           ? `${boundary}${key}=${REDACTED}`
