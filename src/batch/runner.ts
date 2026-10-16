@@ -6,7 +6,7 @@ import { KeyPoolManager } from "../engine/keypool.js";
 import type { FanoutOptions } from "../engine/fanout.js";
 import { redactSensitive } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
-import type { CapabilityName, Config, PendingCrawlJob } from "../types.js";
+import type { CapabilityName, Config, CrawlResult, PendingCrawlJob } from "../types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
 import { buildBatchPlan, loadResumeIndex, type BatchPlanEntry } from "./resume.js";
 import { DEFAULT_BATCH_LIMIT, type BatchInputRecord, type BatchOutputRecord } from "./types.js";
@@ -392,11 +392,16 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
     plan.filter((e) => e.action === "execute"),
     options.concurrency,
     async (entry) => {
-      const outputRecord = await safeExecute(
+      const executedRecord = await safeExecute(
         executor,
         entry.record,
         config,
         entry.resumePendingJobs
+      );
+      const outputRecord = mergeResumedCrawlResults(
+        entry.record,
+        executedRecord,
+        entry.resumeCompletedResults
       );
       await persist(outputRecord);
       executed += 1;
@@ -411,6 +416,32 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
   summary.pending = pending;
   summary.failed = failed;
   return summary;
+}
+
+/** Keep pages already returned by an earlier pending crawl in every later outcome. */
+function mergeResumedCrawlResults(
+  record: BatchInputRecord,
+  outputRecord: BatchOutputRecord,
+  priorResults?: CrawlResult[]
+): BatchOutputRecord {
+  if (
+    record.capability !== "crawl" ||
+    !priorResults?.length ||
+    outputRecord.result === null ||
+    typeof outputRecord.result !== "object" ||
+    Array.isArray(outputRecord.result)
+  ) {
+    return outputRecord;
+  }
+
+  const result = outputRecord.result as Record<string, unknown>;
+  const currentResults = Array.isArray(result.results) ? result.results : [];
+  // Keep run order and duplicates: different providers can return useful,
+  // non-identical content for the same URL, so URL-based deduplication loses data.
+  return {
+    ...outputRecord,
+    result: { ...result, results: [...priorResults, ...currentResults] },
+  };
 }
 
 /** Belt-and-braces: an unexpected executor throw becomes an error record. */

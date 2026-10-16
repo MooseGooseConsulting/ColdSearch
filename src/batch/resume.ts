@@ -6,14 +6,16 @@ import {
   type BatchInputRecord,
   type BatchOutputRecord,
 } from "./types.js";
-import type { PendingCrawlJob } from "../types.js";
+import type { CrawlResult, PendingCrawlJob } from "../types.js";
 
-/** Compact per-id resume outcome; pending crawls retain only handles to poll. */
+/** Compact per-id resume outcome; pending crawls retain handles and prior pages. */
 export interface ResumeOutcome {
   status: "success" | "pending" | "error";
   /** True for duplicate/conflict error records, which --retry-errors never retries. */
   conflict: boolean;
   pendingJobs?: PendingCrawlJob[];
+  /** Completed pages already returned alongside pending crawl handles. */
+  completedResults?: CrawlResult[];
 }
 
 /** Maps batch `id` -> compact outcomes already present in the output file. */
@@ -27,6 +29,8 @@ export interface BatchPlanEntry {
   action: BatchPlanAction;
   /** Existing async jobs to poll instead of starting duplicate work. */
   resumePendingJobs?: PendingCrawlJob[];
+  /** Completed pages from the previous pending record, retained in later output. */
+  resumeCompletedResults?: CrawlResult[];
   /** For `skip`: stable machine reason. */
   reason?: "resume-success" | "resume-error" | "resume-conflict" | "duplicate-identical";
   /** For `conflict`: the output record to append (never executed, never retried). */
@@ -37,8 +41,8 @@ export interface BatchPlanEntry {
  * Load the resume index from an existing output file. Malformed, partial, or
  * contract-invalid lines (an interrupted run's last write, foreign data) are
  * ignored — they carry no resumable outcome. A missing file yields an empty
- * index. Result payloads are discarded except for pending-job handles needed
- * to poll an accepted crawl on resume.
+ * index. Pending crawl outcomes retain their job handles and completed pages
+ * so those pages survive subsequent resume records.
  */
 export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> {
   const index: ResumeIndex = new Map();
@@ -74,11 +78,17 @@ export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> 
  * it to the compact resume outcome. A success must have `error: null` and a
  * present, non-null `result`; an error must have `result: null` and an `error`
  * object with a string `message`. Pending records are valid non-successes and
- * retain only their job handles for same-job polling on resume.
+ * retain their job handles and any completed pages for the next resume.
  */
 function toResumeOutcome(
   raw: unknown
-): { id: string; status: "success" | "pending" | "error"; conflict: boolean; pendingJobs?: PendingCrawlJob[] } | null {
+): {
+  id: string;
+  status: "success" | "pending" | "error";
+  conflict: boolean;
+  pendingJobs?: PendingCrawlJob[];
+  completedResults?: CrawlResult[];
+} | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   if (typeof record.id !== "string" || record.id === "") return null;
@@ -93,7 +103,8 @@ function toResumeOutcome(
     if (record.error !== null) return null;
     const result = record.result;
     if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
-    const rawJobs = (result as Record<string, unknown>).pendingJobs;
+    const resultRecord = result as Record<string, unknown>;
+    const rawJobs = resultRecord.pendingJobs;
     const pendingJobs = Array.isArray(rawJobs)
       ? rawJobs.filter((job): job is PendingCrawlJob => {
           if (!job || typeof job !== "object" || Array.isArray(job)) return false;
@@ -107,7 +118,26 @@ function toResumeOutcome(
           );
         })
       : [];
-    return { id: record.id, status: "pending", conflict: false, pendingJobs };
+    const rawResults = resultRecord.results;
+    const completedResults = Array.isArray(rawResults)
+      ? rawResults.filter((page): page is CrawlResult => {
+          if (!page || typeof page !== "object" || Array.isArray(page)) return false;
+          const candidate = page as Record<string, unknown>;
+          return (
+            typeof candidate.url === "string" &&
+            typeof candidate.title === "string" &&
+            typeof candidate.content === "string" &&
+            (candidate.status === undefined || candidate.status === "completed")
+          );
+        })
+      : [];
+    return {
+      id: record.id,
+      status: "pending",
+      conflict: false,
+      pendingJobs,
+      ...(completedResults.length > 0 ? { completedResults } : {}),
+    };
   }
 
   if (record.status === "error") {
@@ -201,8 +231,13 @@ export function buildBatchPlan(
         plan.push({
           record,
           action: "execute",
-          ...(latest?.status === "pending" && latest.pendingJobs?.length
-            ? { resumePendingJobs: latest.pendingJobs }
+          ...(latest?.status === "pending"
+            ? {
+                ...(latest.pendingJobs?.length ? { resumePendingJobs: latest.pendingJobs } : {}),
+                ...(latest.completedResults?.length
+                  ? { resumeCompletedResults: latest.completedResults }
+                  : {}),
+              }
             : {}),
         });
       }
