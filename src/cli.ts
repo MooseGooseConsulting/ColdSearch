@@ -995,7 +995,8 @@ function resolveProviderList(
   capability: "search" | "extract" | "crawl",
   options: ExtendedCLIOptions,
   requireFeatures?: string[],
-  commonOptions?: { timeRange?: string; includeContent?: boolean }
+  commonOptions?: { timeRange?: string; includeContent?: boolean },
+  intent?: SearchIntent
 ) {
   const config = loadConfig(options.config);
   if (capability === "search" && commonOptions) {
@@ -1014,6 +1015,7 @@ function resolveProviderList(
       providers: filtered.providers,
       singleProvider: options.singleProvider,
       requireFeatures,
+      intent,
     });
     return {
       config,
@@ -1026,6 +1028,7 @@ function resolveProviderList(
     providers: options.providers,
     singleProvider: options.singleProvider,
     requireFeatures,
+    intent,
   });
   return { config, ...plan, skippedProviders: plan.skippedProviders };
 }
@@ -1052,7 +1055,8 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
     capability,
     routedOptions,
     intentResolution.requireFeatures,
-    commonOptions
+    commonOptions,
+    intentResolution.intent
   );
 
   const plannedProviders = providers.map((provider) => {
