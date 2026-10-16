@@ -186,7 +186,15 @@ export class OpenAIClient implements LLMClient {
     const ref = this.settings.keyRef;
     const injectedKey = ref?.startsWith("doppler:") ? process.env[ref.slice(8)] : undefined;
     const apiKey = this.keyPool ? (injectedKey || await this.keyPool.getNextKey("agent-llm")) : this.apiKey;
-    if (apiKey) this.onSecretsUsed?.([apiKey]);
+    if (apiKey) {
+      try {
+        this.onSecretsUsed?.([apiKey]);
+      } catch {
+        // Secret observers must not change the result of a provider request.
+        // The CLI collector fails closed for persisted agent text if it cannot
+        // retain a complete secret set.
+      }
+    }
     const effort = options.reasoningEffort ?? this.settings.reasoningEffort;
     if (effort !== undefined && !isValidReasoningEffort(this.settings.provider, effort)) {
       throw new Error("Invalid agent LLM reasoning effort");

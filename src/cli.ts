@@ -995,13 +995,22 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   const runId = options.runId ?? createRunId();
   const startedAt = Date.now();
   const resolvedSecrets = new Set<string>();
+  let secretCollectionFailed = false;
   const history = new HistoryStore({ path: config.history?.path });
   const onSecretsUsed = (secrets: string[]) => {
-    for (const secret of secrets) {
-      if (secret) resolvedSecrets.add(secret);
+    try {
+      for (const secret of secrets) {
+        if (secret) resolvedSecrets.add(secret);
+      }
+    } catch {
+      // Provider execution continues if a redaction observer fails, but
+      // persisted agent text must then be withheld because the secret set may
+      // be incomplete.
+      secretCollectionFailed = true;
     }
   };
   const redactAgentText = (value: string): string => {
+    if (secretCollectionFailed) return "[REDACTED]";
     const secrets = [...resolvedSecrets];
     // General history redaction deliberately avoids substring replacement for
     // short credentials. Agent arguments are structured text, so drop the
@@ -1028,7 +1037,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     steps: ResearchStep[],
     outcome: "success" | "failed",
     resultCount: number,
-    errorMessage?: string
+    details: { errorMessage?: string; result?: string } = {}
   ) => {
     history.append({
       id: newExecutionId(),
@@ -1039,8 +1048,11 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
       agent_steps: toHistorySteps(steps),
       source: "live",
       attempts: [],
-      ...(errorMessage
-        ? { errors: { agent: redactAgentText(errorMessage) } }
+      ...(details.errorMessage
+        ? { errors: { agent: redactAgentText(details.errorMessage) } }
+        : {}),
+      ...(details.result !== undefined
+        ? { result: redactAgentText(details.result) }
         : {}),
       result_count: resultCount,
       raw_available: false,
@@ -1089,7 +1101,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
       : [];
     const message = error instanceof Error ? error.message : String(error);
     try {
-      persistAgentRun(partialSteps, "failed", 0, message);
+      persistAgentRun(partialSteps, "failed", 0, { errorMessage: message });
     } catch (persistError) {
       warnHistoryFailure(persistError);
     }
@@ -1104,7 +1116,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   }
 
   try {
-    persistAgentRun(result.steps, "success", result.sources.length);
+    persistAgentRun(result.steps, "success", result.sources.length, {
+      result: result.answer,
+    });
   } catch (error) {
     warnHistoryFailure(error);
   }
