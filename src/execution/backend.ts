@@ -88,6 +88,35 @@ function searchProviderLimitIdentity(
   };
 }
 
+/** Effective content format for each provider in the default extract pool. */
+function extractProviderFormatIdentity(
+  config: Config,
+  options: FanoutOptions
+): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const providerOptions = config.providers[provider]?.options ?? {};
+      const configuredValue = (name: string): unknown =>
+        Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+      let format: unknown = options.format;
+      if (format === undefined) {
+        if (provider === "jina") {
+          format = effectiveJinaReturnFormat({ providerOptions });
+        } else if (provider === "brightdata") {
+          format = configuredValue("data_format") ?? "markdown";
+        } else if (provider === "tavily") {
+          format = configuredValue("format") ?? "markdown";
+        } else {
+          // Exa and Firecrawl normalize their extract content to Markdown.
+          format = "markdown";
+        }
+      }
+      return [provider, String(format)];
+    })
+  );
+}
+
 /** Shape guards so a malformed cache file is a miss, never a replay crash. */
 const isSearchCachePayload = (p: unknown): p is SearchResult =>
   !!p &&
@@ -412,6 +441,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const key = useCache
       ? cacheKey("extract", url, {
           format: effectiveReturnFormat,
+          providerFormats: extractProviderFormatIdentity(this.config, options),
           providerHeaders: jinaCacheHeaders,
         })
       : null;
