@@ -143,7 +143,7 @@ test("crawl depth is sent for Tavily and Firecrawl and Exa results stay derived"
 test("dispatch path table covers Serper verticals, Brave images, and Jina search", () => {
   const serperTools = [
     "search", "images", "news", "videos", "shopping", "maps",
-    "places", "scholar", "patents", "autocomplete", "reviews",
+    "places", "scholar", "patents", "autocomplete", "reviews", "lens",
   ];
   for (const tool of serperTools) {
     assert.equal(serperToolUrl(tool), `https://google.serper.dev/${tool}`);

@@ -134,7 +134,10 @@ function escapeRegExp(value: string): string {
 
 function encodedSecretVariants(secret: string): string[] {
   const formEncoded = new URLSearchParams({ value: secret }).toString().slice("value=".length);
-  return [...new Set([secret, encodeURIComponent(secret), formEncoded])].filter(Boolean);
+  // JSON-escaped form: a secret containing quotes/backslashes/control chars
+  // echoed JSON-escaped under a non-credential key (Codex on #86).
+  const jsonEscaped = JSON.stringify(secret).slice(1, -1);
+  return [...new Set([secret, encodeURIComponent(secret), formEncoded, jsonEscaped])].filter(Boolean);
 }
 
 function secretPattern(secret: string): string {
@@ -178,7 +181,7 @@ function redactCredentialKeys(text: string): string {
 }
 
 function redactJsonCredentialValues(text: string): string {
-  const keyPattern = /"((?:[^"\\]|\\.)*)"\s*:\s*"/g;
+  const keyPattern = /"((?:[^"\\]|\\.)*)"\s*:\s*/g;
   let output = "";
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -192,7 +195,39 @@ function redactJsonCredentialValues(text: string): string {
       // A malformed key is not a credential key we can safely identify.
     }
     const sensitive = isSensitiveCredentialKey(key);
-    let valueEnd = valueStart;
+    const next = text[valueStart];
+    // Non-string JSON values (numbers, booleans, null, objects, arrays)
+    // never matched the old quote-anchored pattern (Codex on #86).
+    if (next !== "\"") {
+      const rest = text.slice(valueStart);
+      const scalar = /^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(rest);
+      if (scalar) {
+        if (!sensitive) {
+          keyPattern.lastIndex = valueStart + scalar[0].length;
+          continue;
+        }
+        output += text.slice(cursor, valueStart) + REDACTED;
+        cursor = valueStart + scalar[0].length;
+        keyPattern.lastIndex = cursor;
+        continue;
+      }
+      if (rest.startsWith("{") || rest.startsWith("[")) {
+        if (!sensitive) continue;
+        const close = rest[0] === "{" ? "}" : "]";
+        const end = rest.indexOf(close);
+        if (end < 0) {
+          output += text.slice(cursor, valueStart) + REDACTED + text.slice(valueStart);
+          cursor = text.length;
+          break;
+        }
+        output += text.slice(cursor, valueStart) + REDACTED + close;
+        cursor = valueStart + end + 1;
+        keyPattern.lastIndex = cursor;
+        continue;
+      }
+      continue;
+    }
+    let valueEnd = valueStart + 1;
     while (valueEnd < text.length) {
       if (text[valueEnd] === "\\") {
         valueEnd += 2;
@@ -210,7 +245,7 @@ function redactJsonCredentialValues(text: string): string {
       continue;
     }
 
-    output += text.slice(cursor, valueStart) + REDACTED;
+    output += text.slice(cursor, valueStart + 1) + REDACTED;
     if (complete) {
       output += "\"";
       cursor = valueEnd + 1;
@@ -219,7 +254,7 @@ function redactJsonCredentialValues(text: string): string {
       const markerStart = text.endsWith(INCOMPLETE_CAPTURE_MARKER)
         ? text.length - INCOMPLETE_CAPTURE_MARKER.length
         : text.length;
-      output += text.slice(Math.max(valueStart, markerStart));
+      output += text.slice(Math.max(valueStart + 1, markerStart));
       cursor = text.length;
       break;
     }
@@ -595,9 +630,16 @@ function enqueueCaptureWrite(
       );
       await chmod(file, 0o600);
     } catch (error) {
-      if (error instanceof UnsafeCaptureDirectoryError) warnUnsafeCaptureDirectory();
-      // Capture failures are swallowed: the operator's request must not fail
-      // because an evidence file could not be written.
+      if (error instanceof UnsafeCaptureDirectoryError) {
+        warnUnsafeCaptureDirectory();
+      } else {
+        // Non-unsafe failures (read-only FS, full disk, quota) still must
+        // not fail the request, but emit a warning so loss is visible.
+        process.emitWarning(
+          `ColdSearch capture write failed: ${error instanceof Error ? error.message : String(error)}`,
+          { code: "COLDSEARCH_CAPTURE_WRITE_FAILED" }
+        );
+      }
     }
   });
   writeChain = write;

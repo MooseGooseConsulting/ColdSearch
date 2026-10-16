@@ -63,23 +63,33 @@ Every HTTP exchange through `fetchWithPolicy` is appended as one JSON line to
 `./captures/capture-<YYYYMMDD-HHMMSS>.jsonl`:
 `{ts, label, method, url, requestHeaders, requestBody?, status,
 responseHeaders: {content-type, retry-after, x-ratelimit-*},
-responseBodyText (64 KiB cap), durationMs, error?}`.
+responseBodyText (64 KiB cap), durationMs, error?, errorName?}`.
+`errorName` is `"TypeError"`/`"AbortError"` for transport failures.
+Truncated bodies carry suffix markers: `…[truncated at 64 KiB]` for the size
+cap and `…[capture prefix incomplete]` when the async read did not finish.
 Both success and error exchanges (including timeouts) are recorded. When the
 env var is unset the recorder is a no-op with zero overhead beyond one env
-lookup, and capture write failures never fail the underlying request.
+lookup, and capture write failures emit a `COLDSEARCH_CAPTURE_WRITE_FAILED`
+warning without failing the underlying request.
 
 ### Redaction guarantees
 
 A capture line must never contain a secret value:
 
 - `authorization`, `proxy-authorization`, `x-api-key`, and
-  `x-subscription-token` header values are always replaced by `REDACTED`;
+  `x-subscription-token` header values are always replaced by `REDACTED`, as
+  is any header whose name matches `key|token|secret|credential|password|
+  cookie` (case-insensitive);
 - secret values threaded via `RequestPolicy.secrets` (or registered by tests
   with `setCaptureSecrets`) are redacted wherever they appear in request and
-  response headers, URLs, bodies, or error messages;
+  response headers, URLs, bodies, or error messages, including URL-encoded,
+  form-encoded, and JSON-escaped variants;
 - well-known credential keys (`api_key`, `access_token`, `jwt`, …) are
   redacted in URLs and bodies even when the concrete secret was never threaded
-  through.
+  through — covering string, numeric, boolean, null, and object/array JSON
+  values;
+- URL userinfo (`user:pass@host`) credentials are redacted, preserving scheme
+  and host.
 
 Still treat capture files as sensitive working artifacts: review them before
 sharing, and never commit raw captures.

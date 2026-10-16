@@ -234,19 +234,28 @@ export async function fetchWithPolicy(
       }
       attemptCaptured = true;
       const commitCapture = reserveCaptureRecord();
+      // Snapshot request metadata now: the body read below is async, and a
+      // caller mutating init.headers/init.body/policy.secrets in the window
+      // would otherwise corrupt the record (Codex on #86).
+      const snapHeaders: Headers = new Headers(init.headers ?? {});
+      const snapSecrets = [...(policy.secrets ?? [])];
+      const snapBody = init.body;
+      const snapUrl = requestUrl;
+      const snapLabel = policy.label;
+      const snapMethod = method;
       trackCaptureTask(
         Promise.resolve()
-          .then(() => readCaptureResponsePrefix(captureResponse, policy.secrets))
+          .then(() => readCaptureResponsePrefix(captureResponse, snapSecrets))
           .catch(() => undefined)
           .then((responseBodyText) =>
             commitCapture({
-              label: policy.label,
-              method,
-              url: requestUrl,
-              requestHeaders: init.headers,
-              requestBody: init.body,
+              label: snapLabel,
+              method: snapMethod,
+              url: snapUrl,
+              requestHeaders: snapHeaders,
+              requestBody: snapBody,
               durationMs,
-              secrets: policy.secrets,
+              secrets: snapSecrets,
               status: response.status,
               responseHeaders: response.headers,
               responseBodyText,
