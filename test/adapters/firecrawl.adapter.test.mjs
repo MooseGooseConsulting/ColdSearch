@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FirecrawlAdapter } from "../../dist/adapters/firecrawl.js";
+import { FirecrawlAdapter, FirecrawlCrawlTerminalError } from "../../dist/adapters/firecrawl.js";
 import { installFetchMock, jsonResponse } from "./_fetch-mock.mjs";
 
 test("firecrawl search normalizes results", async () => {
@@ -136,6 +136,50 @@ test("firecrawl resume polls the encoded job ID without starting a duplicate cra
     });
     assert.equal(startCount, 0, "resume must not POST a duplicate crawl");
     assert.equal(results[0].content, "# Resumed");
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("firecrawl poll errors take precedence over completed response data", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "GET https://api.firecrawl.dev/v2/crawl/completed-error": async () =>
+      jsonResponse({
+        success: false,
+        status: "completed",
+        error: "partial failure",
+        data: [{ markdown: "must not be accepted", metadata: { sourceURL: "https://x.example/bad" } }],
+      }),
+    "GET https://api.firecrawl.dev/v2/crawl/failed-with-data": async () =>
+      jsonResponse({
+        success: true,
+        status: "failed",
+        error: "crawl failed",
+        data: [{ markdown: "must not be accepted", metadata: { sourceURL: "https://x.example/bad" } }],
+      }),
+  });
+
+  try {
+    const adapter = new FirecrawlAdapter();
+    await assert.rejects(
+      adapter.crawl("https://x.example", "k", { limit: 1, resumeJobId: "completed-error" }),
+      (error) => {
+        assert.equal(error instanceof FirecrawlCrawlTerminalError, false);
+        assert.match(error.message, /partial failure/);
+        return true;
+      }
+    );
+    await assert.rejects(
+      adapter.crawl("https://x.example", "k", { limit: 1, resumeJobId: "failed-with-data" }),
+      (error) => {
+        assert.ok(error instanceof FirecrawlCrawlTerminalError);
+        assert.match(error.message, /crawl failed/);
+        return true;
+      }
+    );
   } finally {
     restore();
     globalThis.setTimeout = originalSetTimeout;

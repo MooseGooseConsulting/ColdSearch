@@ -397,28 +397,146 @@ export class FanoutEngine {
     }
 
     const selectedProviders = this.getProvidersForCapability("crawl", options);
-    const providers = [
-      ...resumeProviders,
-      ...selectedProviders.filter((provider) => !resumeProviders.has(provider)),
-    ];
+    const resumeJobsToPoll = resumePendingJobs.splice(0);
+    let completedResumeProvider: string | undefined;
+    const completedResumeResults: CrawlResult[] = [];
+
+    // Poll every saved handle before starting fallback work. A provider can
+    // own several outstanding jobs for the same URL, and each job must be
+    // polled independently even when an earlier one remains pending.
+    for (const provider of resumeProviders) {
+      const providerJobs = resumeJobsToPoll.filter((job) => job.provider === provider);
+      for (const resumeJob of providerJobs) {
+        const start = performance.now();
+        let keyRef = "none";
+        let resumeHandleIsUsable = true;
+        try {
+          const adapter = createAdapter(provider);
+          if (!adapter.crawl) {
+            resumeHandleIsUsable = false;
+            throw new Error(
+              `Cannot resume ${provider} crawl job '${resumeJob.jobId}': provider adapter no longer supports crawl.`
+            );
+          }
+
+          const keyResult = await this.keyPool.getNextKeyWithRefOrEmpty(provider);
+          const apiKey = keyResult.value;
+          keyRef = keyResult.ref;
+          if (apiKey) secretsUsed.push(apiKey);
+          const results = await adapter.crawl(url, apiKey, {
+            limit: options.limit,
+            depth: options.depth,
+            providerOptions: this.config.providers[provider]?.options,
+            resumeJobId: resumeJob.jobId,
+          });
+
+          const durationMs = Math.round(performance.now() - start);
+          const pendingResults = results.filter((result) => result.status === "pending");
+          const pageResults = results.filter((result) => result.status !== "pending");
+          if (pendingResults.length > 0) {
+            const providerPendingJobs = pendingResults.map((result) => {
+              if (!result.jobId) {
+                throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
+              }
+              return {
+                provider,
+                jobId: result.jobId,
+                url: result.url || url,
+              };
+            });
+            pendingJobs.push(...providerPendingJobs);
+            const pendingMessage = "Provider crawl is still pending";
+            this.usageLogger.write({
+              timestamp: new Date().toISOString(),
+              provider,
+              capability: "crawl",
+              key: keyRef,
+              success: false,
+              pending: true,
+              response_time_ms: durationMs,
+              error: pendingMessage,
+            });
+            attempts.push({
+              provider,
+              success: false,
+              pending: true,
+              error: pendingMessage,
+              duration_ms: durationMs,
+              key_ref: keyRef,
+              result_count: pageResults.length,
+            });
+            continue;
+          }
+
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: true,
+            response_time_ms: durationMs,
+          });
+          attempts.push({
+            provider,
+            success: true,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+            result_count: pageResults.length,
+          });
+          completedResumeProvider ??= provider;
+          completedResumeResults.push(...pageResults);
+        } catch (error) {
+          // A failed poll does not prove that an accepted async job stopped.
+          if (resumeHandleIsUsable && !(error instanceof FirecrawlCrawlTerminalError)) {
+            pendingJobs.push(resumeJob);
+          }
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = (error as Error).message;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error: (error as Error).message,
+          });
+          attempts.push({
+            provider,
+            success: false,
+            error: (error as Error).message,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+          });
+        }
+      }
+    }
+
+    // Return recovered work once every saved handle has been checked. Keep
+    // unfinished handles alongside those results for the next batch resume.
+    if (completedResumeProvider) {
+      return {
+        results: completedResumeResults,
+        pendingJobs,
+        provider: completedResumeProvider,
+        status: pendingJobs.length > 0 ? "pending" : "completed",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
       const start = performance.now();
       let keyRef = "none";
-      let resumeJob: PendingCrawlJob | undefined;
       try {
-        const resumeJobIndex = resumePendingJobs.findIndex(
-          (job) => job.provider === provider && job.url.trim() === requestedUrl
-        );
-        if (resumeJobIndex >= 0) resumeJob = resumePendingJobs.splice(resumeJobIndex, 1)[0];
-
         const adapter = createAdapter(provider);
 
         if (!adapter.crawl) {
-          errors[provider] = resumeJob
-            ? `Cannot resume ${provider} crawl job '${resumeJob.jobId}': provider adapter no longer supports crawl.`
-            : "Adapter does not support crawl";
+          errors[provider] = "Adapter does not support crawl";
           attempts.push({
             provider,
             success: false,
@@ -436,7 +554,6 @@ export class FanoutEngine {
           limit: options.limit,
           depth: options.depth,
           providerOptions: this.config.providers[provider]?.options,
-          ...(resumeJob ? { resumeJobId: resumeJob.jobId } : {}),
         });
 
         const durationMs = Math.round(performance.now() - start);
@@ -504,10 +621,6 @@ export class FanoutEngine {
           secretsUsed,
         };
       } catch (error) {
-        // A failed poll does not prove that an accepted async job stopped.
-        if (resumeJob && !(error instanceof FirecrawlCrawlTerminalError)) {
-          pendingJobs.push(resumeJob);
-        }
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
         this.usageLogger.write({

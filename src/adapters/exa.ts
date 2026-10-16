@@ -223,6 +223,12 @@ export class ExaAdapter implements SearchAdapter {
       throw new Error("URL is required");
     }
 
+    if (options?.format === "text") {
+      throw new Error(
+        'Exa does not support plain-text extract output; use format "markdown" or select another provider'
+      );
+    }
+
     const normalizedUrl = url.trim();
     const opts = this.getExaOptions(options);
 

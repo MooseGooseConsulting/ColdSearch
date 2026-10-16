@@ -263,16 +263,6 @@ export class FirecrawlAdapter implements SearchAdapter {
         );
       }
 
-      if (statusData.status === "completed" && statusData.data) {
-        return statusData.data.map((item) => ({
-          url: item.metadata?.sourceURL || "",
-          title: item.metadata?.title || "",
-          content: item.markdown || "",
-          status: "completed" as const,
-          jobId,
-        }));
-      }
-
       if (statusData.status === "failed") {
         throw new FirecrawlCrawlTerminalError(jobId, statusData.error || "Provider reported terminal failure");
       }
@@ -281,6 +271,16 @@ export class FirecrawlAdapter implements SearchAdapter {
         throw new Error(
           `Firecrawl crawl poll returned an error for job '${jobId}': ${statusData.error || "Unknown error"}`
         );
+      }
+
+      if (statusData.status === "completed" && statusData.data) {
+        return statusData.data.map((item) => ({
+          url: item.metadata?.sourceURL || "",
+          title: item.metadata?.title || "",
+          content: item.markdown || "",
+          status: "completed" as const,
+          jobId,
+        }));
       }
       // If still scraping, continue polling
     }
