@@ -6,6 +6,18 @@ import type {
   AdapterCallOptions,
 } from "../types.js";
 
+/** Resolve the effective Reader format shared by request construction and cache identity. */
+export function effectiveJinaReturnFormat(
+  options?: Pick<AdapterCallOptions, "format" | "providerOptions">
+): string {
+  const configuredFormat = Object.entries(options?.providerOptions ?? {}).find(
+    ([name, value]) =>
+      name.toLowerCase() === "x-return-format" && value !== undefined && value !== null
+  )?.[1];
+
+  return String(options?.format ?? configuredFormat ?? "markdown");
+}
+
 /**
  * Jina AI Reader adapter.
  * Provides simple URL-to-markdown extraction.
@@ -48,11 +60,20 @@ export class JinaAdapter implements SearchAdapter {
       headers.Authorization = `Bearer ${apiKey}`;
     }
     // Jina's Reader surface is controlled via X-* request headers; pass through
-    // any providerOptions entries whose keys start with "X-".
+    // all configured X-* options except X-Return-Format, which uses the same
+    // precedence as the normalized format and cache identity.
     for (const [key, value] of Object.entries(options?.providerOptions ?? {})) {
-      if (!key.startsWith("X-") || value === undefined || value === null) continue;
+      if (
+        !key.toLowerCase().startsWith("x-") ||
+        key.toLowerCase() === "x-return-format" ||
+        value === undefined ||
+        value === null
+      ) {
+        continue;
+      }
       headers[key] = String(value);
     }
+    headers["X-Return-Format"] = effectiveJinaReturnFormat(options);
 
     const content = await fetchText(jinaUrl, {
       headers,
