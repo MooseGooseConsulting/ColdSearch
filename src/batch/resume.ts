@@ -232,6 +232,7 @@ export function buildBatchPlan(
     const hasSuccess = existing.some((r) => r.status === "success");
     const hasRetriableError = existing.some((r) => r.status === "error" && !r.conflict);
     const hasConflict = existing.some((r) => r.status === "error" && r.conflict);
+    const latest = existing[existing.length - 1];
 
     const firstInput = seen.get(record.id);
     if (firstInput === undefined) {
@@ -239,13 +240,16 @@ export function buildBatchPlan(
       seen.set(record.id, canonicalizeRecord(record));
       if (hasSuccess) {
         plan.push({ record, action: "skip", reason: "resume-success" });
-      } else if (hasRetriableError && !options.retryErrors) {
+      } else if (
+        hasRetriableError &&
+        !options.retryErrors &&
+        latest?.status !== "pending"
+      ) {
         plan.push({ record, action: "skip", reason: "resume-error" });
       } else {
         // Execute, including when the id only has a conflict record so far
         // (the primary never produced its own outcome) and retriable-error
         // retries when --retry-errors is set.
-        const latest = existing[existing.length - 1];
         const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
         const pendingRecordMatchesRequest =
           requestedUrl !== undefined &&
