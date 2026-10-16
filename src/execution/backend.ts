@@ -322,6 +322,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       providers: options.providers,
       singleProvider: options.singleProvider,
       requireFeatures: options.requireFeatures,
+      intent: options.intent,
     });
   }
 

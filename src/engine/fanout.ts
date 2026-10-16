@@ -255,6 +255,7 @@ export class FanoutEngine {
         providers: filtered.providers,
         singleProvider: options.singleProvider,
         requireFeatures: options.requireFeatures,
+        intent: options.intent,
       });
     } catch (error) {
       if (error instanceof NoEligibleProviderFeatureError) {
