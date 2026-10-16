@@ -108,6 +108,19 @@ doc inspection does not advance live-verification status.
 | Serper | ✅ (no key in test env) | — | — |
 | SearXNG | ✅ (needs an endpoint) | — | — |
 
+**2026-10-12 keyless re-probe** (bounded, no credentials; full detail in
+`docs/reviews/2026-10-12-live-probe-ledger.md`): direct Firecrawl API probes
+confirmed its upstream anonymous keyless tier and search/extract response
+envelopes. They do not establish a keyless ColdSearch configuration because
+ColdSearch resolves a configured or built-in key before the adapter request.
+Tavily, Exa, and Serper error envelopes confirmed live (401/402/403). Exa
+keyless now returns HTTP 402 with an x402 payment payload — keyless is no
+longer an anonymous free tier. The probe network could not reach Jina, Brave,
+or Bright Data.
+Brave and Jina retain earlier live evidence where the table marks it; Bright
+Data has no earlier live verification and remains based on implementation
+and documentation inspection only.
+
 Bright Data is intentionally **not** considered live-verified merely because its
 adapter and direct-tool mappers exist. Its first live proof must be an explicit,
 scoped run with intentionally supplied account configuration; it must not enter
@@ -170,7 +183,13 @@ they go stale fast and are intentionally not mirrored here.
 
 ### Firecrawl — `src/adapters/firecrawl.ts` · [docs](https://docs.firecrawl.dev)
 - `POST /search` → **search** ✅
-- `POST /scrape` → **extract** ✅
+- `POST /scrape` → **extract** ✅ — an anonymous keyless tier exists and was
+  verified live 2026-10-12 by direct upstream API probes: both `/search` and
+  `/scrape` succeed without a key (per-IP free credits, `creditsUsed`
+  accounting in the response); the `formats` param is honored keyless
+  (verified with `["html"]`). This is upstream evidence, not end-to-end
+  keyless ColdSearch support: its key pool resolves a configured or built-in
+  Firecrawl key before the adapter makes a request.
 - `POST /crawl` (async job, polled) → **crawl** ✅
 - `POST /map` (URL discovery) 🧰 direct `tool call` (`firecrawl.map`); not a normalized router
 - `POST /extract` (schema / LLM structured extraction) ❌ not the extract router (`scrape` is)
@@ -191,6 +210,10 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /contents` → **extract** ✅ and backs synthesized **crawl** ✅ (`livecrawl` is deprecated upstream — `maxAgeHours` + `livecrawlTimeout` are the migration path)
 - `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI; **deprecated upstream** as of 2026 — still callable)
 - `POST /answer` ❌
+- Keyless access (no `x-api-key`) returns **HTTP 402** with an x402 payment
+  payload — verified live 2026-10-12: pay-per-call in USDC (Base/Solana/
+  WorldChain/Arc, capped at `numResults` 10) or an agent-verified free trial
+  (100 uses). Keyless is **not** an anonymous free tier.
 - `POST /research` — **retired 2026-05-01**; use `/search` with `type: deep-reasoning` (or the Agent API `/agent/runs`) instead
 - `POST /chat/completions` (web-grounded chat) ❌
 
@@ -210,6 +233,7 @@ they go stale fast and are intentionally not mirrored here.
 - `s.jina.ai` search is catalogued as a deferred candidate; its schema and direct dispatch are not verified.
 - `/v1/embeddings` (v5) and `/v1/rerank` (v3.5) remain callable as direct JSON pass-throughs; ColdSearch preserves provider-native responses but does not validate their request schemas or normalize results
 - Prior unauthenticated probes to Reader and `s.jina.ai` returned `401 AuthenticationRequiredError`; no `JINA_API_KEY` is in the credential set. DeepSearch (`deepsearch.jina.ai`) remains deferred; no standalone `summarize` endpoint exists.
+- The 20 RPM keyless claim is doc-inspected 2026-10-12; live re-probe was blocked by network egress, not by Jina.
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
 - `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
