@@ -80,7 +80,7 @@ test("content-backed-retrieval filters to integratedContent tools", () => {
     ["exa.search", "firecrawl.search", "tavily.search"],
     "only search tools with integratedContent qualify"
   );
-  // brave.llmContent qualifies feature-wise but is documented-only (available).
+  // brave.llmContext qualifies feature-wise but has no normalized adapter path.
   assert.deepEqual(
     resolution.documentedOnly.map((e) => e.id),
     ["brave.llmContext"]
