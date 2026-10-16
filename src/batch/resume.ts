@@ -233,6 +233,26 @@ export function buildBatchPlan(
     const hasRetriableError = existing.some((r) => r.status === "error" && !r.conflict);
     const hasConflict = existing.some((r) => r.status === "error" && r.conflict);
     const latest = existing[existing.length - 1];
+    const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
+    const pendingRecordMatchesRequest =
+      requestedUrl !== undefined &&
+      latest?.status === "pending" &&
+      latest.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
+    let pendingJobsForRequest: PendingCrawlJob[] | undefined;
+    if (requestedUrl !== undefined && latest?.status === "pending") {
+      // The persisted job URL may have been redacted. The fingerprint
+      // binds this record to the request, so rebind its jobs to the
+      // current input URL before FanoutEngine validates them.
+      pendingJobsForRequest = pendingRecordMatchesRequest
+        ? latest.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
+        : latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
+    }
+    const canResumePendingJob = Boolean(
+      requestedUrl &&
+        pendingJobsForRequest?.some(
+          (job) => job.provider.trim().length > 0 && job.jobId.trim().length > 0
+        )
+    );
 
     const firstInput = seen.get(record.id);
     if (firstInput === undefined) {
@@ -243,27 +263,13 @@ export function buildBatchPlan(
       } else if (
         hasRetriableError &&
         !options.retryErrors &&
-        latest?.status !== "pending"
+        !canResumePendingJob
       ) {
         plan.push({ record, action: "skip", reason: "resume-error" });
       } else {
         // Execute, including when the id only has a conflict record so far
         // (the primary never produced its own outcome) and retriable-error
         // retries when --retry-errors is set.
-        const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
-        const pendingRecordMatchesRequest =
-          requestedUrl !== undefined &&
-          latest?.status === "pending" &&
-          latest.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
-        let pendingJobsForRequest: PendingCrawlJob[] | undefined;
-        if (requestedUrl !== undefined && latest?.status === "pending") {
-          // The persisted job URL may have been redacted. The fingerprint
-          // binds this record to the request, so rebind its jobs to the
-          // current input URL before FanoutEngine validates them.
-          pendingJobsForRequest = pendingRecordMatchesRequest
-            ? latest.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
-            : latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
-        }
         plan.push({
           record,
           action: "execute",
