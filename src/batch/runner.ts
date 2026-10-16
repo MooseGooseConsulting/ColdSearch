@@ -375,7 +375,8 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
   const persist = (record: BatchOutputRecord): Promise<void> => {
     const enqueued = appendQueue.then(async () => {
       const known = await secrets.knownSecrets();
-      await appendBatchOutput(options.output, redactSensitive(record, known));
+      const redactedRecord = redactSensitive(record, known);
+      await appendBatchOutput(options.output, dedupeRedactedCrawlResults(redactedRecord));
     });
     appendQueue = enqueued;
     return enqueued;
@@ -442,18 +443,10 @@ function mergeResumedCrawlResults(
   const currentResults = Array.isArray(result.results) ? result.results : [];
   let updatedResult: Record<string, unknown> = result;
   if (priorResults?.length) {
-    const seen = new Set<string>();
-    const mergedResults: unknown[] = [];
     // Keep the current resume's pages first, followed by prior fallback pages.
-    // Drop only exact result duplicates; distinct provider content for the same
-    // URL remains available to the caller.
-    for (const page of [...currentResults, ...priorResults]) {
-      const signature = stableResultSerialization(page);
-      if (seen.has(signature)) continue;
-      seen.add(signature);
-      mergedResults.push(page);
-    }
-    updatedResult = { ...updatedResult, results: mergedResults };
+    // Exact deduplication happens after redaction in persist, so a raw page and
+    // its previously redacted copy compare in the same representation.
+    updatedResult = { ...updatedResult, results: [...currentResults, ...priorResults] };
   }
 
   if (outputRecord.status === "pending" && typeof record.url === "string" && record.url.trim()) {
@@ -470,7 +463,37 @@ function mergeResumedCrawlResults(
   };
 }
 
-/** Stable JSON key used only to remove exact duplicate crawl result objects. */
+/** Remove exact duplicate crawl pages after redaction, matching persisted data. */
+function dedupeRedactedCrawlResults(record: BatchOutputRecord): BatchOutputRecord {
+  if (
+    record.capability !== "crawl" ||
+    record.result === null ||
+    typeof record.result !== "object" ||
+    Array.isArray(record.result)
+  ) {
+    return record;
+  }
+
+  const result = record.result as Record<string, unknown>;
+  if (!Array.isArray(result.results)) return record;
+
+  const seen = new Set<string>();
+  const dedupedResults: unknown[] = [];
+  for (const page of result.results) {
+    const signature = stableResultSerialization(page);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    dedupedResults.push(page);
+  }
+  if (dedupedResults.length === result.results.length) return record;
+
+  return {
+    ...record,
+    result: { ...result, results: dedupedResults },
+  };
+}
+
+/** Stable JSON key used only to remove exact redacted crawl result objects. */
 function stableResultSerialization(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableResultSerialization).join(",")}]`;
