@@ -24,12 +24,14 @@ attempts carry tool/nativeName/executionMode (PR-D). Two gaps remain:
 - Add `cacheIdentity: {pool, strategy, endpoints: {provider: {origin, digest}},
   providerOptionsDigest, providerEnvironmentDigest}` to the cache entry
   envelope. The provider-keyed `endpoints` map records each pooled provider's
-  effective endpoint: use its configured URL when selected, otherwise include
-  only an environment fallback that the adapter actually consumed. Do not
-  include unused environment variables. Include result-affecting provider
-  options and other environment-derived routing inputs (such as Bright Data's
-  SERP and Unlocker zone fallbacks) in canonical digests after removing
-  credential values; never persist raw provider options or environment values.
+  effective endpoint: use its configured URL when selected; otherwise use an
+  environment fallback only if the adapter actually consumed it; otherwise
+  record the built-in canonical endpoint selected by the adapter, including
+  for fixed-host providers with no override. Do not include unused environment
+  variables. Include result-affecting provider options and other
+  environment-derived routing inputs (such as Bright Data's SERP and Unlocker
+  zone fallbacks) in canonical digests after removing credential values; never
+  persist raw provider options or environment values.
   Each `origin` contains only a sanitized scheme, host, and port; each `digest`
   is a one-way hash of that provider's canonical effective endpoint identity.
   Never persist URL userinfo, paths, or query parameters, which may contain
