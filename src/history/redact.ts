@@ -93,8 +93,14 @@ export function redactUrlUserInfo(text: string, replacement = REDACTED): string 
       // itself is inside a single-quoted field; otherwise `';` may be literal
       // password data and the final `@` still marks the host boundary.
       const singleQuotedUrl = input[offset - 1] === "'";
-      const fieldQuoteBoundary = singleQuotedUrl
+      // Like the semicolon guard below: a quote-comma pair inside credentials
+      // is data when the eventual `@` has not arrived yet (CodeRabbit on #86).
+      const fieldQuoteCandidate = singleQuotedUrl
         ? /'\s*,\s*'/.exec(authority)?.index
+        : undefined;
+      const fieldQuoteBoundary = fieldQuoteCandidate !== undefined &&
+        authority.slice(0, fieldQuoteCandidate).includes("@")
+        ? fieldQuoteCandidate
         : undefined;
       const semicolonQuoteCandidate = singleQuotedUrl
         ? /'\s*;/.exec(authority)?.index
