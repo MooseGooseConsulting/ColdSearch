@@ -1,5 +1,6 @@
 import { appendFile, chmod, lstat, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { redactUrlUserInfo } from "../history/redact.js";
 
 /**
  * Request/response capture harness (issue #79, PR-E test proof layer 2).
@@ -153,7 +154,10 @@ function redactCredentialKeys(text: string): string {
 }
 
 export function redactText(text: string, secrets: string[]): string {
-  return redactCredentialKeys(redactKnownSecrets(text, secrets));
+  return redactUrlUserInfo(
+    redactCredentialKeys(redactKnownSecrets(text, secrets)),
+    REDACTED
+  );
 }
 
 function normalizeHeaders(

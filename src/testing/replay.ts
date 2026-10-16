@@ -22,6 +22,14 @@ export interface ProviderEnvelopeFixture extends CaptureRecord {
   notes?: string;
 }
 
+function isValidHttpStatus(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 200 && value <= 599;
+}
+
+function isNonEmptyTransportError(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function isFixtureRecord(value: unknown): value is ProviderEnvelopeFixture {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -29,7 +37,9 @@ export function isFixtureRecord(value: unknown): value is ProviderEnvelopeFixtur
     record.fixtureVersion === FIXTURE_VERSION &&
     typeof record.provider === "string" &&
     typeof record.method === "string" &&
-    typeof record.url === "string"
+    typeof record.url === "string" &&
+    (isValidHttpStatus(record.status) ||
+      (record.status === undefined && isNonEmptyTransportError(record.error)))
   );
 }
 
@@ -63,10 +73,13 @@ export async function loadFixtures(targetPath: string): Promise<ProviderEnvelope
 
 /** Rebuild a Response exactly as captured (status, headers, body text). */
 export function fixtureResponse(fixture: ProviderEnvelopeFixture): Response {
-  if (fixture.status === undefined && fixture.error) {
+  if (fixture.status === undefined && isNonEmptyTransportError(fixture.error)) {
     throw new Error(`Captured transport failure: ${fixture.error}`);
   }
-  const status = fixture.status ?? 200;
+  if (!isValidHttpStatus(fixture.status)) {
+    throw new Error("Invalid provider envelope fixture: missing or invalid captured HTTP status");
+  }
+  const status = fixture.status;
   const body = [204, 205, 304].includes(status)
     ? null
     : fixture.responseBodyText ?? "";
