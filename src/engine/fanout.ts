@@ -250,7 +250,10 @@ export class FanoutEngine {
       singleProvider: options.singleProvider,
       requireFeatures: options.requireFeatures,
     });
-    return { ...plan, skippedProviders: filtered.skippedProviders };
+    return {
+      ...plan,
+      skippedProviders: { ...filtered.skippedProviders, ...plan.skippedProviders },
+    };
   }
 
   /**

@@ -189,7 +189,7 @@ they go stale fast and are intentionally not mirrored here.
     - `numResults` — result count (default: 10)
     - `maxCharacters` — text length cap (default: 15000)
 - `POST /contents` → **extract** ✅ and backs synthesized **crawl** ✅ (`livecrawl` is deprecated upstream — `maxAgeHours` + `livecrawlTimeout` are the migration path)
-- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI; **deprecated upstream** as of 2026 — still callable)
+- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method and `search --intent url-similarity`; **deprecated upstream** as of 2026 — still callable)
 - `POST /answer` ❌
 - `POST /research` — **retired 2026-05-01**; use `/search` with `type: deep-reasoning` (or the Agent API `/agent/runs`) instead
 - `POST /chat/completions` (web-grounded chat) ❌
