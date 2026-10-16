@@ -8,6 +8,9 @@
 # Each capability maps to one or more providers.
 # strategy = "random"  → Pick one random provider per request
 # strategy = "all"     → Fan out to all providers (for search with reranking)
+# Random/single-provider requests recover from exhausted account credits by
+# trying the remaining eligible pool in order, stopping at the first success.
+# Pool membership and key configuration are never rewritten by recovery.
 #
 # Bright Data is intentionally NOT in these default pools yet. Configure it
 # below, then select it explicitly with --providers brightdata until measured

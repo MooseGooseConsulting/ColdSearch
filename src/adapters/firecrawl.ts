@@ -1,4 +1,4 @@
-import { fetchJson, HTTPRequestError } from "../http.js";
+import { fetchJson, HTTPRequestError, isQuotaExhausted } from "../http.js";
 import type {
   SearchAdapter,
   ExtractResult,
@@ -19,6 +19,34 @@ export class FirecrawlCrawlTerminalError extends Error {
         : `Firecrawl crawl job '${jobId}' failed: ${detail}`
     );
     this.name = "FirecrawlCrawlTerminalError";
+    this.jobId = jobId;
+  }
+}
+
+/**
+ * Quota exhaustion mid-poll: the job exists server-side and stays resumable,
+ * so it carries the jobId across the adapter boundary (CodeRabbit on #69).
+ */
+export class FirecrawlCrawlQuotaError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, detail: string, cause?: unknown) {
+    super(`Firecrawl crawl job '${jobId}' hit quota exhaustion: ${detail}`, { cause });
+    this.name = "FirecrawlCrawlQuotaError";
+    this.jobId = jobId;
+  }
+}
+
+/**
+ * Ambiguous poll failure after the job was accepted: the job may still be
+ * running server-side, so carry the jobId for retention (Codex on #69).
+ */
+export class FirecrawlCrawlPollError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, detail: string, cause?: unknown) {
+    super(`Firecrawl crawl poll failed for job ${jobId}: ${detail}`, { cause });
+    this.name = "FirecrawlCrawlPollError";
     this.jobId = jobId;
   }
 }
@@ -90,11 +118,12 @@ function sanitizeFormats(value: unknown): string[] {
 /** Request Markdown alongside configured formats for the normalized content field. */
 function normalizedTextFormats(value: unknown): string[] {
   const formats = sanitizeFormats(value);
-  // rawBase64 must be the only requested format (Firecrawl rejects combos);
-  // surfacing it now beats sending a request the API will refuse.
-  if (formats.includes("rawBase64") && formats.length > 1) {
+  // rawBase64 cannot back a normalized text result: alone it returns no
+  // Markdown to populate content, and Firecrawl rejects it in combination.
+  // Reject up front (Devin on #69) instead of sending a doomed request.
+  if (formats.includes("rawBase64")) {
     throw new Error(
-      'Invalid Firecrawl formats: "rawBase64" must be the only requested format.'
+      'Invalid Firecrawl formats: "rawBase64" cannot back normalized extract/crawl results.'
     );
   }
   return formats.includes("markdown") ? formats : [...formats, "markdown"];
@@ -353,11 +382,11 @@ export class FirecrawlAdapter implements SearchAdapter {
             error.status === 408 ||
             error.status === 429;
 
+          if (isQuotaExhausted(error)) {
+            throw new FirecrawlCrawlQuotaError(jobId, error.message, error);
+          }
           if (!isTransientStatus) {
-            throw new Error(
-              `Firecrawl crawl poll failed for job ${jobId}: ${error.message}`,
-              { cause: error }
-            );
+            throw new FirecrawlCrawlPollError(jobId, error.message, error);
           }
 
           continue;
@@ -370,9 +399,7 @@ export class FirecrawlAdapter implements SearchAdapter {
           continue;
         }
 
-        throw new Error(
-          `Firecrawl crawl poll failed for job ${jobId}: ${(error as Error).message}`
-        );
+        throw new FirecrawlCrawlPollError(jobId, (error as Error).message, error);
       }
 
       if (statusData.status === "failed" || statusData.status === "cancelled") {

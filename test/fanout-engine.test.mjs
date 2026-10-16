@@ -464,21 +464,26 @@ test("a new crawl preserves completed pages returned alongside a pending handle"
   }
 });
 
-test("saved crawl providers resume even when random selection chooses another provider", async () => {
+test("saved crawl providers resume without starting a random fallback while still pending", async () => {
   const originalRandom = Math.random;
   const originalSetTimeout = globalThis.setTimeout;
   Math.random = () => 0;
   globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
   let firecrawlPolls = 0;
+  let exaCalls = 0;
   const restore = installFetchMock({
     "GET https://api.firecrawl.dev/v2/crawl/saved-job": async () => {
       firecrawlPolls++;
       return jsonResponse({ success: true, status: "scraping" });
     },
-    "POST https://api.exa.ai/search": async () =>
-      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
-    "POST https://api.exa.ai/contents": async () =>
-      jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] }),
+    "POST https://api.exa.ai/search": async () => {
+      exaCalls++;
+      return jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] });
+    },
+    "POST https://api.exa.ai/contents": async () => {
+      exaCalls++;
+      return jsonResponse({ results: [{ url: "https://x.example/a", title: "A", text: "page" }] });
+    },
   });
 
   try {
@@ -497,7 +502,8 @@ test("saved crawl providers resume even when random selection chooses another pr
     });
 
     assert.ok(firecrawlPolls > 0, "saved provider must be resumed despite random selection");
-    assert.equal(out.provider, "exa");
+    assert.equal(exaCalls, 0, "a pending job does not unlock quota fallbacks");
+    assert.equal(out.provider, "firecrawl");
     assert.equal(out.status, "pending");
     assert.deepEqual(out.pendingJobs, [
       { provider: "firecrawl", jobId: "saved-job", url: "https://x.example" },
@@ -600,3 +606,31 @@ test("provider default Exa result count survives an implicit CLI limit", async (
   }
 });
 
+
+test("quota error mid-poll retains the Firecrawl job ID for resume (CodeRabbit on #69)", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "job-quota" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-quota": async () =>
+      jsonResponse({ success: false, status: "scraping", error: "quota exhausted" }, { status: 402 }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", { limit: 1 });
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "job-quota", url: "https://x.example" },
+    ]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    restore();
+  }
+});

@@ -21,6 +21,11 @@ appear in the agent-facing interface — callers ask for a capability, not a ven
 | `extract` | retrieve page content from a single URL |
 | `crawl` | gather multi-page site content |
 
+Random/single-provider capability routing recovers from exhausted account
+credits through the remaining eligible pool, with failed attempts preserved.
+Providers stay configured, including Firecrawl; explicit provider-native tools
+retain their vendor identity. See [quota recovery](CONFIGURATION.md#quota-recovery).
+
 ## Category views over provider tools
 
 These capabilities are **category views**, not apples-to-apples provider

@@ -43,6 +43,23 @@ export class HTTPRequestError extends Error {
   }
 }
 
+/** Detect account exhaustion without publishing provider response bodies.
+ * Only HTTP statuses classified as quota exhaustion (402, 432, and 433) count,
+ * including when wrapped in a cause. A generic 429 or response-body message
+ * does not trigger provider fallback.
+ */
+export function isQuotaExhausted(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 4) return false;
+  const detail = error as { status?: number; statusCode?: number; cause?: unknown };
+  const status = typeof detail.status === "number"
+    ? detail.status
+    : typeof detail.statusCode === "number"
+      ? detail.statusCode
+      : undefined;
+  if (typeof status === "number" && classifyHttpStatus(status) === "quota") return true;
+  return isQuotaExhausted(detail.cause, depth + 1);
+}
+
 function createAbortError(message: string): Error {
   const error = new Error(message);
   error.name = "AbortError";

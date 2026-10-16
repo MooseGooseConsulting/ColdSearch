@@ -2,7 +2,8 @@ import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
 import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
-import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
+import { FirecrawlCrawlPollError, FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
+import { isQuotaExhausted } from "../http.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
 import { HTTPRequestError } from "../http.js";
@@ -67,6 +68,7 @@ interface ProviderResult {
   provider: string;
   results: NormalizedResult[];
   error?: string;
+  quotaExhausted?: boolean;
   durationMs: number;
   keyRef: string;
   /** Resolved credential value used for this call, when any. */
@@ -85,6 +87,7 @@ export interface FanoutAttempt {
   /** Provider accepted the crawl but the async job has not completed. */
   pending?: boolean;
   error?: string;
+  quota_exhausted?: boolean;
   duration_ms?: number;
   key_ref?: string;
   result_count?: number;
@@ -179,13 +182,12 @@ export class FanoutEngine {
   private getProvidersForCapability(
     capability: CapabilityName,
     options: FanoutOptions
-  ): string[] {
-    const { providers } = resolveCapabilityProviders(
+  ): ReturnType<typeof resolveCapabilityProviders> {
+    return resolveCapabilityProviders(
       this.config,
       capability,
       { providers: options.providers, singleProvider: options.singleProvider }
     );
-    return providers;
   }
 
   /**
@@ -208,16 +210,32 @@ export class FanoutEngine {
     secretsUsed: string[];
   }> {
     // Get providers to use
-    const providers = this.getProvidersForCapability("search", options);
+    const plan = this.getProvidersForCapability("search", options);
+    const providers: string[] = [];
+    const results: PromiseSettledResult<ProviderResult>[] = [];
     // Keep the output cap separate from provider-specific configured counts.
     // A CLI default of 10 should cap merged results without overriding each
     // provider's configured upstream count.
     const providerLimit = options.limitSet === false ? undefined : options.limit;
 
-    // Execute searches in parallel
-    const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query, providerLimit))
-    );
+    if (plan.quotaFallbackProviders !== undefined) {
+      // Random/single-provider: stop after one success. Account exhaustion
+      // tries each remaining eligible provider at most once, sequentially.
+      let recoveringQuota = false;
+      for (const provider of [...plan.providers, ...plan.quotaFallbackProviders]) {
+        const value = await this.searchProvider(provider, query, providerLimit);
+        providers.push(provider);
+        results.push({ status: "fulfilled", value });
+        if (!value.error) break;
+        recoveringQuota ||= value.quotaExhausted === true;
+        if (!recoveringQuota) break;
+      }
+    } else {
+      providers.push(...plan.providers);
+      results.push(...await Promise.allSettled(
+        providers.map((provider) => this.searchProvider(provider, query, providerLimit))
+      ));
+    }
 
     // Collect results and errors
     const resultsByProvider = new Map<string, NormalizedResult[]>();
@@ -240,6 +258,7 @@ export class FanoutEngine {
             provider,
             success: false,
             error: value.error,
+            ...(value.quotaExhausted ? { quota_exhausted: true } : {}),
             duration_ms: value.durationMs,
             key_ref: value.keyRef,
           });
@@ -299,26 +318,40 @@ export class FanoutEngine {
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
-    const providers = this.getProvidersForCapability("extract", options);
+    const { providers, quotaFallbackProviders } = this.getProvidersForCapability("extract", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
+    let recoveringQuota = false;
 
-    // Try providers in order (or single random provider)
-    for (const provider of providers) {
+    // Random mode unlocks the remaining pool only after quota exhaustion.
+    for (const provider of [...providers, ...(quotaFallbackProviders ?? [])]) {
       const start = performance.now();
       let keyRef = "none";
       try {
         const adapter = createAdapter(provider);
 
         if (!adapter.extract) {
-          errors[provider] = "Adapter does not support extract";
+          const error = "Adapter does not support extract";
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = error;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "extract",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error,
+          });
           attempts.push({
             provider,
             success: false,
-            error: errors[provider],
+            error,
+            duration_ms: durationMs,
           });
+          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
           continue;
         }
 
@@ -360,6 +393,8 @@ export class FanoutEngine {
         };
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
+        const quotaExhausted = isQuotaExhausted(error);
+        recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
         if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
         this.usageLogger.write({
@@ -370,6 +405,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
         attempts.push({
           provider,
@@ -377,7 +413,9 @@ export class FanoutEngine {
           error: (error as Error).message,
           duration_ms: durationMs,
           key_ref: keyRef,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
+        if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
     }
 
@@ -403,6 +441,9 @@ export class FanoutEngine {
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
+    let recoveringQuota = false;
+    let hasConfirmedPendingResume = false;
+    let hasAmbiguousPendingResume = false;
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
@@ -444,7 +485,8 @@ export class FanoutEngine {
       resumeProviders.add(job.provider);
     }
 
-    const selectedProviders = this.getProvidersForCapability("crawl", options);
+    const { providers: selectedProviders, quotaFallbackProviders } =
+      this.getProvidersForCapability("crawl", options);
     const resumeJobsToPoll = resumePendingJobs.splice(0);
     let completedResumeProvider: string | undefined;
     const completedResumeResults: CrawlResult[] = [];
@@ -497,6 +539,7 @@ export class FanoutEngine {
                 url: result.url || url,
               };
             });
+            hasConfirmedPendingResume = true;
             pendingJobs.push(...providerPendingJobs);
             const pendingMessage = "Provider crawl is still pending";
             this.usageLogger.write({
@@ -539,13 +582,16 @@ export class FanoutEngine {
           completedResumeProvider ??= provider;
           completedResumeResults.push(...pageResults);
         } catch (error) {
+          const quotaExhausted = isQuotaExhausted(error);
           // A failed poll does not prove that an accepted async job stopped.
           if (resumeHandleIsUsable && !(error instanceof FirecrawlCrawlTerminalError)) {
             pendingJobs.push(resumeJob);
+            if (!quotaExhausted) hasAmbiguousPendingResume = true;
           } else if (error instanceof FirecrawlCrawlTerminalError) {
             terminalResumeJobs.push(resumeJob);
           }
           const durationMs = Math.round(performance.now() - start);
+          recoveringQuota ||= quotaExhausted;
           errors[provider] = (error as Error).message;
           const httpError = findHttpRequestError(error);
           if (httpError) providerHttpErrors[provider] = httpError;
@@ -557,6 +603,7 @@ export class FanoutEngine {
             success: false,
             response_time_ms: durationMs,
             error: (error as Error).message,
+            ...(quotaExhausted ? { quota_exhausted: true } : {}),
           });
           attempts.push({
             provider,
@@ -564,6 +611,7 @@ export class FanoutEngine {
             error: (error as Error).message,
             duration_ms: durationMs,
             key_ref: keyRef,
+            ...(quotaExhausted ? { quota_exhausted: true } : {}),
           });
         }
       }
@@ -608,23 +656,63 @@ export class FanoutEngine {
       };
     }
 
-    const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
-    const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
+    // In random mode, an unfinished saved crawl does not unlock another
+    // provider. A quota failure may unlock fallback unless another saved
+    // handle was confirmed pending or its poll failed ambiguously.
+    if (
+      pendingJobs.length > 0 &&
+      quotaFallbackProviders !== undefined &&
+      (!recoveringQuota || hasConfirmedPendingResume || hasAmbiguousPendingResume)
+    ) {
+      return {
+        results: completedResumeResults,
+        pendingJobs,
+        provider: pendingJobs[0]!.provider,
+        status: "pending",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
 
-    // Try providers in order (or single random provider)
-    for (const provider of providers) {
+    const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
+    const quotaProviders = (quotaFallbackProviders ?? []).filter(
+      (provider) => !resumeProviders.has(provider)
+    );
+    const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
+    const providersToTry = [...providers, ...quotaProviders];
+
+    // Random mode unlocks the remaining pool only after quota exhaustion.
+    for (const [providerIndex, provider] of providersToTry.entries()) {
+      // Resume filtering can leave no selected provider. Do not enter the
+      // quota-only tail unless polling actually observed quota exhaustion.
+      if (providerIndex >= providers.length && !recoveringQuota) break;
+
       const start = performance.now();
       let keyRef = "none";
       try {
         const adapter = createAdapter(provider);
 
         if (!adapter.crawl) {
-          errors[provider] = "Adapter does not support crawl";
+          const error = "Adapter does not support crawl";
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = error;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error,
+          });
           attempts.push({
             provider,
             success: false,
-            error: errors[provider],
+            error,
+            duration_ms: durationMs,
           });
+          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
           continue;
         }
 
@@ -677,8 +765,9 @@ export class FanoutEngine {
             key_ref: keyRef,
             result_count: pageResults.length,
           });
-          // A pending async job is not a completed crawl. Try the next
-          // configured provider so it can produce usable results now.
+          // An accepted pending crawl ends random-mode recovery, even when a
+          // quota error had already unlocked the fallback pool.
+          if (quotaFallbackProviders !== undefined) break;
           continue;
         }
 
@@ -716,7 +805,11 @@ export class FanoutEngine {
         };
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
+        const quotaExhausted = isQuotaExhausted(error);
+        recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
+        // Firecrawl wraps non-transient polling HTTP errors to add job context.
+        // Keep the original response status for the final operator-facing category.
         const httpError = findHttpRequestError(error);
         if (httpError) providerHttpErrors[provider] = httpError;
         this.usageLogger.write({
@@ -727,6 +820,7 @@ export class FanoutEngine {
           success: false,
           response_time_ms: durationMs,
           error: (error as Error).message,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
         attempts.push({
           provider,
@@ -734,7 +828,20 @@ export class FanoutEngine {
           error: (error as Error).message,
           duration_ms: durationMs,
           key_ref: keyRef,
+          ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
+        // A quota error mid-poll leaves a live server-side job: retain the
+        // resume handle so fallback and final responses stay resumable.
+        if (error instanceof FirecrawlCrawlQuotaError) {
+          pendingJobs.push({ provider, jobId: error.jobId, url: requestedUrl });
+        }
+        // An ambiguous poll failure after accept may still complete
+        // server-side: retain the handle and stop burning providers.
+        if (error instanceof FirecrawlCrawlPollError) {
+          pendingJobs.push({ provider, jobId: error.jobId, url: requestedUrl });
+          if (quotaFallbackProviders !== undefined) break;
+        }
+        if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
     }
 
@@ -814,6 +921,7 @@ export class FanoutEngine {
       };
     } catch (error) {
       const durationMs = Math.round(performance.now() - start);
+      const quotaExhausted = isQuotaExhausted(error);
       this.usageLogger.write({
         timestamp: new Date().toISOString(),
         provider,
@@ -822,12 +930,14 @@ export class FanoutEngine {
         success: false,
         response_time_ms: durationMs,
         error: (error as Error).message,
+        ...(quotaExhausted ? { quota_exhausted: true } : {}),
       });
       return {
         provider,
         results: [],
         error: (error as Error).message,
         ...(error instanceof HTTPRequestError ? { httpError: error } : {}),
+        quotaExhausted,
         durationMs,
         keyRef,
         // The secret may have resolved before the call failed; the error
