@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "provider": "firecrawl",
+  "ts": "2026-10-12T09:15:44.002Z",
+  "label": "Firecrawl extract",
+  "method": "POST",
+  "url": "https://api.firecrawl.dev/v2/scrape",
+  "requestHeaders": {
+    "content-type": "application/json",
+    "authorization": "REDACTED"
+  },
+  "requestBody": "{\"url\":\"https://example.com/x\",\"formats\":[\"markdown\"]}",
+  "status": 200,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBodyText": "{\"success\":true,\"data\":{\"markdown\":\"# Example\\n\\nCaptured markdown body.\",\"metadata\":{\"title\":\"Example Domain\",\"sourceURL\":\"https://example.com/x\"}}}",
+  "durationMs": 1477,
+  "notes": "Synthetic representative example based on 2026-10-12 live probe findings. Provides Firecrawl /v2/scrape markdown replay parsing coverage only; it is not a copied or sanitized capture and is not evidence of the live wire exchange. Response content is illustrative and omits the statusCode, creditsUsed, and cacheState metadata reported by the live probe."
+}

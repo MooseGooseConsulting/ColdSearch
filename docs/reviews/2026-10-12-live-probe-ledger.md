@@ -37,16 +37,19 @@ at the initial PR head.
 
 ## Relationship to committed replay fixtures
 
-The committed Firecrawl replay fixtures
-(`test/fixtures/provider-envelopes/firecrawl-search-200.json` and
-`test/fixtures/provider-envelopes/firecrawl-scrape-markdown-200.json`) are
-representative, sanitized examples for exercising adapter parsing; they are
-not verbatim copies of the live probe captures. The search fixture uses
-`limit:10` (the live probe above used `limit:2`), and the markdown scrape
-fixture omits the live response's `statusCode`, `creditsUsed`, and `cacheState`
-metadata. Their notes describe the provider response shape, not exact request
-and response equality. Use this ledger for the live probe details and the
-fixtures for replay coverage; raw capture files are not committed.
+The three committed Firecrawl fixtures
+(`test/fixtures/provider-envelopes/firecrawl-search-200.json`,
+`test/fixtures/provider-envelopes/firecrawl-scrape-markdown-200.json`, and
+`test/fixtures/provider-envelopes/firecrawl-scrape-html-200.json`) are synthetic
+representative envelopes based on the live probe findings, not captured
+exchanges or sanitized capture lines. They provide replay parsing coverage for
+the adapter, but they are not layer-2 evidence and must not be cited as live
+wire evidence. Raw probe capture files and lines are unavailable in this
+repository. In particular, the search fixture uses `limit:10` (the live probe
+above used `limit:2`), and the markdown scrape fixture omits the live response's
+`statusCode`, `creditsUsed`, and `cacheState` metadata. The ledger records the
+reported live probe findings; the fixtures are examples for parser coverage
+only.
 
 ## Consequences for the stack
 
