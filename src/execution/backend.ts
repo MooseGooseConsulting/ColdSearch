@@ -346,6 +346,22 @@ export class LocalExecutionBackend implements ExecutionBackend {
     }
   }
 
+  /** Mark agent history redaction as provider-aware after a real search attempt. */
+  private reportProviderSearchExecuted(options: FanoutOptions, attemptCount: number): void {
+    if (attemptCount === 0 || !options.onProviderSearchExecuted) return;
+    try {
+      options.onProviderSearchExecuted();
+    } catch {
+      // An observer must not change provider behavior, but the persisted
+      // agent text must be withheld if it cannot record the search boundary.
+      try {
+        options.onSecretCollectionIncomplete?.();
+      } catch {
+        // Ignore observer failures during provider execution.
+      }
+    }
+  }
+
   /** Record an intent rejected by CLI preflight before normal backend dispatch. */
   recordIntentRejection(
     capability: CapabilityName,
@@ -463,6 +479,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const start = performance.now();
     try {
       const result = await this.engine.search(query, options);
+      this.reportProviderSearchExecuted(options, result.attempts.length);
       const secrets = result.secretsUsed;
       this.reportSecretsUsed(options, secrets);
       this.recordExecution(
@@ -521,6 +538,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       };
     } catch (error) {
       if (error instanceof AllProvidersFailedError) {
+        this.reportProviderSearchExecuted(options, error.attempts.length);
         this.reportSecretsUsed(options, error.secretsUsed);
       }
       this.recordExecution(this.failedRecord("search", query, options, error, start), warnings);

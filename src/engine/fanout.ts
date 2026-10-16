@@ -106,6 +106,8 @@ export interface FanoutOptions {
   runId?: string;
   /** In-memory callback for agent history redaction; never persisted. */
   onSecretsUsed?: (secrets: string[]) => void;
+  /** Marks an agent run when at least one provider search was actually attempted. */
+  onProviderSearchExecuted?: () => void;
   /** Marks agent free-text history unavailable when secret collection is incomplete. */
   onSecretCollectionIncomplete?: () => void;
 }

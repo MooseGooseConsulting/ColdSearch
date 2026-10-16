@@ -996,6 +996,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   const startedAt = Date.now();
   const resolvedSecrets = new Set<string>();
   let secretCollectionFailed = false;
+  let providerSearchObserved = false;
   const history = new HistoryStore({ path: config.history?.path });
   const onSecretsUsed = (secrets: string[]) => {
     try {
@@ -1011,6 +1012,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   };
   const onSecretCollectionIncomplete = () => {
     secretCollectionFailed = true;
+  };
+  const onProviderSearchExecuted = () => {
+    providerSearchObserved = true;
   };
   const redactAgentText = (value: string): string => {
     if (secretCollectionFailed) return "[REDACTED]";
@@ -1042,6 +1046,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     resultCount: number,
     details: { errorMessage?: string; result?: string } = {}
   ) => {
+    if (!providerSearchObserved) secretCollectionFailed = true;
     history.append({
       id: newExecutionId(),
       timestamp: new Date().toISOString(),
@@ -1087,6 +1092,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     noCache: options.noCache,
     runId,
     onSecretsUsed,
+    onProviderSearchExecuted,
     onSecretCollectionIncomplete,
   });
 

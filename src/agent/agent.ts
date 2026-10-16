@@ -44,6 +44,8 @@ export interface AgentOptions {
   runId?: string;
   /** In-memory resolved provider keys for redacting the durable agent trace. */
   onSecretsUsed?: (secrets: string[]) => void;
+  /** Marks when a live provider search was attempted during the agent run. */
+  onProviderSearchExecuted?: () => void;
   /** Fail closed for durable agent text if configured-key resolution is incomplete. */
   onSecretCollectionIncomplete?: () => void;
 }
@@ -197,6 +199,7 @@ export class SearchAgent {
   /** Run ID fallback from construction; research() options override it. */
   private runId?: string;
   private onSecretsUsed?: (secrets: string[]) => void;
+  private onProviderSearchExecuted?: () => void;
   private onSecretCollectionIncomplete?: () => void;
 
   constructor(options: AgentOptions = {}) {
@@ -214,6 +217,7 @@ export class SearchAgent {
     this.noCache = options.noCache ?? false;
     this.runId = options.runId;
     this.onSecretsUsed = options.onSecretsUsed;
+    this.onProviderSearchExecuted = options.onProviderSearchExecuted;
     this.onSecretCollectionIncomplete = options.onSecretCollectionIncomplete;
   }
 
@@ -237,6 +241,8 @@ export class SearchAgent {
     // correlation; a padded value would mismatch across logs and output.
     const runId = explicitRunId?.trim() ?? createRunId();
     const onSecretsUsed = options.onSecretsUsed ?? this.onSecretsUsed;
+    const onProviderSearchExecuted =
+      options.onProviderSearchExecuted ?? this.onProviderSearchExecuted;
     const onSecretCollectionIncomplete =
       options.onSecretCollectionIncomplete ?? this.onSecretCollectionIncomplete;
     if (onSecretsUsed) this.llm.setSecretsUsedCallback?.(onSecretsUsed);
@@ -375,6 +381,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
             noCache: this.noCache,
             runId,
             onSecretsUsed: (secrets) => onSecretsUsed?.(secrets),
+            onProviderSearchExecuted,
             onSecretCollectionIncomplete,
           });
           // Track sources
