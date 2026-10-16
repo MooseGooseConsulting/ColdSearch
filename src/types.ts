@@ -39,6 +39,25 @@ export type ContentFormat = "markdown" | "text";
 
 export type CapabilityName = "search" | "extract" | "crawl";
 
+/**
+ * Portable (provider-agnostic) invocation options. These travel separately
+ * from `providerOptions` and are translated through each provider tool's
+ * declared `mapsCommonOptions` view immediately before the adapter call — only
+ * 1:1 scalar mappings are forwarded; expression-style mappings are skipped
+ * with a debug note (see src/dispatch/translate.ts).
+ *
+ * `timeRange` is the provider date filter (e.g. tavily `time_range`), distinct
+ * from the `--freshness` cache TTL override.
+ */
+export interface CommonOptions {
+  limit?: number;
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  timeRange?: string;
+  /** Request page text with search results when the backing tool supports it. */
+  includeContent?: boolean;
+}
+
 export interface AdapterCallOptions {
   providerOptions?: Record<string, unknown>;
   /** Caller limit. Search adapters send this as the provider's count field. */
@@ -47,6 +66,7 @@ export interface AdapterCallOptions {
   format?: ContentFormat;
   /** Crawl depth. Sent as the provider's depth field, or ignored when the crawl is derived. */
   depth?: number;
+  commonOptions?: CommonOptions;
 }
 
 export interface CrawlCallOptions extends AdapterCallOptions {
@@ -61,6 +81,12 @@ export interface SearchAdapter {
   capabilities: CapabilityName[];
   search(
     query: string,
+    apiKey: string,
+    options?: AdapterCallOptions
+  ): Promise<NormalizedResult[]>;
+  /** Native URL-similarity search, currently supported only by Exa. */
+  findSimilar?(
+    url: string,
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]>;
@@ -219,6 +245,8 @@ export interface CommonViewMapping {
   semanticFit: SemanticFit;
   /** ColdSearch common option -> provider-native parameter (or expression). */
   mapsCommonOptions: Record<string, string>;
+  /** Explicit mappings for enum-like common option values that differ by provider. */
+  commonOptionValueMappings?: Record<string, Record<string, unknown>>;
   /** Common options this tool cannot honor at all. */
   unsupportedCommonOptions: string[];
   /** Mappings accepted but lossy/approximate, with the reason recorded. */

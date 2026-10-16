@@ -1,19 +1,39 @@
 import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
-import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
+import {
+  NoEligibleProviderFeatureError,
+  providerSupportsCapability,
+  resolveCapabilityProviders,
+} from "../providers.js";
 import { FirecrawlCrawlPollError, FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { isQuotaExhausted } from "../http.js";
+import { HTTPRequestError } from "../http.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
-import { HTTPRequestError } from "../http.js";
+import {
+  getToolProfile,
+  wiredToolForProviderCategory,
+} from "../registry/tool-profiles.js";
+import {
+  emitTranslationNotes,
+  filterProvidersByCommonOptions,
+  resolveTranslatedProviderOptions,
+  UnsupportedCommonOptionsError,
+} from "../dispatch/translate.js";
+import {
+  resolveOptionsForIntent,
+  type SearchIntent,
+} from "../dispatch/intents.js";
 import type {
   CapabilityName,
+  CommonOptions,
   Config,
   NormalizedResult,
   ExtractResult,
   CrawlResult,
   PendingCrawlJob,
+  ToolExecutionMode,
 } from "../types.js";
 import { performance } from "node:perf_hooks";
 
@@ -32,6 +52,8 @@ export interface FanoutOptions {
   limitSet?: boolean;
   /** Specific providers to use (defaults to all configured) */
   providers?: string[];
+  /** Original caller override retained for history when intent routing narrows `providers`. */
+  requestedProviders?: string[];
   /** Reranker strategy */
   rerankStrategy?: "rrf" | "score" | "none";
   /** Operation type */
@@ -59,6 +81,30 @@ export interface FanoutOptions {
   resumeFallbackCompleted?: boolean;
   /** Provider that produced the completed fallback pages retained for a pending crawl. */
   resumeFallbackProvider?: string;
+  /**
+   * The intent backing this invocation (issue #79). Recorded in history and
+   * used by the CLI for pre-dispatch rejection; the engine itself routes on
+   * `requireFeatures`/`commonOptions`, not on the intent label.
+   */
+  intent?: SearchIntent;
+  /**
+   * Feature predicates the backing provider tools must set (from the intent).
+   * Threaded into resolveCapabilityProviders so routing is requirement-aware.
+   */
+  requireFeatures?: string[];
+  /**
+   * Portable invocation options, translated per provider through the wired
+   * tool's mapsCommonOptions view before the adapter call (1:1 scalar
+   * mappings only). An explicit search limit is offered to providers that
+   * declare a limit mapping; the reranker truncation still applies after
+   * merging.
+   */
+  commonOptions?: CommonOptions;
+  /**
+   * Providers excluded by intent routing with reasons. Merged into
+   * skippedProviders by getProvidersForCapability (Codex on #85).
+   */
+  intentExcludedProviders?: Record<string, string>;
 }
 
 /**
@@ -83,6 +129,12 @@ interface ProviderResult {
  */
 export interface FanoutAttempt {
   provider: string;
+  /** Registry tool id backing this leg, e.g. "firecrawl.scrape" (issue #79 provenance). */
+  tool?: string;
+  /** Provider-native endpoint backing this leg, e.g. "POST /search". */
+  toolNativeName?: string;
+  /** How the backing tool executes upstream (sync/async-job/streaming). */
+  executionMode?: ToolExecutionMode;
   success: boolean;
   /** Provider accepted the crawl but the async job has not completed. */
   pending?: boolean;
@@ -105,12 +157,14 @@ export class AllProvidersFailedError extends Error {
   readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
   readonly discardedResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
   readonly providerHttpErrors: Record<string, HTTPRequestError>;
+  readonly skippedProviders: Record<string, string>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
     secretsUsed: string[],
     providerHttpErrors: Record<string, HTTPRequestError> = {},
+    skippedProviders: Record<string, string> = {},
     terminalResumeJobs: PendingCrawlJob[] = [],
     discardedResumeJobs: PendingCrawlJob[] = []
   ) {
@@ -122,6 +176,7 @@ export class AllProvidersFailedError extends Error {
     this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     this.discardedResumeJobs = discardedResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     this.providerHttpErrors = providerHttpErrors;
+    this.skippedProviders = skippedProviders;
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
@@ -182,12 +237,95 @@ export class FanoutEngine {
   private getProvidersForCapability(
     capability: CapabilityName,
     options: FanoutOptions
-  ): ReturnType<typeof resolveCapabilityProviders> {
-    return resolveCapabilityProviders(
-      this.config,
+  ): ReturnType<typeof resolveCapabilityProviders> & { skippedProviders: Record<string, string> } {
+    const configured = this.config.capabilities[capability]?.providers ?? [];
+    const selected = options.providers?.length ? options.providers : configured;
+
+    // Validate the caller's pool before applying option-based eligibility so
+    // unknown or misconfigured providers retain the usual clear error.
+    resolveCapabilityProviders(this.config, capability, { providers: selected });
+
+    const filtered = filterProvidersByCommonOptions(
       capability,
-      { providers: options.providers, singleProvider: options.singleProvider }
+      selected,
+      capability === "search" ? options.commonOptions : undefined
     );
+    if (filtered.providers.length === 0 && Object.keys(filtered.issuesByProvider).length > 0) {
+      throw new UnsupportedCommonOptionsError(capability, filtered.issuesByProvider);
+    }
+
+    let plan: ReturnType<typeof resolveCapabilityProviders>;
+    try {
+      plan = resolveCapabilityProviders(this.config, capability, {
+        providers: filtered.providers,
+        singleProvider: options.singleProvider,
+        requireFeatures: options.requireFeatures,
+        intent: options.intent,
+      });
+    } catch (error) {
+      if (error instanceof NoEligibleProviderFeatureError) {
+        throw new NoEligibleProviderFeatureError(
+          { ...filtered.skippedProviders, ...error.skippedProviders },
+          error.message
+        );
+      }
+      throw error;
+    }
+    return {
+      ...plan,
+      skippedProviders: {
+        ...filtered.skippedProviders,
+        ...(options.intentExcludedProviders ?? {}),
+        ...plan.skippedProviders,
+      },
+    };
+  }
+
+  /**
+   * Per-leg provenance (issue #79): the registry tool backing this provider's
+   * capability path, so every history attempt records provider + tool +
+   * native endpoint + execution mode — e.g. Firecrawl extract is backed by
+   * `firecrawl.scrape`, not its native `extract` endpoint.
+   */
+  private toolProvenance(
+    provider: string,
+    capability: CapabilityName,
+    intent?: SearchIntent
+  ): Pick<FanoutAttempt, "tool" | "toolNativeName" | "executionMode"> {
+    const profile = intent === "url-similarity"
+      ? getToolProfile("exa.findSimilar")
+      : wiredToolForProviderCategory(provider, capability);
+    if (!profile) return {};
+    return {
+      // History renderers add the provider prefix, so store the bare tool ID.
+      tool: profile.tool,
+      // Exa's normalized crawl composes discovery and content retrieval.
+      toolNativeName:
+        provider === "exa" && capability === "crawl"
+          ? "POST /search + POST /contents"
+          : profile.nativeName,
+      executionMode: profile.execution.mode,
+    };
+  }
+
+  /**
+   * Merge config-level provider options with invocation common options
+   * translated through the provider's declared common view (invocation wins;
+   * the caller's config object is never mutated).
+   */
+  private adapterProviderOptions(
+    provider: string,
+    capability: CapabilityName,
+    commonOptions?: CommonOptions
+  ): Record<string, unknown> | undefined {
+    const { providerOptions, notes } = resolveTranslatedProviderOptions(
+      provider,
+      capability,
+      commonOptions,
+      this.config.providers[provider]?.options
+    );
+    emitTranslationNotes(notes);
+    return providerOptions;
   }
 
   /**
@@ -205,25 +343,22 @@ export class FanoutEngine {
     results: NormalizedResult[];
     providersUsed: string[];
     errors: Record<string, string>;
+    skippedProviders: Record<string, string>;
     partitions: Record<string, NormalizedResult[]>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
+    options = resolveOptionsForIntent("search", this.config, options);
     // Get providers to use
     const plan = this.getProvidersForCapability("search", options);
     const providers: string[] = [];
     const results: PromiseSettledResult<ProviderResult>[] = [];
-    // Keep the output cap separate from provider-specific configured counts.
-    // A CLI default of 10 should cap merged results without overriding each
-    // provider's configured upstream count.
-    const providerLimit = options.limitSet === false ? undefined : options.limit;
-
     if (plan.quotaFallbackProviders !== undefined) {
       // Random/single-provider: stop after one success. Account exhaustion
       // tries each remaining eligible provider at most once, sequentially.
       let recoveringQuota = false;
       for (const provider of [...plan.providers, ...plan.quotaFallbackProviders]) {
-        const value = await this.searchProvider(provider, query, providerLimit);
+        const value = await this.searchProvider(provider, query, options);
         providers.push(provider);
         results.push({ status: "fulfilled", value });
         if (!value.error) break;
@@ -233,7 +368,7 @@ export class FanoutEngine {
     } else {
       providers.push(...plan.providers);
       results.push(...await Promise.allSettled(
-        providers.map((provider) => this.searchProvider(provider, query, providerLimit))
+        providers.map((provider) => this.searchProvider(provider, query, options))
       ));
     }
 
@@ -247,6 +382,7 @@ export class FanoutEngine {
 
     results.forEach((result, index) => {
       const provider = providers[index];
+      const provenance = this.toolProvenance(provider, "search", options.intent);
 
       if (result.status === "fulfilled") {
         const value = result.value;
@@ -256,6 +392,7 @@ export class FanoutEngine {
           if (value.httpError) providerHttpErrors[provider] = value.httpError;
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             error: value.error,
             ...(value.quotaExhausted ? { quota_exhausted: true } : {}),
@@ -267,6 +404,7 @@ export class FanoutEngine {
           providersUsed.push(provider);
           attempts.push({
             provider,
+            ...provenance,
             success: true,
             duration_ms: value.durationMs,
             key_ref: value.keyRef,
@@ -276,16 +414,23 @@ export class FanoutEngine {
       } else {
         const message = result.reason?.message || "Unknown error";
         errors[provider] = message;
-        if (result.reason instanceof HTTPRequestError) {
-          providerHttpErrors[provider] = result.reason;
+        const httpError = findHttpRequestError(result.reason);
+        if (httpError) {
+          providerHttpErrors[provider] = httpError;
         }
-        attempts.push({ provider, success: false, error: message });
+        attempts.push({ provider, ...provenance, success: false, error: message });
       }
     });
 
     // If all providers failed, throw error
     if (providersUsed.length === 0) {
-      throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
+      throw new AllProvidersFailedError(
+        errors,
+        attempts,
+        secretsUsed,
+        providerHttpErrors,
+        plan.skippedProviders
+      );
     }
 
     // Rerank results
@@ -301,6 +446,7 @@ export class FanoutEngine {
       results: rankedResults,
       providersUsed,
       errors,
+      skippedProviders: plan.skippedProviders,
       partitions: Object.fromEntries(resultsByProvider),
       attempts,
       secretsUsed,
@@ -315,10 +461,13 @@ export class FanoutEngine {
     result: ExtractResult | null;
     provider: string;
     errors?: Record<string, string>;
+    skippedProviders: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
-    const { providers, quotaFallbackProviders } = this.getProvidersForCapability("extract", options);
+    options = resolveOptionsForIntent("extract", this.config, options);
+    const { providers, quotaFallbackProviders, skippedProviders } =
+      this.getProvidersForCapability("extract", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
@@ -328,6 +477,7 @@ export class FanoutEngine {
     // Random mode unlocks the remaining pool only after quota exhaustion.
     for (const provider of [...providers, ...(quotaFallbackProviders ?? [])]) {
       const start = performance.now();
+      const provenance = this.toolProvenance(provider, "extract");
       let keyRef = "none";
       try {
         const adapter = createAdapter(provider);
@@ -347,6 +497,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             error,
             duration_ms: durationMs,
@@ -361,8 +512,9 @@ export class FanoutEngine {
         keyRef = keyResult.ref;
         if (apiKey) secretsUsed.push(apiKey);
         const result = await adapter.extract(url, apiKey, {
-          providerOptions: this.config.providers[provider]?.options,
+          providerOptions: this.adapterProviderOptions(provider, "extract", options.commonOptions),
           format: options.format,
+          commonOptions: options.commonOptions,
         });
         // Engine-boundary shape guard (issue #79, PR-C): a malformed adapter
         // normalization throws here (classified as a provider error) instead
@@ -380,6 +532,7 @@ export class FanoutEngine {
         });
         attempts.push({
           provider,
+          ...provenance,
           success: true,
           duration_ms: durationMs,
           key_ref: keyRef,
@@ -388,6 +541,7 @@ export class FanoutEngine {
           result,
           provider,
           errors: Object.keys(errors).length > 0 ? errors : undefined,
+          skippedProviders,
           attempts,
           secretsUsed,
         };
@@ -396,7 +550,8 @@ export class FanoutEngine {
         const quotaExhausted = isQuotaExhausted(error);
         recoveringQuota ||= quotaExhausted;
         errors[provider] = (error as Error).message;
-        if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
+        const httpError = findHttpRequestError(error);
+        if (httpError) providerHttpErrors[provider] = httpError;
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
@@ -409,6 +564,7 @@ export class FanoutEngine {
         });
         attempts.push({
           provider,
+          ...provenance,
           success: false,
           error: (error as Error).message,
           duration_ms: durationMs,
@@ -419,7 +575,13 @@ export class FanoutEngine {
       }
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
+    throw new AllProvidersFailedError(
+      errors,
+      attempts,
+      secretsUsed,
+      providerHttpErrors,
+      skippedProviders
+    );
   }
 
   /**
@@ -434,9 +596,11 @@ export class FanoutEngine {
     fallbackCompleted?: boolean;
     fallbackProvider?: string;
     errors?: Record<string, string>;
+    skippedProviders: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
+    options = resolveOptionsForIntent("crawl", this.config, options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
@@ -485,7 +649,7 @@ export class FanoutEngine {
       resumeProviders.add(job.provider);
     }
 
-    const { providers: selectedProviders, quotaFallbackProviders } =
+    const { providers: selectedProviders, quotaFallbackProviders, skippedProviders } =
       this.getProvidersForCapability("crawl", options);
     const resumeJobsToPoll = resumePendingJobs.splice(0);
     let completedResumeProvider: string | undefined;
@@ -495,6 +659,7 @@ export class FanoutEngine {
     // own several outstanding jobs for the same URL, and each job must be
     // polled independently even when an earlier one remains pending.
     for (const provider of resumeProviders) {
+      const provenance = this.toolProvenance(provider, "crawl");
       const providerJobs = resumeJobsToPoll.filter((job) => job.provider === provider);
       for (const resumeJob of providerJobs) {
         const start = performance.now();
@@ -514,9 +679,13 @@ export class FanoutEngine {
           keyRef = keyResult.ref;
           if (apiKey) secretsUsed.push(apiKey);
           const results = await adapter.crawl(url, apiKey, {
-            limit: options.limit,
+            ...(options.limitSet === false ? {} : { limit: options.limit }),
             depth: options.depth,
-            providerOptions: this.config.providers[provider]?.options,
+            providerOptions: this.adapterProviderOptions(provider, "crawl", {
+              ...options.commonOptions,
+              ...(options.limitSet === false ? {} : { limit: options.limit }),
+            }),
+            commonOptions: options.commonOptions,
             resumeJobId: resumeJob.jobId,
           });
           assertNormalizedResult("crawl", provider, results);
@@ -554,6 +723,7 @@ export class FanoutEngine {
             });
             attempts.push({
               provider,
+              ...provenance,
               success: false,
               pending: true,
               error: pendingMessage,
@@ -574,6 +744,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: true,
             duration_ms: durationMs,
             key_ref: keyRef,
@@ -607,6 +778,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             error: (error as Error).message,
             duration_ms: durationMs,
@@ -637,6 +809,7 @@ export class FanoutEngine {
           ? { fallbackProvider: options.resumeFallbackProvider }
           : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -651,6 +824,7 @@ export class FanoutEngine {
         provider: completedResumeProvider,
         status: "completed",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -670,6 +844,7 @@ export class FanoutEngine {
         provider: pendingJobs[0]!.provider,
         status: "pending",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -689,6 +864,7 @@ export class FanoutEngine {
       if (providerIndex >= providers.length && !recoveringQuota) break;
 
       const start = performance.now();
+      const provenance = this.toolProvenance(provider, "crawl");
       let keyRef = "none";
       try {
         const adapter = createAdapter(provider);
@@ -708,6 +884,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             error,
             duration_ms: durationMs,
@@ -721,10 +898,15 @@ export class FanoutEngine {
         const apiKey = keyResult.value;
         keyRef = keyResult.ref;
         if (apiKey) secretsUsed.push(apiKey);
+        const translatedCommonOptions = {
+          ...options.commonOptions,
+          ...(options.limitSet === false ? {} : { limit: options.limit }),
+        };
         const results = await adapter.crawl(url, apiKey, {
-          limit: options.limit,
+          ...(options.limitSet === false ? {} : { limit: options.limit }),
           depth: options.depth,
-          providerOptions: this.config.providers[provider]?.options,
+          providerOptions: this.adapterProviderOptions(provider, "crawl", translatedCommonOptions),
+          commonOptions: options.commonOptions,
         });
         // Engine-boundary shape guard (issue #79, PR-C): fail loudly on a
         // malformed adapter normalization rather than caching/rendering it.
@@ -758,6 +940,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             pending: true,
             error: pendingMessage,
@@ -781,6 +964,7 @@ export class FanoutEngine {
         });
         attempts.push({
           provider,
+          ...provenance,
           success: true,
           duration_ms: durationMs,
           key_ref: keyRef,
@@ -800,6 +984,7 @@ export class FanoutEngine {
             ? { fallbackProvider: provider }
             : {}),
           errors: Object.keys(errors).length > 0 ? errors : undefined,
+          skippedProviders,
           attempts,
           secretsUsed,
         };
@@ -824,6 +1009,7 @@ export class FanoutEngine {
         });
         attempts.push({
           provider,
+          ...provenance,
           success: false,
           error: (error as Error).message,
           duration_ms: durationMs,
@@ -861,6 +1047,7 @@ export class FanoutEngine {
             }
           : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -871,6 +1058,7 @@ export class FanoutEngine {
       attempts,
       secretsUsed,
       providerHttpErrors,
+      skippedProviders,
       terminalResumeJobs,
       discardedResumeJobs
     );
@@ -882,7 +1070,7 @@ export class FanoutEngine {
   private async searchProvider(
     provider: string,
     query: string,
-    limit?: number
+    options: FanoutOptions
   ): Promise<ProviderResult> {
     const start = performance.now();
     let keyRef = "none";
@@ -893,10 +1081,28 @@ export class FanoutEngine {
       keyRef = keyResult.ref;
       if (apiKey) resolvedSecret = apiKey;
       const adapter = createAdapter(provider);
-      const results = await adapter.search(query, apiKey, {
-        ...(limit !== undefined ? { limit } : {}),
-        providerOptions: this.config.providers[provider]?.options,
-      });
+      // A default CLI limit caps the merged results without overriding
+      // provider-specific configured counts. An explicit common limit remains
+      // available when the CLI limit was omitted.
+      const providerLimit = options.limitSet === false ? undefined : options.limit;
+      const translatedCommonOptions = {
+        ...options.commonOptions,
+        ...(providerLimit !== undefined ? { limit: providerLimit } : {}),
+      };
+      const callOptions = {
+        ...(providerLimit !== undefined ? { limit: providerLimit } : {}),
+        commonOptions: options.commonOptions,
+        providerOptions: this.adapterProviderOptions(provider, "search", translatedCommonOptions),
+      };
+      let results: NormalizedResult[];
+      if (options.intent === "url-similarity") {
+        if (!adapter.findSimilar) {
+          throw new Error(`Provider '${provider}' does not support URL similarity`);
+        }
+        results = await adapter.findSimilar(query, apiKey, callOptions);
+      } else {
+        results = await adapter.search(query, apiKey, callOptions);
+      }
       // Engine-boundary shape guard (issue #79, PR-C): a malformed adapter
       // normalization throws here (classified as a provider error) instead of
       // propagating garbage into rerank/history.

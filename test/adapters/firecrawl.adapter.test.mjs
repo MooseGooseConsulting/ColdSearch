@@ -47,6 +47,54 @@ test("firecrawl search clamps the provider limit to 1 through 100", async () => 
   }
 });
 
+test("firecrawl content-backed search preserves returned markdown over summaries", async () => {
+  const markdown = `# Article\n\n${"full page content ".repeat(80)}`;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/search": async () =>
+      jsonResponse({
+        success: true,
+        data: {
+          web: [{
+            title: "Article",
+            url: "https://article.example",
+            description: "Short search summary",
+            markdown,
+          }],
+        },
+      }),
+  });
+  try {
+    const results = await new FirecrawlAdapter().search("article", "k", {
+      commonOptions: { includeContent: true },
+    });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].snippet, markdown);
+    assert.ok(results[0].snippet.length > 500);
+  } finally {
+    restore();
+  }
+});
+
+test("firecrawl content-backed search does not return summary-only results", async () => {
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/search": async () =>
+      jsonResponse({
+        success: true,
+        data: { web: [{ url: "https://article.example", description: "Summary only" }] },
+      }),
+  });
+  try {
+    await assert.rejects(
+      new FirecrawlAdapter().search("article", "k", {
+        commonOptions: { includeContent: true },
+      }),
+      /no page markdown for content-backed retrieval/i
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("firecrawl crawl preserves quota rejection during polling instead of treating it as transient", async (t) => {
   const originalSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);

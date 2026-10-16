@@ -7,7 +7,12 @@ import { SearXNGAdapter } from "./adapters/searxng.js";
 import { SerperAdapter } from "./adapters/serper.js";
 import { TavilyAdapter } from "./adapters/tavily.js";
 import { installBrightDataToolProfiles } from "./registry/brightdata-tool-profiles.js";
-import { resolveEligibleTools } from "./registry/tool-profiles.js";
+import {
+  getToolProfile,
+  toolSatisfiesRequirements,
+  wiredToolForProviderCategory,
+} from "./registry/tool-profiles.js";
+import type { SearchIntent } from "./dispatch/intents.js";
 import type { CapabilityName, Config } from "./types.js";
 import type { SearchAdapter } from "./types.js";
 
@@ -102,23 +107,58 @@ export function createRegisteredAdapter(provider: string): SearchAdapter {
   return getProviderMetadata(provider).createAdapter();
 }
 
+/** Validate an explicit provider selection without applying routing strategy. */
+export function validateSelectedProviders(
+  config: Config,
+  capability: CapabilityName,
+  providers: readonly string[]
+): void {
+  for (const provider of providers) {
+    if (!config.providers[provider]) {
+      throw new Error(`Provider '${provider}' is not configured`);
+    }
+    if (!providerSupportsCapability(provider, capability)) {
+      throw new Error(`Provider '${provider}' does not implement capability '${capability}'`);
+    }
+  }
+}
+
+/** No provider survives an intent feature filter; retain exclusions for audit history. */
+export class NoEligibleProviderFeatureError extends Error {
+  readonly category = "unsupported_capability" as const;
+
+  constructor(readonly skippedProviders: Record<string, string>, message: string) {
+    super(message);
+    this.name = "NoEligibleProviderFeatureError";
+  }
+}
+
 /**
  * Shared provider resolution logic used by both CLI dry-run and FanoutEngine.
  * Validates config/capability and applies strategy (all vs random), including
  * the conditional quota-recovery scope for random/single-provider execution.
  *
  * When `requireFeatures` is supplied, routing becomes requirement-aware: the
- * selected providers are narrowed to those whose wired tool for the capability
- * actually sets every requested feature predicate (see
- * `src/registry/tool-profiles.ts`). This prevents picking a provider that
- * "claims the category" but cannot honor the requested feature. The same
- * eligibility filter applies to both initial selection and quota alternatives.
+ * selected providers are narrowed to those whose dispatched tool actually sets
+ * every requested feature predicate (see `src/registry/tool-profiles.ts`). The
+ * wired capability tool is used by default; URL similarity dispatches Exa's
+ * `findSimilar` tool. The same eligibility filter applies to both initial
+ * selection and quota alternatives.
  */
 export function resolveCapabilityProviders(
   config: Config,
   capability: CapabilityName,
-  options: { providers?: string[]; singleProvider?: boolean; requireFeatures?: string[] }
-): { providers: string[]; quotaFallbackProviders?: string[] } {
+  options: {
+    providers?: string[];
+    singleProvider?: boolean;
+    requireFeatures?: string[];
+    intent?: SearchIntent;
+  }
+): {
+  providers: string[];
+  quotaFallbackProviders?: string[];
+  skippedProviders: Record<string, string>;
+} {
   const capConfig = config.capabilities[capability];
   if (!capConfig) {
     throw new Error(`No configuration found for capability: ${capability}`);
@@ -132,25 +172,37 @@ export function resolveCapabilityProviders(
     throw new Error(`No providers configured for ${capability}`);
   }
 
-  for (const provider of selected) {
-    if (!config.providers[provider]) {
-      throw new Error(`Provider '${provider}' is not configured`);
-    }
-    if (!providerSupportsCapability(provider, capability)) {
-      throw new Error(`Provider '${provider}' does not implement capability '${capability}'`);
-    }
-  }
+  validateSelectedProviders(config, capability, selected);
 
   let eligible = selected;
+  const skippedProviders: Record<string, string> = {};
   if (options.requireFeatures && options.requireFeatures.length > 0) {
+    // Eligibility must describe the adapter method dispatched by this call,
+    // not any tool the provider happens to expose in the same category.
+    // Search defaults to the provider's wired search method; URL similarity
+    // explicitly dispatches Exa's findSimilar method.
     const eligibleProviders = new Set(
-      resolveEligibleTools(capability, { requireFeatures: options.requireFeatures }).map(
-        (tool) => tool.provider
-      )
+      selected.filter((provider) => {
+        const tool = options.intent === "url-similarity"
+          ? provider === "exa" && capability === "search"
+            ? getToolProfile("exa.findSimilar")
+            : undefined
+          : wiredToolForProviderCategory(provider, capability);
+        return tool !== undefined && toolSatisfiesRequirements(tool, {
+          requireFeatures: options.requireFeatures,
+        });
+      })
     );
     eligible = selected.filter((provider) => eligibleProviders.has(provider));
+    for (const provider of selected) {
+      if (!eligibleProviders.has(provider)) {
+        skippedProviders[provider] =
+          `does not satisfy required features: [${options.requireFeatures.join(", ")}]`;
+      }
+    }
     if (!eligible.length) {
-      throw new Error(
+      throw new NoEligibleProviderFeatureError(
+        skippedProviders,
         `No '${capability}' provider tool satisfies required features: ` +
           `[${options.requireFeatures.join(", ")}] (from [${selected.join(", ")}])`
       );
@@ -158,12 +210,13 @@ export function resolveCapabilityProviders(
   }
 
   const useSingleProvider = options.singleProvider || capConfig.strategy === "random";
-  if (!useSingleProvider) return { providers: eligible };
+  if (!useSingleProvider) return { providers: eligible, skippedProviders };
 
   const randomIndex = Math.floor(Math.random() * eligible.length);
   const first = eligible[randomIndex];
   return {
     providers: [first],
+    skippedProviders,
     // Keep normal random execution to one provider. Only an account-quota
     // rejection unlocks these alternatives; never leave the eligible scope or
     // revisit the selected provider (including duplicate pool entries).
