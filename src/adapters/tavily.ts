@@ -47,14 +47,6 @@ export class TavilyAdapter implements SearchAdapter {
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
   private readonly baseUrl = "https://api.tavily.com";
 
-  private sanitizeSearchLimit(limit?: number): number {
-    if (typeof limit !== "number" || !Number.isFinite(limit)) {
-      return 10;
-    }
-
-    return Math.min(20, Math.max(1, Math.floor(limit)));
-  }
-
   private sanitizeCrawlLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
       return 10;
@@ -65,11 +57,55 @@ export class TavilyAdapter implements SearchAdapter {
     return Math.max(1, Math.floor(limit));
   }
 
+  /** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+  private clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(value)));
+  }
+
   async search(
     query: string,
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const providerOptions = options?.providerOptions ?? {};
+    const requestedIncludeAnswer = providerOptions.include_answer;
+    const includeAnswerRequested =
+      requestedIncludeAnswer === true ||
+      requestedIncludeAnswer === "basic" ||
+      requestedIncludeAnswer === "advanced";
+    if (includeAnswerRequested) {
+      throw new Error(
+        "Tavily search synthesis cannot be represented in normalized search results; " +
+          "use the Tavily answer tool for include_answer output."
+      );
+    }
+
+    const requestedDepth = providerOptions.search_depth;
+    const searchDepth = ["basic", "advanced", "fast", "ultra-fast"].includes(
+      String(requestedDepth)
+    )
+      ? String(requestedDepth)
+      : "basic";
+
+    const body: Record<string, unknown> = {
+      query,
+      max_results: this.clampIntegerOption(
+        options?.limit ?? providerOptions.max_results,
+        0,
+        20,
+        10
+      ),
+      search_depth: searchDepth,
+      include_answer: false,
+    };
+    if (typeof providerOptions.topic === "string" && providerOptions.topic.trim()) {
+      body.topic = providerOptions.topic.trim();
+    }
+    if (typeof providerOptions.time_range === "string" && providerOptions.time_range.trim()) {
+      body.time_range = providerOptions.time_range.trim();
+    }
+
     const response = await fetchJson<TavilySearchResponse>(
       `${this.baseUrl}/search`,
       {
@@ -78,12 +114,7 @@ export class TavilyAdapter implements SearchAdapter {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          query,
-          search_depth: "basic",
-          include_answer: false,
-          max_results: this.sanitizeSearchLimit(options?.limit),
-        }),
+        body: JSON.stringify(body),
       },
       { label: "Tavily search" }
     );
@@ -104,6 +135,20 @@ export class TavilyAdapter implements SearchAdapter {
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<ExtractResult> {
+    const providerOptions = options?.providerOptions ?? {};
+
+    const body: Record<string, unknown> = {
+      urls: [url],
+      include_images: false,
+    };
+    const format = options?.format ?? providerOptions.format;
+    if (format === "markdown" || format === "text") {
+      body.format = format;
+    }
+    if (providerOptions.extract_depth === "basic" || providerOptions.extract_depth === "advanced") {
+      body.extract_depth = providerOptions.extract_depth;
+    }
+
     const response = await fetchJson<TavilyExtractResponse>(
       `${this.baseUrl}/extract`,
       {
@@ -113,9 +158,13 @@ export class TavilyAdapter implements SearchAdapter {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          urls: [url],
-          include_images: false,
-          format: options?.format ?? "markdown",
+          ...body,
+          format:
+            options?.format === "text" || options?.format === "markdown"
+              ? options.format
+              : providerOptions.format === "text"
+                ? "text"
+                : "markdown",
         }),
       },
       { label: "Tavily extract" }
@@ -151,13 +200,7 @@ export class TavilyAdapter implements SearchAdapter {
     }
 
     const limit = this.sanitizeCrawlLimit(options?.limit);
-    let depth: number | undefined;
-    if (options?.depth !== undefined) {
-      depth = options.depth;
-      if (!Number.isInteger(depth) || depth < 1 || depth > 5) {
-        throw new Error("Tavily crawl depth must be an integer from 1 to 5");
-      }
-    }
+    const depth = options?.depth;
     const normalizedUrl = url.trim();
 
     const response = await fetchJson<TavilyCrawlResponse>(
@@ -174,7 +217,9 @@ export class TavilyAdapter implements SearchAdapter {
           // `max_results` name is silently ignored upstream.
           limit,
           extract_depth: "basic",
-          ...(depth !== undefined ? { max_depth: depth } : {}),
+          ...(depth !== undefined
+            ? { max_depth: this.clampIntegerOption(depth, 1, 5, 1) }
+            : {}),
         }),
       },
       { label: "Tavily crawl", timeoutMs: 120_000 }

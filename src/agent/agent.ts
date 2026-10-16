@@ -267,6 +267,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
         searchFn: async (q: string) => {
           const result = await this.backend.search(q, {
             limit: 5,
+            limitSet: false,
             rerankStrategy: "rrf",
             noCache: this.noCache,
           });

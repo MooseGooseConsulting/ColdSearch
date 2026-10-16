@@ -97,29 +97,97 @@ test("tavily errors on invalid JSON", async () => {
   }
 });
 
-test("tavily crawl validates the supported depth range", async () => {
-  let fetchCalled = false;
+test("tavily crawl clamps depth to the provider range", async () => {
+  const depths = [];
   const restore = installFetchMock({
     "POST https://api.tavily.com/crawl": async ({ init }) => {
-      fetchCalled = true;
-      assert.equal(JSON.parse(init.body).max_depth, 5);
+      depths.push(JSON.parse(init.body).max_depth);
       return jsonResponse({ results: [] });
     },
   });
   try {
     const adapter = new TavilyAdapter();
     await adapter.crawl("https://example.com", "k", { depth: 5 });
-    await assert.rejects(
-      () => adapter.crawl("https://example.com", "k", { depth: 6 }),
-      /integer from 1 to 5/
-    );
-    await assert.rejects(
-      () => adapter.crawl("https://example.com", "k", { depth: 1.5 }),
-      /integer from 1 to 5/
-    );
-    assert.equal(fetchCalled, true, "only valid depths reach the provider");
+    await adapter.crawl("https://example.com", "k", { depth: 6 });
+    await adapter.crawl("https://example.com", "k", { depth: 1.5 });
+    await adapter.crawl("https://example.com", "k", { depth: 0 });
+    assert.deepEqual(depths, [5, 5, 1, 1]);
   } finally {
     restore();
   }
 });
 
+test("tavily search honors providerOptions (max_results clamped, depth/topic/answer/time_range)", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/search": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    const adapter = new TavilyAdapter();
+    // Defaults: unchanged wire contract when nothing is configured.
+    await adapter.search("q", "k");
+    await assert.rejects(
+      () => adapter.search("q", "k", {
+        providerOptions: { include_answer: true },
+      }),
+      /cannot be represented in normalized search results/
+    );
+    await adapter.search("q", "k", {
+      providerOptions: {
+        max_results: 500,
+        search_depth: "advanced",
+        topic: "news",
+        time_range: "week",
+      },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(bodies[0], {
+    query: "q",
+    max_results: 10,
+    search_depth: "basic",
+    include_answer: false,
+  });
+  assert.deepEqual(bodies[1], {
+    query: "q",
+    max_results: 20, // Tavily accepts at most 20 search results
+    search_depth: "advanced",
+    include_answer: false,
+    topic: "news",
+    time_range: "week",
+  });
+});
+
+test("tavily extract honors format and extract_depth only when configured", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/extract": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "T", rawContent: "c" }],
+      });
+    },
+  });
+  try {
+    const adapter = new TavilyAdapter();
+    await adapter.extract("https://x.example", "k");
+    await adapter.extract("https://x.example", "k", {
+      providerOptions: { format: "text", extract_depth: "advanced" },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(bodies[0], {
+    urls: ["https://x.example"],
+    include_images: false,
+    format: "markdown",
+  });
+  assert.equal(bodies[1].format, "text");
+  assert.equal(bodies[1].extract_depth, "advanced");
+});

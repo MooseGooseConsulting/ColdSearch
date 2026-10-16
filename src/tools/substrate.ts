@@ -430,7 +430,6 @@ async function dispatchToolCall(
       if (apiKey) {
         headers["Authorization"] = `Bearer ${apiKey}`;
       }
-      
       const dispatched = jinaDispatch(tool, params);
       if (dispatched.kind === "reader" || dispatched.kind === "search") {
         delete headers["Content-Type"];
@@ -461,6 +460,7 @@ async function dispatchToolCall(
         method = "GET";
         url = dispatched.url;
       } else {
+        method = "POST";
         url = dispatched.url;
         body = JSON.stringify(params);
       }
@@ -657,6 +657,27 @@ const isToolCachePayload = (p: unknown): p is ToolCallResult =>
   typeof (p as ToolCallResult).meta === "object" &&
   Array.isArray((p as ToolCallResult).meta.warnings);
 
+function requestsJinaReplayBypass(
+  provider: string,
+  tool: string,
+  params: Record<string, unknown>
+): boolean {
+  if (provider !== "jina" || tool !== "reader") return false;
+  return Object.entries(params).some(([name, value]) => {
+    const normalizedName = name.toLowerCase();
+    if (
+      normalizedName === "x-no-cache" &&
+      (value === true || (typeof value === "string" && value.trim().toLowerCase() === "true"))
+    ) {
+      return true;
+    }
+    return normalizedName === "x-set-cookie" &&
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== "";
+  });
+}
+
 /**
  * Execute a provider tool call with the PR 2 history/replay behavior:
  *
@@ -688,7 +709,7 @@ export async function executeToolCall(
   }
 
   const cacheEnabled = config.cache?.enabled !== false;
-  const noCache = options?.noCache === true;
+  const noCache = options?.noCache === true || requestsJinaReplayBypass(provider, tool, params);
   const toolTtl = parseDuration(config.cache?.tool_ttl ?? "6h", 21600);
   const effectiveTtl = options?.freshness
     ? parseDuration(options.freshness, toolTtl)

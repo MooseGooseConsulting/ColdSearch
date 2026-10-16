@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { effectiveJinaReturnFormat } from "../adapters/jina.js";
 import { loadConfig } from "../config.js";
 import {
   AllProvidersFailedError,
@@ -8,6 +9,7 @@ import {
 } from "../engine/fanout.js";
 import { CacheStore, type CacheEntryMeta } from "../cache/cache.js";
 import { cacheKey, parseDuration } from "../cache/key.js";
+import { capabilityCacheIdentity } from "../contracts/endpoint-identity.js";
 import { resolveCapabilityProviders } from "../providers.js";
 import { HistoryStore } from "../history/store.js";
 import { redactForPersistence, redactSensitive } from "../history/redact.js";
@@ -85,6 +87,151 @@ function searchProviderLimitIdentity(
         }
       : {}),
   };
+}
+
+/**
+ * Non-secret search filters that reach the provider wire and therefore shape
+ * the returned payload. Mirrors the read sites in each search adapter:
+ * serper (location), brave (safesearch), firecrawl (sources), tavily
+ * (search_depth/topic/time_range), searxng (categories/engines/language/pageno/
+ * time_range/safesearch/theme), exa (type/category/highlights/maxCharacters/
+ * maxAgeHours/includeDomains/excludeDomains), brightdata (zone/searchEngine/
+ * country). Values are normalized the way the adapters normalize them
+ * (trimmed, validated) so the key matches effective requests, not raw config.
+ */
+const SEARCH_FILTER_OPTIONS: Record<string, readonly string[]> = {
+  serper: ["location"],
+  brave: ["safesearch"],
+  firecrawl: ["sources"],
+  tavily: ["search_depth", "topic", "time_range"],
+  searxng: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "theme"],
+  exa: ["searchType", "category", "highlights", "maxCharacters", "maxAgeHours", "includeDomains", "excludeDomains"],
+  brightdata: ["zone", "serpZone", "searchEngine", "searchCountry", "country"],
+};
+
+function normalizeFilterValue(
+  provider: string,
+  key: string,
+  value: unknown,
+  allOptions: Record<string, unknown> = {}
+): unknown {
+  // Mirror the adapter: highlights mode ignores maxCharacters entirely.
+  if (provider === "exa" && key === "maxCharacters" && allOptions.highlights === true) {
+    return undefined;
+  }
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (provider === "brave" && key === "safesearch") {
+      // Match the adapter exactly: only the lowercase enum reaches the wire
+      // (BraveAdapter checks BRAVE_SAFESEARCH_VALUES without case folding).
+      // A case-variant config omits the param, so it must key identically
+      // to an absent value rather than to the corrected lowercase form.
+      return ["off", "moderate", "strict"].includes(trimmed) ? trimmed : undefined;
+    }
+    if (provider === "firecrawl" && key === "sources") {
+      // Key the raw config value, not the sanitized subset: sanitizeSources
+      // throws on invalid entries while a filtered key would silently map
+      // distinct invalid configs to the same entry.
+      if (!Array.isArray(value)) return undefined;
+      return value.length > 0 ? value : undefined;
+    }
+    if (provider === "tavily" && key === "search_depth") {
+      return ["basic", "advanced", "fast", "ultra-fast"].includes(trimmed) ? trimmed : undefined;
+    }
+    return trimmed;
+  }
+  if (typeof value === "number") {
+    if (key === "pageno" || key === "maxCharacters" || key === "maxAgeHours") return value;
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    if (key === "highlights") return value;
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    if (provider === "firecrawl" && key === "sources") {
+      return value.length > 0 ? value : undefined;
+    }
+    if (
+      (provider === "exa" && (key === "includeDomains" || key === "excludeDomains")) ||
+      (provider === "searxng" && (key === "categories" || key === "engines"))
+    ) {
+      return value.length > 0 ? value : undefined;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Cache identity for effective provider search filters (Codex P2 on #83). */
+function searchFilterIdentity(config: Config): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const keys = SEARCH_FILTER_OPTIONS[provider] ?? [];
+      const options = config.providers[provider]?.options ?? {};
+      const filters = Object.fromEntries(
+        keys
+          .map((key) => [key, normalizeFilterValue(provider, key, options[key], options)] as const)
+          .filter(([, v]) => v !== undefined)
+      );
+      return [provider, filters];
+    })
+  );
+}
+
+/** Effective content format for each provider in the default extract pool. */
+function extractProviderFormatIdentity(
+  config: Config,
+  options: FanoutOptions
+): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const providerOptions = config.providers[provider]?.options ?? {};
+      const configuredValue = (name: string): unknown =>
+        Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+      let format: unknown = options.format;
+      if (format === undefined) {
+        if (provider === "jina") {
+          format = effectiveJinaReturnFormat({ providerOptions });
+        } else if (provider === "brightdata") {
+          format = configuredValue("data_format") ?? "markdown";
+        } else if (provider === "tavily") {
+          format = configuredValue("format") ?? "markdown";
+        } else {
+          // Exa and Firecrawl normalize their extract content to Markdown.
+          format = "markdown";
+        }
+      }
+      return [provider, String(format)];
+    })
+  );
+}
+
+/**
+ * Effective Bright Data extract country per provider in the default extract
+ * pool (Codex on #83: country/searchCountry reach the Unlocker wire via
+ * optionalStringOption but were absent from the extract cache key).
+ * Mirrors the adapter precedence: country, then searchCountry, default "us".
+ */
+function brightdataCountryIdentity(config: Config): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers
+      .filter((provider) => provider === "brightdata")
+      .map((provider) => {
+        const providerOptions = config.providers[provider]?.options ?? {};
+        const pick = (name: string): unknown =>
+          Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+        const raw = pick("country") ?? pick("searchcountry");
+        const country =
+          typeof raw === "string" && raw.trim() ? raw.trim() : "us";
+        return [provider, country];
+      })
+  );
 }
 
 /** Shape guards so a malformed cache file is a miss, never a replay crash. */
@@ -270,15 +417,20 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const ttl = this.effectiveTtl(this.searchTtl, options);
     const reranker = options.rerankStrategy ?? "rrf";
 
+    // The key carries config identity (pool, strategy, endpoint material) so
+    // editing the configured pool or an endpoint invalidates stale entries;
+    // per-call provider scoping is excluded by shouldUseCache() instead.
     const key = useCache
       ? cacheKey("search", query, {
           limit: options.limit,
           limitSet: options.limitSet !== false,
           rerankStrategy: reranker,
+          ...capabilityCacheIdentity(this.config, "search"),
           searchProviderLimitIdentity: searchProviderLimitIdentity(
             this.config,
             options.limitSet === false
           ),
+          searchFilterIdentity: searchFilterIdentity(this.config),
         })
       : null;
 
@@ -374,12 +526,54 @@ export class LocalExecutionBackend implements ExecutionBackend {
 
   async extract(url: string, options: FanoutOptions): Promise<ExtractOutcome> {
     this.validateAndRecord("extract", url, options);
-    const useCache = this.shouldUseCache(options);
+    const jinaOptions = this.config.providers.jina?.options ?? {};
+    const jinaIsInDefaultExtractPool =
+      this.config.capabilities.extract?.providers?.includes("jina") ?? false;
+    const hasStatefulJinaHeader = jinaIsInDefaultExtractPool &&
+      Object.entries(jinaOptions).some(([name, value]) => {
+        const normalizedName = name.toLowerCase();
+        if (normalizedName === "x-no-cache") {
+          return value === true ||
+            (typeof value === "string" && value.trim().toLowerCase() === "true");
+        }
+        return normalizedName === "x-set-cookie" &&
+          value !== undefined &&
+          value !== null &&
+          String(value).trim() !== "";
+      });
+    const useCache = this.shouldUseCache(options) && !hasStatefulJinaHeader;
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
+    const effectiveReturnFormat = effectiveJinaReturnFormat({
+      format: options.format,
+      providerOptions: jinaOptions,
+    });
+    const jinaCacheHeaders = Object.fromEntries(
+      Object.entries(jinaOptions)
+        .filter(([name, value]) => {
+          const normalizedName = name.toLowerCase();
+          return normalizedName.startsWith("x-") &&
+            ![
+              "x-return-format",
+              "x-proxy",
+              "x-proxy-url",
+              "x-no-cache",
+              "x-set-cookie",
+            ].includes(normalizedName) &&
+            value !== undefined &&
+            value !== null;
+        })
+        .map(([name, value]) => [name.toLowerCase(), String(value)])
+    );
     const key = useCache
-      ? cacheKey("extract", url, options.format ? { format: options.format } : {})
+      ? cacheKey("extract", url, {
+          ...capabilityCacheIdentity(this.config, "extract"),
+          format: effectiveReturnFormat,
+          providerFormats: extractProviderFormatIdentity(this.config, options),
+          providerHeaders: jinaCacheHeaders,
+          brightdataCountry: brightdataCountryIdentity(this.config),
+        })
       : null;
 
     if (key) {

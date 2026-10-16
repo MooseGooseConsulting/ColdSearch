@@ -111,8 +111,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "directly via `contents`. Category enum current as of 2026-10: company, " +
       "people, publication (replaced research paper), news, personal site, " +
       "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
-      "upstream — `contents.maxAgeHours` (0=always fetch, -1=cache-only) + " +
-      "`contents.livecrawlTimeout` are the migration path.",
+      "upstream. On `/search`, freshness uses `contents.maxAgeHours` " +
+      "(0=always fetch, -1=cache-only) and `contents.livecrawlTimeout`; " +
+      "`/contents` uses top-level `maxAgeHours`.",
     docsUrl: "https://exa.ai/docs/reference/search",
     requiredParams: ["query"],
     optionalParams: [
@@ -703,6 +704,10 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { url: "url", limit: "limit", depth: "maxDiscoveryDepth" },
         unsupportedCommonOptions: [],
         nativeOptionsWithoutCommonEquivalent: ["webhook", "maxConcurrency", "delay", "scrapeOptions"],
+        notes:
+          "The adapter honors a `formats` array from [providers.firecrawl.options] " +
+          "as scrapeOptions.formats (text aliases markdown; values are validated against markdown|html|rawHtml|links|" +
+          "screenshot|json; default [markdown]).",
       },
     ],
     features: { semanticTraversal: false, urlDiscovery: true, integratedContent: true, robotsControl: true },
@@ -940,7 +945,8 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     nativeName: "POST /search",
     categories: ["search"],
     description: "Google web SERP. Search-only vendor surface in ColdSearch today.",
-    docsUrl: "https://serper.dev/docs",
+    // serper.dev/docs 404s; docs live on the homepage demo + login-gated playground.
+    docsUrl: "https://serper.dev",
     requiredParams: ["q"],
     optionalParams: ["gl", "hl", "num", "page", "tbs", "location", "autocorrect"],
     commonViews: [
@@ -1012,7 +1018,6 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "X-With-Images-Summary",
       "X-Set-Cookie",
       "X-With-Generated-Alt",
-      "X-Proxy",
       "X-No-Cache",
       "X-Cache-Tolerance",
       "X-Respond-Timing",
@@ -1034,6 +1039,14 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         semanticFit: "direct",
         mapsCommonOptions: { url: "url" },
         unsupportedCommonOptions: ["javascriptActions", "screenshots"],
+        notes:
+          "The adapter passes through configured [providers.jina.options] " +
+          "keys starting with `X-` as request headers (values stringified; " +
+          "undefined/null skipped), except proxy overrides, which are " +
+          "excluded to prevent changing the network context used to fetch " +
+          "the target URL. The caller's http/https scheme is preserved. " +
+          "Keyless use is supported; a configured key is sent as " +
+          "Authorization: Bearer.",
       },
     ],
     features: { knownUrl: true, keyless: true, javascriptRendering: true },

@@ -37,6 +37,94 @@ function firecrawlScrapeFormat(format?: AdapterCallOptions["format"]): "markdown
   return "markdown";
 }
 
+const FIRECRAWL_FORMATS: readonly string[] = [
+  "markdown",
+  "html",
+  "rawHtml",
+  "rawBase64",
+  "links",
+  "screenshot",
+  "json",
+];
+
+const FIRECRAWL_SOURCES: readonly string[] = ["web", "news", "images"];
+
+interface FirecrawlSearchResult {
+  title?: string;
+  url?: string;
+  imageUrl?: string;
+  image_url?: string;
+  imageURL?: string;
+  sourceURL?: string;
+  description?: string;
+  snippet?: string;
+  markdown?: string;
+  score?: number;
+  metadata?: {
+    title?: string;
+    description?: string;
+    sourceURL?: string;
+  };
+}
+
+/** Validate a configured `formats` array against Firecrawl's supported values. */
+function sanitizeFormats(value: unknown): string[] {
+  if (value === undefined) return ["markdown"];
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Invalid Firecrawl formats: expected an array of ${FIRECRAWL_FORMATS.join(", ")}.`
+    );
+  }
+  const mapped = value.map((entry) => (entry === "text" ? "markdown" : entry));
+  for (const entry of mapped) {
+    if (typeof entry !== "string" || !FIRECRAWL_FORMATS.includes(entry)) {
+      throw new Error(
+        `Invalid Firecrawl format "${String(entry)}". ` +
+          `Supported values: ${FIRECRAWL_FORMATS.join(", ")}.`
+      );
+    }
+  }
+  return mapped.length > 0 ? [...mapped] : ["markdown"];
+}
+
+/** Request Markdown alongside configured formats for the normalized content field. */
+function normalizedTextFormats(value: unknown): string[] {
+  const formats = sanitizeFormats(value);
+  // rawBase64 must be the only requested format (Firecrawl rejects combos);
+  // surfacing it now beats sending a request the API will refuse.
+  if (formats.includes("rawBase64") && formats.length > 1) {
+    throw new Error(
+      'Invalid Firecrawl formats: "rawBase64" must be the only requested format.'
+    );
+  }
+  return formats.includes("markdown") ? formats : [...formats, "markdown"];
+}
+
+/** Validate a configured `sources` array against Firecrawl's supported values. */
+function sanitizeSources(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `Invalid Firecrawl sources: expected an array of ${FIRECRAWL_SOURCES.join(", ")}.`
+    );
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || !FIRECRAWL_SOURCES.includes(entry)) {
+      throw new Error(
+        `Invalid Firecrawl source "${String(entry)}". ` +
+          `Supported values: ${FIRECRAWL_SOURCES.join(", ")}.`
+      );
+    }
+  }
+  return value.length > 0 ? [...value] : undefined;
+}
+
+/** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+function clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 /**
  * Firecrawl adapter.
  * Provides extract (scrape) and crawl capabilities.
@@ -52,21 +140,24 @@ export class FirecrawlAdapter implements SearchAdapter {
     apiKey: string,
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const providerOptions = options?.providerOptions ?? {};
+    const body: Record<string, unknown> = {
+      query,
+      limit: clampIntegerOption(options?.limit ?? providerOptions.limit, 1, 100, 10),
+      scrapeOptions: {
+        formats: ["markdown"],
+      },
+    };
+    const sources = sanitizeSources(providerOptions.sources);
+    if (sources) {
+      body.sources = sources;
+    }
     const data = await fetchJson<{
       success?: boolean;
       data?: {
-        web?: Array<{
-          title?: string;
-          url?: string;
-          description?: string;
-          markdown?: string;
-          score?: number;
-          metadata?: {
-            title?: string;
-            description?: string;
-            sourceURL?: string;
-          };
-        }>;
+        web?: FirecrawlSearchResult[];
+        news?: FirecrawlSearchResult[];
+        images?: FirecrawlSearchResult[];
       };
       error?: string;
     }>(
@@ -77,15 +168,7 @@ export class FirecrawlAdapter implements SearchAdapter {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          query,
-          limit: typeof options?.limit === "number" && Number.isFinite(options.limit)
-            ? Math.min(100, Math.max(1, Math.floor(options.limit)))
-            : 10,
-          scrapeOptions: {
-            formats: ["markdown"],
-          },
-        }),
+        body: JSON.stringify(body),
       },
       { label: "Firecrawl search" }
     );
@@ -94,11 +177,23 @@ export class FirecrawlAdapter implements SearchAdapter {
       throw new Error(`Firecrawl error: ${data.error || "Unknown error"}`);
     }
 
-    const results = data.data?.web || [];
+    const requestedSources = sources ?? ["web"];
+    const results = requestedSources.flatMap((source) => {
+      if (source === "news") return data.data?.news ?? [];
+      if (source === "images") return data.data?.images ?? [];
+      return data.data?.web ?? [];
+    });
     return results.map((result, index) => {
-      const url = result.url || result.metadata?.sourceURL || "";
+      const url =
+        result.url ||
+        result.metadata?.sourceURL ||
+        result.sourceURL ||
+        result.imageUrl ||
+        result.image_url ||
+        result.imageURL ||
+        "";
       const title = result.title || result.metadata?.title || "";
-      const snippetSource = result.description || result.metadata?.description || result.markdown || "";
+      const snippetSource = result.description || result.snippet || result.metadata?.description || result.markdown || "";
       const snippet = snippetSource.length > 500 ? `${snippetSource.slice(0, 497)}...` : snippetSource;
 
       return {
@@ -122,11 +217,16 @@ export class FirecrawlAdapter implements SearchAdapter {
     }
 
     const normalizedUrl = url.trim();
+    const formats =
+      options?.format === undefined || options.format === "markdown"
+        ? normalizedTextFormats(options?.providerOptions?.formats)
+        : [firecrawlScrapeFormat(options.format)];
 
     const data = await fetchJson<{
       success?: boolean;
       data?: {
         markdown?: string;
+        html?: string;
         metadata?: {
           title?: string;
           sourceURL?: string;
@@ -139,9 +239,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-        body: JSON.stringify({
+      body: JSON.stringify({
         url: normalizedUrl,
-        formats: [firecrawlScrapeFormat(options?.format)],
+        formats,
       }),
     }, {
       label: "Firecrawl extract",
@@ -152,7 +252,7 @@ export class FirecrawlAdapter implements SearchAdapter {
     }
 
     return {
-      content: data.data?.markdown || "",
+      content: data.data?.markdown || data.data?.html || "",
       url: data.data?.metadata?.sourceURL || url,
       title: data.data?.metadata?.title || "",
       source: this.name,
@@ -175,6 +275,10 @@ export class FirecrawlAdapter implements SearchAdapter {
       typeof rawLimit === "number" && Number.isFinite(rawLimit)
         ? Math.max(1, Math.floor(rawLimit))
         : 10;
+    const formats =
+      options?.format !== undefined
+        ? [firecrawlScrapeFormat(options.format)]
+        : normalizedTextFormats(options?.providerOptions?.formats);
 
     // Resume an existing batch job when a prior output record retained its
     // handle. Starting another job here would duplicate provider work.
@@ -197,7 +301,7 @@ export class FirecrawlAdapter implements SearchAdapter {
             ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
             : {}),
           scrapeOptions: {
-            formats: ["markdown"],
+            formats,
           },
         }),
       }, {
@@ -222,6 +326,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         status?: "scraping" | "completed" | "failed" | "cancelled";
         data?: Array<{
           markdown?: string;
+          html?: string;
           metadata?: {
             title?: string;
             sourceURL?: string;
@@ -287,7 +392,7 @@ export class FirecrawlAdapter implements SearchAdapter {
         return statusData.data.map((item) => ({
           url: item.metadata?.sourceURL || "",
           title: item.metadata?.title || "",
-          content: item.markdown || "",
+          content: item.markdown || item.html || "",
           status: "completed" as const,
           jobId,
         }));

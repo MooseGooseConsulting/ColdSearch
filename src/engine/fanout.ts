@@ -188,16 +188,14 @@ export class FanoutEngine {
   }> {
     // Get providers to use
     const providers = this.getProvidersForCapability("search", options);
+    // Keep the output cap separate from provider-specific configured counts.
+    // A CLI default of 10 should cap merged results without overriding each
+    // provider's configured upstream count.
+    const providerLimit = options.limitSet === false ? undefined : options.limit;
 
     // Execute searches in parallel
     const results = await Promise.allSettled(
-      providers.map((provider) =>
-        this.searchProvider(
-          provider,
-          query,
-          options.limitSet === false ? undefined : options.limit
-        )
-      )
+      providers.map((provider) => this.searchProvider(provider, query, providerLimit))
     );
 
     // Collect results and errors
@@ -748,8 +746,8 @@ export class FanoutEngine {
       if (apiKey) resolvedSecret = apiKey;
       const adapter = createAdapter(provider);
       const results = await adapter.search(query, apiKey, {
+        ...(limit !== undefined ? { limit } : {}),
         providerOptions: this.config.providers[provider]?.options,
-        limit,
       });
 
       const durationMs = Math.round(performance.now() - start);

@@ -6,6 +6,18 @@ import type {
   AdapterCallOptions,
 } from "../types.js";
 
+/** Resolve the effective Reader format shared by request construction and cache identity. */
+export function effectiveJinaReturnFormat(
+  options?: Pick<AdapterCallOptions, "format" | "providerOptions">
+): string {
+  const configuredFormat = Object.entries(options?.providerOptions ?? {}).find(
+    ([name, value]) =>
+      name.toLowerCase() === "x-return-format" && value !== undefined && value !== null
+  )?.[1];
+
+  return String(options?.format ?? configuredFormat ?? "markdown");
+}
+
 /**
  * Jina AI Reader adapter.
  * Provides simple URL-to-markdown extraction.
@@ -36,12 +48,37 @@ export class JinaAdapter implements SearchAdapter {
       normalizedUrl = `https://${normalizedUrl}`;
     }
 
-    // Keep the caller's scheme. r.jina.ai fetches the URL appended after the host.
+    // Jina AI Reader endpoint - preserve the caller's scheme (http or https)
     const jinaUrl = `https://r.jina.ai/${normalizedUrl}`;
+
     const headers: Record<string, string> = {
+      Accept: "text/plain",
       "X-Return-Format": options?.format ?? "markdown",
     };
-    if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey}`;
+    // Keyless usage stays supported; send the key only when one is configured.
+    if (apiKey?.trim()) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    // Jina's Reader surface is controlled via X-* request headers; pass through
+    // all configured X-* options except X-Return-Format, which uses the same
+    // precedence as the normalized format and cache identity. Proxy overrides
+    // are excluded because they can change the network context used to fetch
+    // the target URL.
+    for (const [key, value] of Object.entries(options?.providerOptions ?? {})) {
+      const normalizedKey = key.toLowerCase();
+      if (
+        !normalizedKey.startsWith("x-") ||
+        normalizedKey === "x-return-format" ||
+        normalizedKey === "x-proxy" ||
+        normalizedKey === "x-proxy-url" ||
+        value === undefined ||
+        value === null
+      ) {
+        continue;
+      }
+      headers[key] = String(value);
+    }
+    headers["X-Return-Format"] = effectiveJinaReturnFormat(options);
 
     const content = await fetchText(jinaUrl, {
       headers,

@@ -39,6 +39,22 @@ export class SearXNGAdapter implements SearchAdapter {
     searchUrl.searchParams.set("q", query);
     searchUrl.searchParams.set("format", "json");
 
+    // Optional SearXNG query params, sent only when configured.
+    const providerOptions = options?.providerOptions ?? {};
+    for (const key of [
+      "categories",
+      "engines",
+      "language",
+      "pageno",
+      "time_range",
+      "safesearch",
+      "theme",
+    ] as const) {
+      const value = providerOptions[key];
+      if (value === undefined || value === null) continue;
+      searchUrl.searchParams.set(key, String(value));
+    }
+
     const data = await fetchJson<{
       results?: Array<{
         title?: string;
