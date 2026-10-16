@@ -3,9 +3,9 @@ import type { CapabilityName } from "../types.js";
 /**
  * Minimal shape contract for the normalized results adapters hand to the
  * engine boundary:
- *   search  → array of items with string { title, url, snippet }
- *   extract → object with string { content } (title optional)
- *   crawl   → array of items with string { url }
+ *   search  → array of items with string { title, url, snippet, source }
+ *   extract → object with string { content, url, source } (title optional)
+ *   crawl   → array of items with string { url, title, content }
  *
  * This deliberately validates only the fields downstream consumers
  * (reranking, history, CLI rendering) dereference unconditionally — it is a
@@ -13,9 +13,9 @@ import type { CapabilityName } from "../types.js";
  * validator.
  */
 const REQUIRED_FIELDS: Record<CapabilityName, string[]> = {
-  search: ["title", "url", "snippet"],
-  extract: ["content"],
-  crawl: ["url"],
+  search: ["title", "url", "snippet", "source"],
+  extract: ["content", "url", "source"],
+  crawl: ["url", "title", "content"],
 };
 
 function isString(value: unknown): value is string {

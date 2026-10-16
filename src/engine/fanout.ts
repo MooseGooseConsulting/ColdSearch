@@ -467,6 +467,7 @@ export class FanoutEngine {
             providerOptions: this.config.providers[provider]?.options,
             resumeJobId: resumeJob.jobId,
           });
+          assertNormalizedResult("crawl", provider, results);
 
           const durationMs = Math.round(performance.now() - start);
           const pendingResults = results.filter((result) => result.status === "pending");
