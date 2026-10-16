@@ -10,7 +10,7 @@ import {
 import { CacheStore, type CacheEntryMeta } from "../cache/cache.js";
 import { cacheKey, parseDuration } from "../cache/key.js";
 import { capabilityCacheIdentity } from "../contracts/endpoint-identity.js";
-import { resolveCapabilityProviders } from "../providers.js";
+import { NoEligibleProviderFeatureError, resolveCapabilityProviders } from "../providers.js";
 import {
   IntentRejectionError,
   resolveOptionsForIntent,
@@ -48,6 +48,7 @@ export type ExtractOutcome = {
   result: ExtractResult | null;
   provider: string;
   errors?: Record<string, string>;
+  skippedProviders?: Record<string, string>;
   warnings?: string[];
 };
 
@@ -59,6 +60,7 @@ export type CrawlOutcome = {
   fallbackCompleted?: boolean;
   fallbackProvider?: string;
   errors?: Record<string, string>;
+  skippedProviders?: Record<string, string>;
   warnings?: string[];
 };
 
@@ -581,7 +583,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
           routing: this.routingInfo(
             "extract",
             options,
-            result.attempts.map((a) => a.provider)
+            result.attempts.map((a) => a.provider),
+            undefined,
+            result.skippedProviders
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -611,6 +615,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
         result: result.result,
         provider: result.provider,
         errors: result.errors,
+        ...(Object.keys(result.skippedProviders).length > 0
+          ? { skippedProviders: result.skippedProviders }
+          : {}),
         warnings,
       };
     } catch (error) {
@@ -641,7 +648,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
           routing: this.routingInfo(
             "crawl",
             options,
-            result.attempts.map((a) => a.provider)
+            result.attempts.map((a) => a.provider),
+            undefined,
+            result.skippedProviders
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -668,6 +677,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
         fallbackCompleted: result.fallbackCompleted,
         fallbackProvider: result.fallbackProvider,
         errors: result.errors,
+        ...(Object.keys(result.skippedProviders).length > 0
+          ? { skippedProviders: result.skippedProviders }
+          : {}),
         warnings,
       };
     } catch (error) {
@@ -687,7 +699,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
   ): ExecutionRecord {
     const allFailed = error instanceof AllProvidersFailedError ? error : null;
     const skippedProviders = allFailed?.skippedProviders ??
-      (error instanceof UnsupportedCommonOptionsError ? error.skippedProviders : undefined);
+      (error instanceof UnsupportedCommonOptionsError || error instanceof NoEligibleProviderFeatureError
+        ? error.skippedProviders
+        : undefined);
     const secrets = allFailed?.secretsUsed ?? [];
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
