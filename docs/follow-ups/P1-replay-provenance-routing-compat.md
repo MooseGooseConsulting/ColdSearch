@@ -38,11 +38,16 @@ or environment fallback. Two gaps remain:
   entries}}, providerOptionsDigest, providerEnvironmentDigest,
   fullKeyDigest}` to the cache entry envelope, plus a parallel
   `toolIdentity: {provider, tool, paramDigest, endpointMaterial}` variant
-  for direct tool calls. `fullKeyDigest` is a one-way hash of the complete
+  for direct tool calls.   `fullKeyDigest` is a one-way hash of the complete
   normalized object passed to `cacheKey()` (not just the
-  `capabilityCacheIdentity()` components), so `cache inspect` need not
-  re-derive the key to explain limit/filter/format/header differences
-  (Codex on #87). For each pooled provider, `endpoints` must represent the
+  `capabilityCacheIdentity()` components). It supports identity comparison
+  only: a digest match proves same-key, a mismatch proves different-key, but
+  neither explains which normalized field differs. Field-level explanations
+  require persisting the sanitized per-call dimensions (limit, limitSet,
+  rerankStrategy, filter identity, format, headers, country) alongside the
+  digest — `cache inspect` renders those dimensions, and falls back to
+  identity comparison when only the digest is present (CodeRabbit on #87).
+  For each pooled provider, `endpoints` must represent the
   exact map returned by `endpointKeyMaterial(config, provider)`, because that
   map is what `capabilityCacheIdentity()` currently adds to the cache key.
   Fixed-host providers therefore record every named entry in their full
