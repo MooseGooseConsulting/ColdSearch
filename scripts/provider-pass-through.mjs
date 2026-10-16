@@ -487,7 +487,11 @@ function rawSchemaShape(value, budget, depth = 0) {
   if (Array.isArray(value)) {
     const items = value.slice(0, 3).map((entry) => rawSchemaShape(entry, budget, depth + 1));
     if (value.length > items.length) budget.truncated = true;
-    return { type: "array", items };
+    return {
+      type: "array",
+      items,
+      ...(value.length > items.length ? { items_truncated: true } : {}),
+    };
   }
   if (typeof value !== "object") return { type: typeof value };
   if (depth >= 5) {
@@ -506,8 +510,13 @@ function rawSchemaShape(value, budget, depth = 0) {
     }
     fields[key] = rawSchemaShape(entry, budget, depth + 1);
   }
-  if (entries.length > Object.keys(fields).length) budget.truncated = true;
-  return { type: "object", fields };
+  const fieldsTruncated = entries.length > Object.keys(fields).length;
+  if (fieldsTruncated) budget.truncated = true;
+  return {
+    type: "object",
+    fields,
+    ...(fieldsTruncated ? { fields_truncated: true } : {}),
+  };
 }
 
 function boundedRawEvidence(raw, target) {
@@ -578,12 +587,14 @@ function trimRawSchemaShape(shape) {
   if (!shape || typeof shape !== "object") return false;
   if (Array.isArray(shape.items) && shape.items.length > 1) {
     shape.items.pop();
+    shape.items_truncated = true;
     return true;
   }
   if (shape.fields && typeof shape.fields === "object") {
     const keys = Object.keys(shape.fields);
     if (keys.length) {
       delete shape.fields[keys.at(-1)];
+      shape.fields_truncated = true;
       return true;
     }
     for (const key of keys) {
@@ -1640,12 +1651,6 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
       continue;
     }
 
-    const coldIncomplete = coldArray.truncated || coldObjects.some(schemaShapeIsTruncated);
-    if (coldIncomplete) {
-      inconclusive = true;
-      continue;
-    }
-
     const nativeShapesByIndex = indexResultArrayShapes(nativeObjects);
     const coldShapesByIndex = indexResultArrayShapes(coldObjects);
     const nativeItemsByIndex = indexToolItemsByRawResult(nativeItems, name);
@@ -1679,7 +1684,13 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
 
       const [coldIndex] = matchedColdEntry;
       const actual = coldShapesByIndex.get(coldIndex);
-      if (!actual) return false;
+      if (!actual) {
+        if (coldArray.truncated) {
+          inconclusive = true;
+          continue;
+        }
+        return false;
+      }
       if (schemaShapeIsTruncated(actual)) {
         inconclusive = true;
         continue;
@@ -1688,6 +1699,9 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
     }
 
     if (nativeArray.truncated || nativeObjects.some(schemaShapeIsTruncated)) {
+      inconclusive = true;
+    }
+    if (coldArray.truncated || coldObjects.some(schemaShapeIsTruncated)) {
       inconclusive = true;
     }
   }
@@ -1719,7 +1733,7 @@ function indexToolItemsByRawResult(items, arrayName) {
 
 function schemaShapeIsTruncated(shape) {
   if (!shape || shape.type === "truncated") return true;
-  if (shape.fields_truncated) return true;
+  if (shape.fields_truncated || shape.items_truncated) return true;
   return Boolean(
     (shape.fields && Object.values(shape.fields).some(schemaShapeIsTruncated)) ||
     (shape.items && shape.items.some(schemaShapeIsTruncated))

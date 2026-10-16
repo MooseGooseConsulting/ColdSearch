@@ -1149,6 +1149,55 @@ test("a complete missing native result shape fails despite unrelated native trun
   );
 });
 
+test("a complete matched result mismatch fails despite an unrelated truncated ColdSearch row", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const wideFields = Object.fromEntries(Array.from({ length: 45 }, (_, index) => [
+    `wide${String(index).padStart(2, "0")}`,
+    "value",
+  ]));
+  const makeResult = (catalogued, results) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { query: { original: "query" }, web: { results } },
+  });
+  const native = makeResult(false, [{
+    title: "Matched result",
+    url: "https://matched.example",
+    description: "same snippet",
+    profile: { name: "provider profile" },
+  }]);
+  const cold = makeResult(true, [
+    {
+      title: "Matched result",
+      url: "https://matched.example",
+      description: "same snippet",
+    },
+    {
+      title: "Unrelated wide result",
+      url: "https://wide.example",
+      description: "same snippet",
+      ...wideFields,
+    },
+  ]);
+
+  assert.equal(cold.raw_sample.result_array_schemas.results.truncated, true);
+  assert.equal(
+    cold.raw_sample.result_array_schemas.results.items.some((shape) => shape.result_indexes.includes(0)),
+    true
+  );
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
+    ).pass,
+    false
+  );
+});
+
 test("raw provider id and status values are omitted from schema-only evidence", () => {
   const secret = "short-provider-key";
   const previous = process.env.EXA_API_KEY;
