@@ -1018,7 +1018,6 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       "X-With-Images-Summary",
       "X-Set-Cookie",
       "X-With-Generated-Alt",
-      "X-Proxy",
       "X-No-Cache",
       "X-Cache-Tolerance",
       "X-Respond-Timing",
@@ -1041,10 +1040,12 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { url: "url" },
         unsupportedCommonOptions: ["javascriptActions", "screenshots"],
         notes:
-          "The adapter passes through any [providers.jina.options] key " +
-          "starting with `X-` as a request header (values stringified, " +
-          "undefined/null skipped) and preserves the caller's http/https " +
-          "scheme. Keyless use is supported; a configured key is sent as " +
+          "The adapter passes through configured [providers.jina.options] " +
+          "keys starting with `X-` as request headers (values stringified; " +
+          "undefined/null skipped), except proxy overrides, which are " +
+          "excluded to prevent changing the network context used to fetch " +
+          "the target URL. The caller's http/https scheme is preserved. " +
+          "Keyless use is supported; a configured key is sent as " +
           "Authorization: Bearer.",
       },
     ],

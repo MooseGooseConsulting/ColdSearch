@@ -61,11 +61,16 @@ export class JinaAdapter implements SearchAdapter {
     }
     // Jina's Reader surface is controlled via X-* request headers; pass through
     // all configured X-* options except X-Return-Format, which uses the same
-    // precedence as the normalized format and cache identity.
+    // precedence as the normalized format and cache identity. Proxy overrides
+    // are excluded because they can change the network context used to fetch
+    // the target URL.
     for (const [key, value] of Object.entries(options?.providerOptions ?? {})) {
+      const normalizedKey = key.toLowerCase();
       if (
-        !key.toLowerCase().startsWith("x-") ||
-        key.toLowerCase() === "x-return-format" ||
+        !normalizedKey.startsWith("x-") ||
+        normalizedKey === "x-return-format" ||
+        normalizedKey === "x-proxy" ||
+        normalizedKey === "x-proxy-url" ||
         value === undefined ||
         value === null
       ) {

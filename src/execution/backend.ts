@@ -437,7 +437,13 @@ export class LocalExecutionBackend implements ExecutionBackend {
         .filter(([name, value]) => {
           const normalizedName = name.toLowerCase();
           return normalizedName.startsWith("x-") &&
-            !["x-return-format", "x-no-cache", "x-set-cookie"].includes(normalizedName) &&
+            ![
+              "x-return-format",
+              "x-proxy",
+              "x-proxy-url",
+              "x-no-cache",
+              "x-set-cookie",
+            ].includes(normalizedName) &&
             value !== undefined &&
             value !== null;
         })
