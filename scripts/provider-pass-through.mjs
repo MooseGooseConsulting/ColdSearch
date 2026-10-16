@@ -503,19 +503,23 @@ function rawSchemaShape(value, budget, depth = 0) {
     .filter(([key]) => !SENSITIVE_FIELD_PATTERN.test(key) && /^[A-Za-z0-9_-]{1,64}$/.test(key))
     .sort(([left], [right]) => left.localeCompare(right));
   const fields = {};
+  let lastCapturedField = null;
   for (const [key, entry] of entries.slice(0, 40)) {
     if (budget.remaining <= 0) {
       budget.truncated = true;
       break;
     }
     fields[key] = rawSchemaShape(entry, budget, depth + 1);
+    lastCapturedField = key;
   }
   const fieldsTruncated = entries.length > Object.keys(fields).length;
   if (fieldsTruncated) budget.truncated = true;
   return {
     type: "object",
     fields,
-    ...(fieldsTruncated ? { fields_truncated: true } : {}),
+    ...(fieldsTruncated
+      ? { fields_truncated: true, fields_truncated_after: lastCapturedField }
+      : {}),
   };
 }
 
@@ -591,10 +595,11 @@ function trimRawSchemaShape(shape) {
     return true;
   }
   if (shape.fields && typeof shape.fields === "object") {
-    const keys = Object.keys(shape.fields);
+    const keys = Object.keys(shape.fields).sort((left, right) => left.localeCompare(right));
     if (keys.length) {
       delete shape.fields[keys.at(-1)];
       shape.fields_truncated = true;
+      shape.fields_truncated_after = keys.at(-2) ?? null;
       return true;
     }
     for (const key of keys) {
@@ -1661,6 +1666,7 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
       continue;
     }
 
+    const consumedColdIndexes = new Set();
     for (const [nativeIndex, expected] of nativeShapesByIndex) {
       const nativeItem = nativeItemsByIndex.get(nativeIndex);
       if (!nativeItem) {
@@ -1668,26 +1674,33 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
         continue;
       }
 
-      const matchedColdEntry = [...coldItemsByIndex.entries()].find(([, candidate]) =>
-        findMatchingToolItem(nativeItem, [candidate])
-      );
-      if (!matchedColdEntry) {
+      const matchedColdEntries = [...coldItemsByIndex.entries()]
+        .filter(([coldIndex, candidate]) =>
+          !consumedColdIndexes.has(coldIndex) && findMatchingToolItem(nativeItem, [candidate])
+        )
+        .map(([coldIndex]) => {
+          const actual = coldShapesByIndex.get(coldIndex);
+          const comparison = actual
+            ? compareCapturedSchemaShape(expected, actual)
+            : coldArray.truncated ? null : false;
+          const exactShape = actual && rawResultShapeSignature(expected) === rawResultShapeSignature(actual);
+          const preference = comparison === true
+            ? (exactShape ? 0 : 1)
+            : comparison === null
+              ? (exactShape ? 2 : 3)
+              : (exactShape ? 4 : 5);
+          return { coldIndex, comparison, preference };
+        })
+        .sort((left, right) => left.preference - right.preference || left.coldIndex - right.coldIndex);
+      if (!matchedColdEntries.length) {
         // An unmatched provider result is live variance, not evidence that
         // ColdSearch dropped its provider-specific fields.
         inconclusive = true;
         continue;
       }
 
-      const [coldIndex] = matchedColdEntry;
-      const actual = coldShapesByIndex.get(coldIndex);
-      if (!actual) {
-        if (coldArray.truncated) {
-          inconclusive = true;
-          continue;
-        }
-        return false;
-      }
-      const shapeComparison = compareCapturedSchemaShape(expected, actual);
+      const { coldIndex, comparison: shapeComparison } = matchedColdEntries[0];
+      consumedColdIndexes.add(coldIndex);
       if (shapeComparison === false) return false;
       if (shapeComparison === null) inconclusive = true;
     }
@@ -1707,7 +1720,7 @@ function indexResultArrayShapes(shapes) {
   for (const shape of shapes || []) {
     for (const index of shape.result_indexes || []) indexed.set(index, shape);
   }
-  return indexed;
+  return new Map([...indexed].sort(([left], [right]) => left - right));
 }
 
 function indexToolItemsByRawResult(items, arrayName) {
@@ -1756,6 +1769,8 @@ function compareCapturedSchemaShape(expected, actual) {
       const actualField = actualFields[key];
       if (!actualField) {
         if (actual.fields_truncated) {
+          const cutoff = actual.fields_truncated_after;
+          if (typeof cutoff === "string" && key.localeCompare(cutoff) <= 0) return false;
           inconclusive = true;
           continue;
         }
@@ -1794,6 +1809,12 @@ function compareCapturedSchemaShape(expected, actual) {
   }
 
   return inconclusive ? null : true;
+}
+
+function rawResultShapeSignature(shape) {
+  const schema = { ...shape };
+  delete schema.result_indexes;
+  return JSON.stringify(schema);
 }
 
 function schemaShapeContains(expected, actual) {
