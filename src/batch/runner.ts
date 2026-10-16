@@ -201,6 +201,7 @@ export class LocalBatchExecutor implements BatchExecutor {
       limit: record.limit ?? DEFAULT_BATCH_LIMIT,
       format: record.format,
       depth: record.depth,
+      limitSet: record.limit !== undefined,
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,
