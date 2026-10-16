@@ -7,10 +7,20 @@
 
 Cache keys include the configured pool, strategy, each pooled provider's
 endpoint-key material, provider-option, and provider-environment identity
-(PR-C), and attempts carry tool/nativeName/executionMode (PR-D). For fixed-host
-providers, endpoint-key material is the full `BUILTIN_ENDPOINTS[provider]`
-map, including entries unrelated to the current capability; SearXNG instead
-uses its selected configured base URL or environment fallback. Two gaps remain:
+(PR-C), plus per-call material outside `capabilityCacheIdentity()`: search
+keys add limit, limitSet, rerankStrategy, `searchProviderLimitIdentity()`,
+and `searchFilterIdentity()`; extract keys add format, `extractProviderFormatIdentity()`,
+provider headers, and Bright Data country (Codex on #87). Attempts carry
+provider, tool, and timing (PR-D); they do not carry nativeName or
+executionMode — adding those fields is part of this proposal, not a current
+baseline (Codex on #87). Direct tool calls (substrate) build identity from
+tool ID, sanitized parameters, and endpoint material with no pool/strategy;
+a tool-specific identity variant (provider/tool, parameter digest, endpoint
+material) is required alongside the capability variant (Codex on #87). For
+fixed-host providers, endpoint-key material is the full
+`BUILTIN_ENDPOINTS[provider]` map, including entries unrelated to the
+current capability; SearXNG instead uses its selected configured base URL
+or environment fallback. Two gaps remain:
 
 1. **Pre-PR-C entries** were written under route-blind keys. After upgrade,
    they simply never hit (keys differ) — silently cold cache, no migration
@@ -25,8 +35,14 @@ uses its selected configured base URL or environment fallback. Two gaps remain:
 ## Proposal
 
 - Add `cacheIdentity: {pool, strategy, endpoints: {provider: {materialDigest,
-  entries}}, providerOptionsDigest, providerEnvironmentDigest}` to the cache
-  entry envelope. For each pooled provider, `endpoints` must represent the
+  entries}}, providerOptionsDigest, providerEnvironmentDigest,
+  fullKeyDigest}` to the cache entry envelope, plus a parallel
+  `toolIdentity: {provider, tool, paramDigest, endpointMaterial}` variant
+  for direct tool calls. `fullKeyDigest` is a one-way hash of the complete
+  normalized object passed to `cacheKey()` (not just the
+  `capabilityCacheIdentity()` components), so `cache inspect` need not
+  re-derive the key to explain limit/filter/format/header differences
+  (Codex on #87). For each pooled provider, `endpoints` must represent the
   exact map returned by `endpointKeyMaterial(config, provider)`, because that
   map is what `capabilityCacheIdentity()` currently adds to the cache key.
   Fixed-host providers therefore record every named entry in their full
@@ -52,8 +68,11 @@ uses its selected configured base URL or environment fallback. Two gaps remain:
 
 - [ ] Cache entry envelope stores sanitized cache identity, including the
       exact endpoint-key material map for every pooled provider, result-
-      affecting provider options, and environment-derived routing inputs, on
-      write.
+      affecting provider options, environment-derived routing inputs, and a
+      `fullKeyDigest` of the complete normalized key object, on write; direct
+      tool calls store the `toolIdentity` variant.
+- [ ] Attempts gain nativeName/executionMode provenance fields (prerequisite
+      for the replay baseline; not present in current `ProviderAttempt`).
 - [ ] `cache inspect` renders identity + origin execution id.
 - [ ] Upgrade note explains that pre-2026-10 entries are invisible to the new
       keys and require `coldsearch cache clear` for cleanup.
