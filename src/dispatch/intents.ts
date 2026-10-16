@@ -139,9 +139,9 @@ export interface IntentResolution {
   /** Provider used by a native-only intent, when the intent requires one. */
   nativeOnlyProvider?: string;
   requireFeatures?: string[];
-  /** Wired/direct tools, sorted direct > partial > derived > not-recommended. */
+  /** Wired normalized tools, sorted direct > partial > derived > not-recommended. */
   eligible: IntentEligibility[];
-  /** Documented but unwired tools (status available/deferred). */
+  /** Tools without a wired normalized path (direct substrate or available/deferred). */
   documentedOnly: IntentEligibility[];
   /** The effective provider pool, using a CLI override when supplied. */
   configuredProviders: string[];
@@ -203,9 +203,10 @@ export function resolveIntent(
       ...(def.deprecation ? { deprecation: def.deprecation } : {}),
     };
 
-    // Only wired (adapter-backed) and direct (substrate-callable) tools are
-    // executable; available/deferred profiles are documentation, not routing.
-    if (profile.status === "wired" || profile.status === "direct") {
+    // Intent routing feeds the normalized capability engine, which dispatches
+    // only adapter-backed tools. Direct profiles remain callable through the
+    // substrate, but cannot back normalized intent routing.
+    if (profile.status === "wired") {
       eligible.push(entry);
     } else {
       documentedOnly.push(entry);
@@ -260,7 +261,7 @@ export class IntentRejectionError extends Error {
   constructor(readonly rejection: IntentRejection) {
     const documented =
       rejection.documentedOnly.length > 0
-        ? ` Documented but unwired: ${rejection.documentedOnly.join(", ")}.`
+        ? ` Registry tools without a wired normalized path: ${rejection.documentedOnly.join(", ")}.`
         : "";
     super(
       `Intent '${rejection.intent}' is not routable (${rejection.reason}).${documented}`
@@ -273,7 +274,7 @@ export class IntentRejectionError extends Error {
  * Reject an intent resolution that cannot be executed. Throws
  * IntentRejectionError; returns the resolution unchanged when routable.
  *
- * A resolution is unroutable when no eligible wired/direct tool exists, or
+ * A resolution is unroutable when no eligible wired tool exists, or
  * when the category is configured but none of the configured providers can
  * back the intent. An unconfigured category (e.g. map/answer/research have no
  * CLI command today) is resolution-only: it rejects only on eligibility
