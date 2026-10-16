@@ -247,14 +247,19 @@ export function buildBatchPlan(
         // retries when --retry-errors is set.
         const latest = existing[existing.length - 1];
         const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
-        const pendingJobsForRequest =
-          requestedUrl !== undefined && latest?.status === "pending"
-            ? latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl)
-            : undefined;
-        const pendingPagesMatchRequest =
+        const pendingRecordMatchesRequest =
           requestedUrl !== undefined &&
           latest?.status === "pending" &&
           latest.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
+        let pendingJobsForRequest: PendingCrawlJob[] | undefined;
+        if (requestedUrl !== undefined && latest?.status === "pending") {
+          // The persisted job URL may have been redacted. The fingerprint
+          // binds this record to the request, so rebind its jobs to the
+          // current input URL before FanoutEngine validates them.
+          pendingJobsForRequest = pendingRecordMatchesRequest
+            ? latest.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
+            : latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
+        }
         plan.push({
           record,
           action: "execute",
@@ -263,7 +268,7 @@ export function buildBatchPlan(
                 ...(pendingJobsForRequest?.length
                   ? { resumePendingJobs: pendingJobsForRequest }
                   : {}),
-                ...(pendingPagesMatchRequest && latest.completedResults?.length
+                ...(pendingRecordMatchesRequest && latest.completedResults?.length
                   ? { resumeCompletedResults: latest.completedResults }
                   : {}),
               }
