@@ -13,6 +13,7 @@ interface TavilySearchResponse {
     title?: string;
     url?: string;
     content?: string;
+    raw_content?: string;
     score?: number;
   }>;
 }
@@ -99,6 +100,15 @@ export class TavilyAdapter implements SearchAdapter {
       search_depth: searchDepth,
       include_answer: false,
     };
+    if (options?.commonOptions?.includeContent) {
+      body.include_raw_content = "markdown";
+    }
+    if (Array.isArray(providerOptions.include_domains) && providerOptions.include_domains.length) {
+      body.include_domains = providerOptions.include_domains;
+    }
+    if (Array.isArray(providerOptions.exclude_domains) && providerOptions.exclude_domains.length) {
+      body.exclude_domains = providerOptions.exclude_domains;
+    }
     if (typeof providerOptions.topic === "string" && providerOptions.topic.trim()) {
       body.topic = providerOptions.topic.trim();
     }
@@ -119,15 +129,26 @@ export class TavilyAdapter implements SearchAdapter {
       { label: "Tavily search" }
     );
 
-    // Normalize Tavily results to the shared schema
-    return (response.results || []).map((result, index) => ({
-      title: result.title || "",
-      url: result.url || "",
-      snippet: result.content || "",
-      // Tavily scores are 0-1, higher is better
-      score: result.score ?? Math.max(0.1, 1 - index * 0.1),
-      source: this.name,
-    }));
+    // Normalize Tavily results to the shared schema. Content-backed retrieval
+    // promises page text; a summary in `content` is not an acceptable fallback.
+    const results = response.results || [];
+    const includeContent = options?.commonOptions?.includeContent === true;
+    const normalized = results.flatMap((result, index) => {
+      const rawContent = result.raw_content;
+      if (includeContent && !rawContent?.trim()) return [];
+      return [{
+        title: result.title || "",
+        url: result.url || "",
+        snippet: includeContent ? rawContent! : rawContent || result.content || "",
+        // Tavily scores are 0-1, higher is better
+        score: result.score ?? Math.max(0.1, 1 - index * 0.1),
+        source: this.name,
+      }];
+    });
+    if (includeContent && results.length > 0 && normalized.length === 0) {
+      throw new Error("Tavily returned no page raw content for content-backed retrieval");
+    }
+    return normalized;
   }
 
   async extract(

@@ -18,6 +18,20 @@ import {
   providerToolProfiles,
 } from "./registry/tool-profiles.js";
 import { executeToolCall } from "./tools/substrate.js";
+import {
+  INTENT_DEFS,
+  IntentRejectionError,
+  isSearchIntent,
+  listSearchIntents,
+  rejectIntent,
+  resolveIntent,
+  type IntentResolution,
+  type SearchIntent,
+} from "./dispatch/intents.js";
+import {
+  filterProvidersByCommonOptions,
+  UnsupportedCommonOptionsError,
+} from "./dispatch/translate.js";
 import { runBatch } from "./batch/runner.js";
 import { getKeyReference } from "./logging/usage.js";
 import { HistoryStore } from "./history/store.js";
@@ -62,6 +76,10 @@ interface ExtendedCLIOptions extends CLIOptions {
   maxSources?: number;
   /** Resolve plan without making network calls */
   dryRun?: boolean;
+  /** Intent backing the capability command (issue #79); defaults per command */
+  intent?: SearchIntent;
+  /** Provider date filter for search (distinct from --freshness cache TTL) */
+  timeRange?: string;
   /** Bypass the read-through result cache */
   noCache?: boolean;
   /** Per-invocation cache TTL override (e.g. "30m"); wins for this invocation only */
@@ -97,6 +115,8 @@ interface ExtendedCLIOptions extends CLIOptions {
     sub: "init" | "doctor";
   };
 }
+
+const TIME_RANGE_VALUES = ["day", "week", "month", "year"] as const;
 
 /**
  * Parse command line arguments into CLIOptions.
@@ -269,6 +289,35 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
 
       case "--dry-run":
         options.dryRun = true;
+        break;
+
+      case "--intent":
+        i++;
+        const intentId = args[i];
+        if (!intentId || intentId.startsWith("-")) {
+          throw new Error(`--intent requires an intent id. Supported: ${listSearchIntents().join(", ")}`);
+        }
+        if (!isSearchIntent(intentId)) {
+          throw new Error(
+            `Invalid intent: ${intentId}. Supported: ${listSearchIntents().join(", ")}`
+          );
+        }
+        options.intent = intentId;
+        break;
+
+      case "--time-range":
+        i++;
+        if (!args[i] || args[i].startsWith("-")) {
+          throw new Error(
+            `--time-range requires a value (provider date filter, e.g. day|week|month|year), got ${args[i] ?? "(none)"}`
+          );
+        }
+        if (!(TIME_RANGE_VALUES as readonly string[]).includes(args[i])) {
+          throw new Error(
+            `Invalid time range: ${args[i]}. Supported values: ${TIME_RANGE_VALUES.join(", ")}.`
+          );
+        }
+        options.timeRange = args[i];
         break;
 
       case "--no-cache":
@@ -461,6 +510,20 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
     }
   }
 
+  const nonCapabilitySurface =
+    options.toolCommand || options.historyCommand || options.cacheCommand ||
+    options.configCommand || options.batch || options.status || options.agent;
+  if (options.intent && nonCapabilitySurface) {
+    throw new Error("--intent is only valid with search, extract, or crawl");
+  }
+  if (options.timeRange) {
+    // The provider date filter is search-only and distinct from --freshness
+    // (which is a cache TTL override, not an upstream filter).
+    if (nonCapabilitySurface || options.command !== "search") {
+      throw new Error("--time-range is only valid with search");
+    }
+  }
+
   return options;
 }
 
@@ -501,6 +564,13 @@ Options:
   Fanout Options (default mode):
     --providers LIST     Comma-separated providers (default: all configured)
     --rerank STRATEGY    Reranker: rrf|score|none (default: rrf)
+    --intent ID          Intent behind the command; unroutable intents are
+                         rejected before any provider call.
+                         search: web-link-search|content-backed-retrieval|url-similarity
+                         extract: known-url-extraction|structured-extraction
+                         crawl: crawl
+    --time-range VALUE   Provider date filter for search, e.g. day|week|month|year
+                         (honored by tavily/searxng; distinct from --freshness)
     
   Agent Options (requires --agent):
     --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai|isoquant (default: isoquant)
@@ -575,6 +645,55 @@ Examples:
 `);
 }
 
+/** Default intent behind each capability command when --intent is absent. */
+const DEFAULT_COMMAND_INTENTS: Record<"search" | "extract" | "crawl", SearchIntent> = {
+  search: "web-link-search",
+  extract: "known-url-extraction",
+  crawl: "crawl",
+};
+
+/**
+ * Resolve the intent behind a capability command and reject unroutable ones
+ * BEFORE any network call. An explicit --intent must back the command's
+ * category (e.g. `extract --intent web-link-search` is a config error).
+ */
+function resolveCommandIntent(
+  command: "search" | "extract" | "crawl",
+  options: ExtendedCLIOptions,
+  config: Config
+): IntentResolution {
+  const intent = options.intent ?? DEFAULT_COMMAND_INTENTS[command];
+  const category = INTENT_DEFS[intent].category;
+  if (category !== command) {
+    throw new Error(
+      `Invalid intent for '${command}': '${intent}' backs the '${category}' category. ` +
+        `Intents for '${command}': ${listSearchIntents()
+          .filter((id) => INTENT_DEFS[id].category === command)
+          .join(", ")}.`
+    );
+  }
+  return rejectIntent(resolveIntent(intent, config, options.providers));
+}
+
+/** Render intent-level notices: upstream deprecations; eligibility on debug. */
+function renderIntentNotes(resolution: IntentResolution): void {
+  for (const entry of resolution.eligible) {
+    if (entry.deprecation) {
+      console.error(
+        `Note: intent '${resolution.intent}' resolves to ${entry.id} (${entry.nativeName}) — ${entry.deprecation}`
+      );
+    }
+  }
+  if (process.env.COLDSEARCH_DEBUG) {
+    console.error(
+      `Debug: intent '${resolution.intent}' eligible tools: ` +
+        (resolution.eligible
+          .map((entry) => `${entry.id} (${entry.semanticFit ?? "no-view"}, ${entry.executionMode})`)
+          .join(", ") || "(none)")
+    );
+  }
+}
+
 /**
  * Label CLI JSON mode field from what actually ran (not just --single-provider flag).
  */
@@ -615,15 +734,55 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  // Intent-aware dispatch (issue #79): resolve + reject before any dispatch.
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("search", options, config);
+  } catch (error) {
+    if (error instanceof IntentRejectionError) {
+      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.search;
+      const warnings = backend.recordIntentRejection("search", options.query, {
+        limit: options.limit,
+        providers: options.providers,
+        rerankStrategy: options.rerank,
+        singleProvider: options.singleProvider,
+        noCache: options.noCache,
+        freshness: options.freshness,
+        intent,
+        requireFeatures: INTENT_DEFS[intent].requireFeatures,
+        commonOptions: {
+          ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+          ...(intent === "content-backed-retrieval" ? { includeContent: true } : {}),
+        },
+      }, error);
+      for (const warning of warnings) console.error(`Warning: ${warning}`);
+    }
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.search(options.query, {
     limit: options.limit,
     limitSet: options.limitSet === true,
-    providers: options.providers,
+    providers: intentResolution.nativeOnlyProvider
+      ? intentResolution.routedProviders
+      : options.providers,
     rerankStrategy: options.rerank,
     singleProvider: options.singleProvider,
     noCache: options.noCache,
     freshness: options.freshness,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
+    ...(options.timeRange || intentResolution.intent === "content-backed-retrieval"
+      ? {
+          commonOptions: {
+            ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+            ...(intentResolution.intent === "content-backed-retrieval"
+              ? { includeContent: true }
+              : {}),
+          },
+        }
+      : {}),
   });
 
   for (const warning of result.warnings ?? []) {
@@ -639,10 +798,12 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
     ),
     command: "search",
     query: options.query,
+    intent: intentResolution.intent,
     results: result.results,
     providers_used: result.providersUsed,
     total: result.results.length,
     errors: Object.keys(result.errors).length > 0 ? result.errors : undefined,
+    skipped_providers: result.skippedProviders,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
   };
 
@@ -661,6 +822,26 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("extract", options, config);
+  } catch (error) {
+    if (error instanceof IntentRejectionError) {
+      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.extract;
+      const warnings = backend.recordIntentRejection("extract", options.query, {
+        limit: options.limit,
+        providers: options.providers,
+        singleProvider: options.singleProvider,
+        noCache: options.noCache,
+        freshness: options.freshness,
+        intent,
+        requireFeatures: INTENT_DEFS[intent].requireFeatures,
+      }, error);
+      for (const warning of warnings) console.error(`Warning: ${warning}`);
+    }
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.extract(options.query, {
     limit: options.limit,
@@ -669,6 +850,8 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     noCache: options.noCache,
     freshness: options.freshness,
     format: options.format,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
   });
 
   for (const warning of result.warnings ?? []) {
@@ -679,6 +862,7 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     mode: describeCliOutputMode(config, "extract", options, 1),
     command: "extract",
     url: options.query,
+    intent: intentResolution.intent,
     result: result.result,
     provider: result.provider,
     errors: result.errors ? result.errors : undefined,
@@ -710,12 +894,34 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("crawl", options, config);
+  } catch (error) {
+    if (error instanceof IntentRejectionError) {
+      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.crawl;
+      const warnings = backend.recordIntentRejection("crawl", options.query, {
+        limit: options.limit,
+        providers: options.providers,
+        singleProvider: options.singleProvider,
+        noCache: options.noCache,
+        freshness: options.freshness,
+        intent,
+        requireFeatures: INTENT_DEFS[intent].requireFeatures,
+      }, error);
+      for (const warning of warnings) console.error(`Warning: ${warning}`);
+    }
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.crawl(options.query, {
     limit: options.limit,
     depth: options.depth,
     providers: options.providers,
     singleProvider: options.singleProvider,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
   });
 
   for (const warning of result.warnings ?? []) {
@@ -733,6 +939,7 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     mode: describeCliOutputMode(config, "crawl", options, 1),
     command: "crawl",
     url: options.query,
+    intent: intentResolution.intent,
     results: result.results,
     pendingJobs: result.pendingJobs,
     provider: result.provider,
@@ -787,18 +994,65 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   console.log(formatOutput(output, options));
 }
 
-function resolveProviderList(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
+function resolveProviderList(
+  capability: "search" | "extract" | "crawl",
+  options: ExtendedCLIOptions,
+  requireFeatures?: string[],
+  commonOptions?: { timeRange?: string; includeContent?: boolean }
+) {
   const config = loadConfig(options.config);
-  const { providers: selected, quotaFallbackProviders } = resolveCapabilityProviders(
-    config,
-    capability,
-    { providers: options.providers, singleProvider: options.singleProvider }
-  );
-  return { config, providers: selected, quotaFallbackProviders };
+  if (capability === "search" && commonOptions) {
+    // Validate the entire caller-selected pool before filtering, just like
+    // live fanout does, then apply the shared common-filter eligibility rule
+    // before single-provider selection and quota-fallback planning.
+    resolveCapabilityProviders(config, capability, { providers: options.providers });
+    const selected = options.providers?.length
+      ? options.providers
+      : config.capabilities.search?.providers ?? [];
+    const filtered = filterProvidersByCommonOptions(capability, selected, commonOptions);
+    if (filtered.providers.length === 0 && Object.keys(filtered.issuesByProvider).length > 0) {
+      throw new UnsupportedCommonOptionsError(capability, filtered.issuesByProvider);
+    }
+    const plan = resolveCapabilityProviders(config, capability, {
+      providers: filtered.providers,
+      singleProvider: options.singleProvider,
+      requireFeatures,
+    });
+    return { config, ...plan, skippedProviders: filtered.skippedProviders };
+  }
+
+  const plan = resolveCapabilityProviders(config, capability, {
+    providers: options.providers,
+    singleProvider: options.singleProvider,
+    requireFeatures,
+  });
+  return { config, ...plan, skippedProviders: {} };
 }
 
 function buildExecutionPlan(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
-  const { config, providers, quotaFallbackProviders } = resolveProviderList(capability, options);
+  // Resolve (and reject) the intent first so a dry run reflects routing
+  // exactly, including requirement-aware provider filtering.
+  const probeConfig = loadConfig(options.config);
+  const intentResolution = resolveCommandIntent(capability, options, probeConfig);
+  renderIntentNotes(intentResolution);
+  const routedOptions = intentResolution.nativeOnlyProvider
+    ? { ...options, providers: intentResolution.routedProviders }
+    : options;
+  const commonOptions =
+    options.timeRange || intentResolution.intent === "content-backed-retrieval"
+      ? {
+          ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+          ...(intentResolution.intent === "content-backed-retrieval"
+            ? { includeContent: true }
+            : {}),
+        }
+      : undefined;
+  const { config, providers, quotaFallbackProviders, skippedProviders } = resolveProviderList(
+    capability,
+    routedOptions,
+    intentResolution.requireFeatures,
+    commonOptions
+  );
 
   const plannedProviders = providers.map((provider) => {
     const pool = config.providers[provider]?.keyPool;
@@ -826,8 +1080,23 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
   return {
     mode: "dry-run",
     capability,
+    intent: intentResolution.intent,
+    ...(intentResolution.requireFeatures?.length
+      ? { require_features: intentResolution.requireFeatures }
+      : {}),
+    ...(commonOptions
+      ? {
+          common_options: {
+            ...(commonOptions.timeRange ? { time_range: commonOptions.timeRange } : {}),
+            ...(commonOptions.includeContent ? { include_content: true } : {}),
+          },
+        }
+      : {}),
     query_or_url: options.query,
     providers: plannedProviders,
+    ...(Object.keys(skippedProviders).length > 0
+      ? { skipped_providers: skippedProviders }
+      : {}),
     ...(quotaFallbackProviders?.length ? { quota_fallback_providers: quotaFallbackProviders } : {}),
     estimated_provider_attempts: plannedProviders.length,
     max_provider_attempts: plannedProviders.length + (quotaFallbackProviders?.length ?? 0),
@@ -1644,6 +1913,12 @@ async function main(): Promise<void> {
       await runFanoutMode(options);
     }
   } catch (error) {
+    // Intent rejections are pre-dispatch routing failures: render the
+    // machine-readable reason and any documented-but-unwired alternatives.
+    if (error instanceof IntentRejectionError) {
+      console.error(`Error (${error.category}): ${error.message}`);
+      process.exit(1);
+    }
     // Classify the error next to (never replacing) the original message so
     // operators and scripts get a machine-readable category on stderr.
     const { category, message } = classifyError(error);

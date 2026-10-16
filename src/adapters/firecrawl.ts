@@ -141,6 +141,12 @@ export class FirecrawlAdapter implements SearchAdapter {
         formats: ["markdown"],
       },
     };
+    if (Array.isArray(providerOptions.includeDomains) && providerOptions.includeDomains.length) {
+      body.includeDomains = providerOptions.includeDomains;
+    }
+    if (Array.isArray(providerOptions.excludeDomains) && providerOptions.excludeDomains.length) {
+      body.excludeDomains = providerOptions.excludeDomains;
+    }
     const sources = sanitizeSources(providerOptions.sources);
     if (sources) {
       body.sources = sources;
@@ -176,7 +182,8 @@ export class FirecrawlAdapter implements SearchAdapter {
       if (source === "images") return data.data?.images ?? [];
       return data.data?.web ?? [];
     });
-    return results.map((result, index) => {
+    const includeContent = options?.commonOptions?.includeContent === true;
+    const normalized = results.flatMap((result, index) => {
       const url =
         result.url ||
         result.metadata?.sourceURL ||
@@ -186,17 +193,28 @@ export class FirecrawlAdapter implements SearchAdapter {
         result.imageURL ||
         "";
       const title = result.title || result.metadata?.title || "";
-      const snippetSource = result.description || result.snippet || result.metadata?.description || result.markdown || "";
-      const snippet = snippetSource.length > 500 ? `${snippetSource.slice(0, 497)}...` : snippetSource;
+      const content = result.markdown;
+      if (includeContent && !content?.trim()) return [];
 
-      return {
+      const snippetSource = includeContent
+        ? content!
+        : result.description || result.snippet || result.metadata?.description || result.markdown || "";
+      const snippet = includeContent || snippetSource.length <= 500
+        ? snippetSource
+        : `${snippetSource.slice(0, 497)}...`;
+
+      return [{
         title,
         url,
         snippet,
         score: result.score ?? Math.max(0.1, 1 - index * 0.1),
         source: this.name,
-      };
+      }];
     });
+    if (includeContent && results.length > 0 && normalized.length === 0) {
+      throw new Error("Firecrawl returned no page markdown for content-backed retrieval");
+    }
+    return normalized;
   }
 
   async extract(

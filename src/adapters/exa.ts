@@ -182,7 +182,10 @@ export class ExaAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const opts = this.getExaOptions(options);
-    const body = this.buildSearchBody(query, opts, options?.limit);
+    const searchOptions = options?.commonOptions?.includeContent
+      ? { ...opts, highlights: false }
+      : opts;
+    const body = this.buildSearchBody(query, searchOptions, options?.limit);
 
     const data = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -200,7 +203,7 @@ export class ExaAdapter implements SearchAdapter {
     // Normalize Exa results to shared schema
     return (data.results || []).map((result, index) => {
       // If highlights mode, join highlights into snippet; otherwise use text
-      const snippet = opts.highlights && result.highlights?.length
+      const snippet = searchOptions.highlights && result.highlights?.length
         ? result.highlights.join(" ... ")
         : (result.text || "");
 
@@ -366,13 +369,13 @@ export class ExaAdapter implements SearchAdapter {
 
   /**
    * Find similar URLs (Exa-unique capability).
-   * Not exposed via the standard adapter interface yet, but available for future use.
+   * Exposed for the URL-similarity search intent.
    * @see https://docs.exa.ai/reference/find-similar
    */
   async findSimilar(
     url: string,
     apiKey: string,
-    options?: AdapterCallOptions & { numResults?: number }
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     if (!url || !url.trim()) {
       throw new Error("URL is required");
@@ -380,6 +383,7 @@ export class ExaAdapter implements SearchAdapter {
 
     const normalizedUrl = url.trim();
     const opts = this.getExaOptions(options);
+    const useHighlights = opts.highlights === true && options?.commonOptions?.includeContent !== true;
 
     const data = await fetchJson<ExaFindSimilarResponse>(
       "https://api.exa.ai/findSimilar",
@@ -391,17 +395,21 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          numResults: normalizeResultCount(options?.numResults ?? options?.limit ?? opts.numResults),
-          contents: opts.highlights
+          numResults: normalizeResultCount(
+            options?.limit ?? options?.commonOptions?.limit ?? opts.numResults
+          ),
+          contents: useHighlights
             ? { highlights: true }
             : { text: { maxCharacters: opts.maxCharacters ?? 15000 } },
+          ...(opts.includeDomains?.length ? { includeDomains: opts.includeDomains } : {}),
+          ...(opts.excludeDomains?.length ? { excludeDomains: opts.excludeDomains } : {}),
         }),
       },
       { label: "Exa findSimilar" }
     );
 
     return (data.results || []).map((result, index) => {
-      const snippet = opts.highlights && result.highlights?.length
+      const snippet = useHighlights && result.highlights?.length
         ? result.highlights.join(" ... ")
         : (result.text || "");
       return {
