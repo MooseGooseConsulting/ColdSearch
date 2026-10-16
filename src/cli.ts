@@ -665,9 +665,10 @@ function resolveCommandIntent(
 ): IntentResolution {
   const intent = options.intent ?? DEFAULT_COMMAND_INTENTS[command];
   validateIntentCategory(command, intent);
-  if (options.providers?.length) {
-    validateSelectedProviders(config, command, options.providers);
-  }
+  const selectedProviders = options.providers?.length
+    ? options.providers
+    : config.capabilities[command]?.providers ?? [];
+  validateSelectedProviders(config, command, selectedProviders);
   return rejectIntent(resolveIntent(intent, config, options.providers));
 }
 
@@ -1012,7 +1013,11 @@ function resolveProviderList(
       singleProvider: options.singleProvider,
       requireFeatures,
     });
-    return { config, ...plan, skippedProviders: filtered.skippedProviders };
+    return {
+      config,
+      ...plan,
+      skippedProviders: { ...filtered.skippedProviders, ...plan.skippedProviders },
+    };
   }
 
   const plan = resolveCapabilityProviders(config, capability, {
@@ -1020,7 +1025,7 @@ function resolveProviderList(
     singleProvider: options.singleProvider,
     requireFeatures,
   });
-  return { config, ...plan, skippedProviders: {} };
+  return { config, ...plan, skippedProviders: plan.skippedProviders };
 }
 
 function buildExecutionPlan(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {

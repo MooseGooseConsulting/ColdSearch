@@ -134,7 +134,11 @@ export function resolveCapabilityProviders(
   config: Config,
   capability: CapabilityName,
   options: { providers?: string[]; singleProvider?: boolean; requireFeatures?: string[] }
-): { providers: string[]; quotaFallbackProviders?: string[] } {
+): {
+  providers: string[];
+  quotaFallbackProviders?: string[];
+  skippedProviders: Record<string, string>;
+} {
   const capConfig = config.capabilities[capability];
   if (!capConfig) {
     throw new Error(`No configuration found for capability: ${capability}`);
@@ -151,6 +155,7 @@ export function resolveCapabilityProviders(
   validateSelectedProviders(config, capability, selected);
 
   let eligible = selected;
+  const skippedProviders: Record<string, string> = {};
   if (options.requireFeatures && options.requireFeatures.length > 0) {
     const eligibleProviders = new Set(
       resolveEligibleTools(capability, { requireFeatures: options.requireFeatures }).map(
@@ -158,6 +163,12 @@ export function resolveCapabilityProviders(
       )
     );
     eligible = selected.filter((provider) => eligibleProviders.has(provider));
+    for (const provider of selected) {
+      if (!eligibleProviders.has(provider)) {
+        skippedProviders[provider] =
+          `does not satisfy required features: [${options.requireFeatures.join(", ")}]`;
+      }
+    }
     if (!eligible.length) {
       throw new Error(
         `No '${capability}' provider tool satisfies required features: ` +
@@ -167,12 +178,13 @@ export function resolveCapabilityProviders(
   }
 
   const useSingleProvider = options.singleProvider || capConfig.strategy === "random";
-  if (!useSingleProvider) return { providers: eligible };
+  if (!useSingleProvider) return { providers: eligible, skippedProviders };
 
   const randomIndex = Math.floor(Math.random() * eligible.length);
   const first = eligible[randomIndex];
   return {
     providers: [first],
+    skippedProviders,
     // Keep normal random execution to one provider. Only an account-quota
     // rejection unlocks these alternatives; never leave the eligible scope or
     // revisit the selected provider (including duplicate pool entries).
