@@ -1506,6 +1506,10 @@ export function compareToolTarget(target, nativeResult, coldResult) {
   ));
   checks.push(check(coldResult.result_count > 0, "ColdSearch tool call returned non-empty raw results"));
   checks.push(check(
+    coldResult.items.every((item) => hasMinimumToolIdentity(target, item)),
+    "ColdSearch tool results retain minimum provider item identities"
+  ));
+  checks.push(check(
     toolNativeFieldsPreserved(target, nativeResult.items, coldResult.items),
     "ColdSearch tool output retains populated native fields for overlapping results"
   ));
@@ -1571,6 +1575,19 @@ export function compareToolTarget(target, nativeResult, coldResult) {
 
 function check(pass, label) {
   return { pass: Boolean(pass), label };
+}
+
+function hasMinimumToolIdentity(target, item) {
+  switch (targetId(target)) {
+    case "brave.webSearch":
+      return Boolean(normalizedUrl(item?.url) || normalizedTitle(item?.title));
+    case "exa.contents":
+    case "firecrawl.map":
+    case "tavily.map":
+      return Boolean(normalizedUrl(item?.url));
+    default:
+      return true;
+  }
 }
 
 function hasUrlOverlap(nativeItems, coldItems) {
