@@ -89,15 +89,19 @@ export function redactUrlUserInfo(text: string, replacement = REDACTED): string 
     URL_AUTHORITY_PATTERN,
     (_match, scheme: string, authority: string) => {
       // Keep apostrophes available inside user-info (passwords commonly
-      // contain them), but stop at a single-quote boundary that closes a
-      // quoted URL field. The URL syntax delimiters above already stop at
-      // whitespace, path, query, and fragment boundaries.
+      // contain them), but stop at explicit single-quote boundaries that
+      // close a quoted URL field. The URL syntax delimiters above already
+      // stop at whitespace, path, query, and fragment boundaries.
       const fieldQuoteBoundary = /'\s*,\s*'/.exec(authority)?.index;
+      const semicolonQuoteBoundary = /'\s*;/.exec(authority)?.index;
       const terminalQuoteBoundary = /'(?=\s*(?:[\]}]|$))/.exec(authority)?.index;
+      const explicitQuoteBoundaries = [fieldQuoteBoundary, semicolonQuoteBoundary]
+        .filter((boundary): boundary is number => boundary !== undefined)
+        .sort((left, right) => left - right);
       // A terminal quote/bracket pair is a boundary only when no later `@`
       // appears in the captured text. Otherwise the quote may be part of
       // user-info, and the final `@` still marks the host boundary.
-      const quoteBoundary = fieldQuoteBoundary ?? (
+      const quoteBoundary = explicitQuoteBoundaries[0] ?? (
         terminalQuoteBoundary !== undefined &&
         !authority.slice(terminalQuoteBoundary + 1).includes("@")
           ? terminalQuoteBoundary
