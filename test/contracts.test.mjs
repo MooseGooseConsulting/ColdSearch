@@ -90,6 +90,37 @@ test("envelope guard failures classify as provider errors", () => {
   }
 });
 
+test("full 5xx range classifies as network (Kilo WARNING on #84)", async () => {
+  const { HTTPRequestError } = await import("../dist/http.js");
+  for (const status of [500, 501, 502, 503, 504, 505, 508, 511, 520, 599]) {
+    const error = new HTTPRequestError(`status ${status}`, {
+      url: "https://x.example",
+      status,
+    });
+    assert.equal(
+      classifyError(error).category,
+      "network",
+      `HTTP ${status} must classify as network`
+    );
+  }
+  // Non-5xx behavior preserved: 400/422 validation, 401 credentials, 429 rate_limit.
+  const expectations = [
+    [400, "validation"],
+    [422, "validation"],
+    [401, "credentials"],
+    [403, "credentials"],
+    [429, "rate_limit"],
+    [404, "provider"],
+  ];
+  for (const [status, category] of expectations) {
+    const error = new HTTPRequestError(`status ${status}`, {
+      url: "https://x.example",
+      status,
+    });
+    assert.equal(classifyError(error).category, category, `HTTP ${status}`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Cache-key identity (C3)
 // ---------------------------------------------------------------------------

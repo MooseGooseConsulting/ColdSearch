@@ -281,18 +281,16 @@ function classifyHttpStatus(status: number): ErrorCategory {
       // quota-style rejection, not a transport failure).
       return "quota";
     case 408:
-    case 500:
-    case 502:
-    case 503:
-    case 504:
       return "network";
     case 400:
     case 422:
       // The request itself was rejected as malformed/unprocessable.
       return "validation";
     default:
-      // Any other non-2xx is a provider-side condition we cannot name more
-      // precisely — not a transport failure.
+      // Any 5xx is a server-side transport condition (Kilo WARNING on #84:
+      // 501/505+ fell through to "provider"). All other non-2xx are
+      // provider-side conditions we cannot name more precisely.
+      if (status >= 500 && status <= 599) return "network";
       return "provider";
   }
 }
