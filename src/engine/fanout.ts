@@ -442,6 +442,7 @@ export class FanoutEngine {
     const secretsUsed: string[] = [];
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
     let recoveringQuota = false;
+    let hasConfirmedPendingResume = false;
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
@@ -537,6 +538,7 @@ export class FanoutEngine {
                 url: result.url || url,
               };
             });
+            hasConfirmedPendingResume = true;
             pendingJobs.push(...providerPendingJobs);
             const pendingMessage = "Provider crawl is still pending";
             this.usageLogger.write({
@@ -653,8 +655,13 @@ export class FanoutEngine {
     }
 
     // In random mode, an unfinished saved crawl does not unlock another
-    // provider. Only a quota failure while polling that handle can do so.
-    if (pendingJobs.length > 0 && quotaFallbackProviders !== undefined && !recoveringQuota) {
+    // provider. A quota failure may unlock fallback unless another saved
+    // handle was explicitly confirmed as still pending.
+    if (
+      pendingJobs.length > 0 &&
+      quotaFallbackProviders !== undefined &&
+      (!recoveringQuota || hasConfirmedPendingResume)
+    ) {
       return {
         results: completedResumeResults,
         pendingJobs,
