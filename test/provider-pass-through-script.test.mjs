@@ -28,6 +28,18 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts", "provider-pass-through.mjs");
 
+const TOOL_KEY_ENV_BY_PROVIDER = {
+  tavily: "TAVILY_API_KEY",
+  firecrawl: "FIRECRAWL_API_KEY",
+  exa: "EXA_API_KEY",
+  brave: "BRAVE_API_KEY",
+};
+
+function configuredToolKeyRef(provider) {
+  const envName = TOOL_KEY_ENV_BY_PROVIDER[provider];
+  return envName ? `env:${envName}` : null;
+}
+
 function runScript(args) {
   return spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: repoRoot,
@@ -516,7 +528,7 @@ test("map conformance tolerates changing result sets across independent calls", 
     catalogued: true,
     provider: "tavily",
     tool: "map",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: ["https://docs.example/a", "https://docs.example/c"] },
   });
   native.raw_sample = cold.raw_sample;
@@ -540,7 +552,7 @@ test("map conformance records fully changed result sets as live variance", () =>
     catalogued: true,
     provider: "tavily",
     tool: "map",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: ["https://docs.example/c"] },
   });
   native.raw_sample = cold.raw_sample;
@@ -561,7 +573,7 @@ test("tool conformance rejects content fields dropped from a partial response", 
     catalogued: true,
     provider: "exa",
     tool: "contents",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: [{ url: "https://example.com", title: "Example" }] },
   });
   native.raw_sample = cold.raw_sample;
@@ -587,7 +599,7 @@ test("provider raw metadata fields are checked without comparing live result val
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: {
       query: { original: "openai" },
       web: { results: [{ title: "A changed", url: "https://a.example" }] },
@@ -621,7 +633,7 @@ test("Exa contents conformance catches dropped statuses metadata", () => {
     catalogued: true,
     provider: "exa",
     tool: "contents",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: [{ url: "https://example.com", text: "changed" }] },
   });
   const comparison = compareToolTarget(target, {
@@ -650,7 +662,7 @@ test("Exa contents rejects an empty status array when native returned status ent
     catalogued: true,
     provider: "exa",
     tool: "contents",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: {
       results: [{ url: "https://example.com", text: "changed" }],
       statuses: [],
@@ -689,7 +701,7 @@ test("stable raw metadata fields are required for Tavily and Firecrawl map", () 
       catalogued: true,
       provider: target.provider,
       tool: target.tool,
-      meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+      meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
       raw: coldRaw,
     });
     const comparison = compareToolTarget(target, native, cold);
@@ -720,7 +732,7 @@ test("stable raw metadata uses an independent schema budget", () => {
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: makeRaw([]),
   });
   assert.equal(native.raw_sample.schema.fields.query, undefined);
@@ -739,7 +751,7 @@ test("different URLs with the same title are live variance, not a false match", 
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: {
       query: { original: "openai" },
       web: { results: [{ title: "Same result", url, description: "description" }] },
@@ -759,7 +771,7 @@ test("Exa contents keeps its fixed requested URL identity", () => {
     catalogued: true,
     provider: "exa",
     tool: "contents",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: [{ url, title: "Example", text: "page text" }] },
   });
   const comparison = compareToolTarget(
@@ -781,7 +793,7 @@ test("Exa contents accepts the same canonical URL from both calls", () => {
     catalogued: true,
     provider: "exa",
     tool: "contents",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: [{ url: "https://www.example.com/", title: "Example", text: "page text" }] },
   });
   const comparison = compareToolTarget(target, makeResult(), makeResult());
@@ -803,7 +815,7 @@ test("tool conformance rejects invalid provider result-array item types", () => 
     catalogued: true,
     provider: "tavily",
     tool: "map",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { results: [{ url: "https://docs.example/a" }] },
   });
   assert.deepEqual(native.raw_sample.result_array_item_types.results, ["string"]);
@@ -882,7 +894,7 @@ test("tool conformance checks nested raw schemas for stable result identities", 
       catalogued: true,
       provider: target.provider,
       tool: target.tool,
-      meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+      meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
       raw: coldRaw,
     });
     const comparison = compareToolTarget(target, native, cold);
@@ -922,7 +934,7 @@ test("unmatched live-result schemas are variance, not evidence of dropped raw fi
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: {
       query: { original: "query" },
       web: { results: [{
@@ -951,7 +963,7 @@ test("schema loss on a matched row still fails when other live results differ", 
     catalogued,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { query: { original: "query" }, web: { results } },
   });
   const native = makeResult(false, [
@@ -999,7 +1011,7 @@ test("raw schema correlation follows filtered Firecrawl result indexes", () => {
     catalogued,
     provider: "firecrawl",
     tool: "map",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { success: true, metadata: { creditsUsed: 1 }, links },
   });
   const native = makeResult(false, [
@@ -1045,7 +1057,7 @@ test("tool conformance compares schemas beyond the generic three-item sample", (
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: makeRaw(false),
   });
 
@@ -1073,7 +1085,7 @@ test("truncated result schemas are inconclusive when no mismatch is proven", () 
     catalogued,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { query: { original: "query" }, web: { results: [result] } },
   });
   const comparison = compareToolTarget(target, makeResult(false), makeResult(true));
@@ -1118,7 +1130,7 @@ test("a complete missing native result shape fails despite unrelated native trun
     catalogued: true,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: {
       query: { original: "query" },
       web: { results: [
@@ -1160,7 +1172,7 @@ test("a complete matched result mismatch fails despite an unrelated truncated Co
     catalogued,
     provider: "brave",
     tool: "webSearch",
-    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    meta: { duration_ms: 12, safe_key_ref: configuredToolKeyRef(target.provider), warnings: [] },
     raw: { query: { original: "query" }, web: { results } },
   });
   const native = makeResult(false, [{
