@@ -23,11 +23,9 @@ function isString(value: unknown): value is string {
 }
 
 function describeItem(item: unknown): string {
-  try {
-    return JSON.stringify(item)?.slice(0, 200) ?? String(item);
-  } catch {
-    return String(item);
-  }
+  if (item === null) return "null";
+  if (Array.isArray(item)) return `array (${item.length} items)`;
+  return typeof item;
 }
 
 /**
