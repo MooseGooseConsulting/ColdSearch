@@ -816,10 +816,11 @@ test("tool conformance rejects invalid provider result-array item types", () => 
   );
 });
 
-test("tool conformance checks nested raw schemas when provider result values vary", () => {
+test("tool conformance checks nested raw schemas for stable result identities", () => {
   const cases = [
     {
       target: { provider: "brave", tool: "webSearch", kind: "tool" },
+      expectedSchemaPass: null,
       nativeRaw: {
         query: { original: "query" },
         web: { results: [{
@@ -836,6 +837,7 @@ test("tool conformance checks nested raw schemas when provider result values var
     },
     {
       target: { provider: "exa", tool: "contents", kind: "tool" },
+      expectedSchemaPass: false,
       nativeRaw: {
         results: [{
           url: "https://example.com",
@@ -855,6 +857,7 @@ test("tool conformance checks nested raw schemas when provider result values var
     },
     {
       target: { provider: "firecrawl", tool: "map", kind: "tool" },
+      expectedSchemaPass: null,
       nativeRaw: {
         success: true,
         metadata: { creditsUsed: 1 },
@@ -872,7 +875,7 @@ test("tool conformance checks nested raw schemas when provider result values var
     },
   ];
 
-  for (const { target, nativeRaw, coldRaw } of cases) {
+  for (const { target, nativeRaw, coldRaw, expectedSchemaPass } of cases) {
     const native = makeColdSearchToolResult(target, { ok: true, raw: nativeRaw });
     const cold = makeColdSearchToolResult(target, {
       ok: true,
@@ -888,12 +891,139 @@ test("tool conformance checks nested raw schemas when provider result values var
       true,
       targetId(target)
     );
-    assert.equal(
-      comparison.checks.find(({ label }) => label === "ColdSearch tool result arrays preserve sampled native object schemas").pass,
-      false,
-      targetId(target)
+    const schemaCheck = comparison.checks.find(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
     );
+    if (expectedSchemaPass === null) {
+      assert.equal(schemaCheck, undefined, targetId(target));
+      assert.match(comparison.notes.join(" "), /provider variance/, targetId(target));
+    } else {
+      assert.equal(schemaCheck?.pass, expectedSchemaPass, targetId(target));
+    }
   }
+});
+
+test("unmatched live-result schemas are variance, not evidence of dropped raw fields", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const native = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: {
+      query: { original: "query" },
+      web: { results: [{
+        title: "Native result",
+        url: "https://native.example",
+        description: "same provider response detail",
+        profile: { name: "native-only result metadata" },
+      }] },
+    },
+  });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: {
+      query: { original: "query" },
+      web: { results: [{
+        title: "Different result",
+        url: "https://cold.example",
+        description: "same provider response detail",
+      }] },
+    },
+  });
+
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, true);
+  assert.equal(
+    comparison.checks.some(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
+    ),
+    false
+  );
+  assert.match(comparison.notes.join(" "), /provider variance/);
+});
+
+test("schema loss on a matched row still fails when other live results differ", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const makeResult = (catalogued, results) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { query: { original: "query" }, web: { results } },
+  });
+  const native = makeResult(false, [
+    {
+      title: "Matched result",
+      url: "https://matched.example",
+      description: "same snippet",
+      profile: { name: "provider profile" },
+    },
+    {
+      title: "Native-only result",
+      url: "https://native.example",
+      description: "same snippet",
+      native_detail: { source: "native" },
+    },
+  ]);
+  const cold = makeResult(true, [
+    {
+      title: "Matched result",
+      url: "https://matched.example",
+      description: "same snippet",
+    },
+    {
+      title: "Cold-only result",
+      url: "https://cold.example",
+      description: "same snippet",
+    },
+  ]);
+
+  const comparison = compareToolTarget(target, native, cold);
+  assert.match(comparison.notes.join(" "), /provider variance/);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
+    ).pass,
+    false
+  );
+});
+
+test("raw schema correlation follows filtered Firecrawl result indexes", () => {
+  const target = { provider: "firecrawl", tool: "map", kind: "tool" };
+  const makeResult = (catalogued, links) => makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued,
+    provider: "firecrawl",
+    tool: "map",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: { success: true, metadata: { creditsUsed: 1 }, links },
+  });
+  const native = makeResult(false, [
+    { title: "Unmapped result without URL", metadata: { retained: true } },
+    {
+      title: "Matched result",
+      url: "https://matched.example",
+      metadata: { provider_detail: "must survive" },
+    },
+  ]);
+  const cold = makeResult(true, [
+    { title: "Cold-only result", url: "https://cold.example" },
+    { title: "Matched result", url: "https://matched.example" },
+  ]);
+
+  const comparison = compareToolTarget(target, native, cold);
+  assert.match(comparison.notes.join(" "), /provider variance/);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
+    ).pass,
+    false
+  );
 });
 
 test("tool conformance compares schemas beyond the generic three-item sample", () => {
@@ -954,6 +1084,69 @@ test("truncated result schemas are inconclusive when no mismatch is proven", () 
     false
   );
   assert.match(comparison.notes.join(" "), /schema comparison was inconclusive/);
+});
+
+test("a complete missing native result shape fails despite unrelated native truncation", () => {
+  const target = { provider: "brave", tool: "webSearch", kind: "tool" };
+  const wideFields = Object.fromEntries(Array.from({ length: 45 }, (_, index) => [
+    `wide${String(index).padStart(2, "0")}`,
+    "value",
+  ]));
+  const capturedWideFields = Object.fromEntries(Object.entries(wideFields).slice(0, 37));
+  const native = makeColdSearchToolResult(target, {
+    ok: true,
+    raw: {
+      query: { original: "query" },
+      web: { results: [
+        {
+          title: "Profile result",
+          url: "https://profile.example",
+          description: "same snippet",
+          profile: { name: "provider profile" },
+        },
+        {
+          title: "Wide result",
+          url: "https://wide.example",
+          description: "same snippet",
+          ...wideFields,
+        },
+      ] },
+    },
+  });
+  const cold = makeColdSearchToolResult(target, {
+    ok: true,
+    catalogued: true,
+    provider: "brave",
+    tool: "webSearch",
+    meta: { duration_ms: 12, safe_key_ref: null, warnings: [] },
+    raw: {
+      query: { original: "query" },
+      web: { results: [
+        {
+          title: "Profile result",
+          url: "https://profile.example",
+          description: "same snippet",
+        },
+        {
+          title: "Wide result",
+          url: "https://wide.example",
+          description: "same snippet",
+          ...capturedWideFields,
+        },
+      ] },
+    },
+  });
+
+  assert.equal(native.raw_sample.result_array_schemas.results.truncated, true);
+  assert.equal(cold.raw_sample.result_array_schemas.results.truncated, false);
+  const comparison = compareToolTarget(target, native, cold);
+  assert.equal(comparison.passed, false);
+  assert.equal(
+    comparison.checks.find(({ label }) =>
+      label === "ColdSearch tool result arrays preserve sampled native object schemas"
+    ).pass,
+    false
+  );
 });
 
 test("raw provider id and status values are omitted from schema-only evidence", () => {

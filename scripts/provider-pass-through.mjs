@@ -474,6 +474,7 @@ const TOOL_RAW_RESULT_ARRAYS = {
     { name: "data", path: ["data"], itemTypes: ["string", "object"] },
   ],
 };
+const RAW_RESULT_LOCATION = Symbol("rawResultLocation");
 
 function rawSchemaShape(value, budget, depth = 0) {
   if (budget.remaining <= 0) {
@@ -595,7 +596,7 @@ function trimRawSchemaShape(shape) {
 function boundedRawResultArraySchema(items) {
   const budget = { remaining: 80, truncated: false };
   const shapes = [];
-  const seen = new Set();
+  const shapesBySchema = new Map();
   let inspected = 0;
 
   for (const item of items) {
@@ -603,6 +604,7 @@ function boundedRawResultArraySchema(items) {
       budget.truncated = true;
       break;
     }
+    const resultIndex = inspected;
     inspected += 1;
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
 
@@ -611,9 +613,13 @@ function boundedRawResultArraySchema(items) {
     if (shape.type !== "object") continue;
 
     const key = JSON.stringify(shape);
-    if (!seen.has(key)) {
-      seen.add(key);
+    const existingShape = shapesBySchema.get(key);
+    if (!existingShape) {
+      shape.result_indexes = [resultIndex];
+      shapesBySchema.set(key, shape);
       shapes.push(shape);
+    } else {
+      existingShape.result_indexes.push(resultIndex);
     }
     if (budget.remaining <= 0) {
       budget.truncated = true;
@@ -742,6 +748,7 @@ function makeNativeResult(target, items, metadata = {}) {
 
 function makeNativeToolResult(target, items, metadata = {}) {
   const { raw, ...safeMetadata } = metadata;
+  attachRawResultLocations(target, raw, items);
   return {
     ok: true,
     result_count: items.length,
@@ -1321,6 +1328,38 @@ function toolRawItems(target, raw) {
   }
 }
 
+function attachRawResultLocations(target, raw, items) {
+  const attach = (item, arrayName, resultIndex) => {
+    if (!item || typeof item !== "object") return;
+    Object.defineProperty(item, RAW_RESULT_LOCATION, {
+      value: { arrayName, resultIndex },
+      configurable: true,
+    });
+  };
+
+  switch (targetId(target)) {
+    case "brave.webSearch":
+      (raw?.web?.results || []).forEach((_, index) => attach(items[index], "results", index));
+      break;
+    case "exa.contents":
+      (raw?.results || []).forEach((_, index) => attach(items[index], "results", index));
+      break;
+    case "firecrawl.map": {
+      const arrayName = Array.isArray(raw?.links) ? "links" : Array.isArray(raw?.data) ? "data" : null;
+      const rawItems = arrayName ? raw[arrayName] : [];
+      let itemIndex = 0;
+      rawItems.forEach((rawItem, resultIndex) => {
+        if (firecrawlMapItems([rawItem]).length === 0) return;
+        attach(items[itemIndex], arrayName, resultIndex);
+        itemIndex += 1;
+      });
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 function firecrawlMapItems(links) {
   if (!Array.isArray(links)) return [];
   return links.flatMap((link) => {
@@ -1356,6 +1395,7 @@ function hasExpectedToolRawShape(target, raw) {
 export function makeColdSearchToolResult(target, output) {
   const raw = output.raw && typeof output.raw === "object" ? output.raw : {};
   const items = toolRawItems(target, raw);
+  attachRawResultLocations(target, raw, items);
   return {
     ok: output.ok === true,
     catalogued: output.catalogued === true,
@@ -1427,6 +1467,7 @@ export function compareToolTarget(target, nativeResult, coldResult) {
   const checks = [];
   const notes = [];
   const detailLoss = [];
+  const resultsVary = toolResultsVary(nativeResult.items, coldResult.items);
 
   checks.push(check(nativeResult.result_count > 0, "native returned non-empty results"));
   checks.push(check(coldResult.ok, "ColdSearch tool call succeeded"));
@@ -1462,13 +1503,17 @@ export function compareToolTarget(target, nativeResult, coldResult) {
     compareToolRawResultArrayTypes(target, nativeResult.raw_sample, coldResult.raw_sample),
     "native and ColdSearch tool result arrays retain expected item types"
   ));
+  // Provider calls run independently. Compare raw result shapes by identity
+  // so unmatched live rows are variance, while still checking matched rows.
   const rawArraySchemaComparison = compareToolRawResultArraySchemas(
     target,
     nativeResult.raw_sample,
-    coldResult.raw_sample
+    coldResult.raw_sample,
+    nativeResult.items,
+    coldResult.items
   );
   if (rawArraySchemaComparison === null) {
-    notes.push("Provider result-array schema comparison was inconclusive because bounded schema evidence was truncated; the sampled shapes do not certify full field preservation.");
+    notes.push("Provider result-array schema comparison was inconclusive because result identities varied or bounded schema evidence was truncated; the sampled shapes do not certify full field preservation.");
   } else {
     checks.push(check(
       rawArraySchemaComparison,
@@ -1493,7 +1538,7 @@ export function compareToolTarget(target, nativeResult, coldResult) {
       "native and ColdSearch results retain the same requested-page URL identity, including a shared canonical URL"
     ));
   }
-  if (toolResultsVary(nativeResult.items, coldResult.items)) {
+  if (resultsVary) {
     if (hasUrlOrTitleOverlap(nativeResult.items, coldResult.items)) {
       notes.push("Native and ColdSearch results differed across sequential live calls; unmatched results and count differences are recorded as provider variance.");
     } else {
@@ -1571,7 +1616,7 @@ function compareToolRawResultArrayTypes(target, nativeSample, coldSample) {
   return true;
 }
 
-function compareToolRawResultArraySchemas(target, nativeSample, coldSample) {
+function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nativeItems, coldItems) {
   const nativeTypesByArray = nativeSample?.result_array_item_types || {};
   let inconclusive = false;
   for (const { name } of TOOL_RAW_RESULT_ARRAYS[targetId(target)] || []) {
@@ -1595,18 +1640,81 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample) {
       continue;
     }
 
-    const nativeIncomplete = nativeArray.truncated || nativeObjects.some(schemaShapeIsTruncated);
     const coldIncomplete = coldArray.truncated || coldObjects.some(schemaShapeIsTruncated);
-    const missingShape = nativeObjects.some((expected) =>
-      !schemaShapeIsTruncated(expected) &&
-      !coldObjects.some((actual) => schemaShapeContains(expected, actual))
-    );
+    if (coldIncomplete) {
+      inconclusive = true;
+      continue;
+    }
 
-    if (missingShape && !nativeIncomplete && !coldIncomplete) return false;
-    if (missingShape || nativeIncomplete || coldIncomplete) inconclusive = true;
-    if (!coldObjects.length && !nativeIncomplete && !coldIncomplete) return false;
+    const nativeShapesByIndex = indexResultArrayShapes(nativeObjects);
+    const coldShapesByIndex = indexResultArrayShapes(coldObjects);
+    const nativeItemsByIndex = indexToolItemsByRawResult(nativeItems, name);
+    const coldItemsByIndex = indexToolItemsByRawResult(coldItems, name);
+
+    if (!nativeItemsByIndex.size) {
+      inconclusive = true;
+      continue;
+    }
+
+    for (const [nativeIndex, expected] of nativeShapesByIndex) {
+      const nativeItem = nativeItemsByIndex.get(nativeIndex);
+      if (!nativeItem) {
+        inconclusive = true;
+        continue;
+      }
+      if (schemaShapeIsTruncated(expected)) {
+        inconclusive = true;
+        continue;
+      }
+
+      const matchedColdEntry = [...coldItemsByIndex.entries()].find(([, candidate]) =>
+        findMatchingToolItem(nativeItem, [candidate])
+      );
+      if (!matchedColdEntry) {
+        // An unmatched provider result is live variance, not evidence that
+        // ColdSearch dropped its provider-specific fields.
+        inconclusive = true;
+        continue;
+      }
+
+      const [coldIndex] = matchedColdEntry;
+      const actual = coldShapesByIndex.get(coldIndex);
+      if (!actual) return false;
+      if (schemaShapeIsTruncated(actual)) {
+        inconclusive = true;
+        continue;
+      }
+      if (!schemaShapeContains(expected, actual)) return false;
+    }
+
+    if (nativeArray.truncated || nativeObjects.some(schemaShapeIsTruncated)) {
+      inconclusive = true;
+    }
   }
   return inconclusive ? null : true;
+}
+
+function indexResultArrayShapes(shapes) {
+  const indexed = new Map();
+  for (const shape of shapes || []) {
+    for (const index of shape.result_indexes || []) indexed.set(index, shape);
+  }
+  return indexed;
+}
+
+function indexToolItemsByRawResult(items, arrayName) {
+  const indexed = new Map();
+  for (const [position, item] of (items || []).entries()) {
+    const location = item?.[RAW_RESULT_LOCATION];
+    if (location) {
+      if (location.arrayName === arrayName) indexed.set(location.resultIndex, item);
+      continue;
+    }
+    // Keep manually constructed comparison fixtures usable; production tool
+    // results carry explicit raw-array locations from their provider payload.
+    indexed.set(position, item);
+  }
+  return indexed;
 }
 
 function schemaShapeIsTruncated(shape) {
