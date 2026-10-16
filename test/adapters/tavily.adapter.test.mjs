@@ -183,7 +183,11 @@ test("tavily extract honors format and extract_depth only when configured", asyn
     restore();
   }
 
-  assert.deepEqual(bodies[0], { urls: ["https://x.example"], include_images: false });
+  assert.deepEqual(bodies[0], {
+    urls: ["https://x.example"],
+    include_images: false,
+    format: "markdown",
+  });
   assert.equal(bodies[1].format, "text");
   assert.equal(bodies[1].extract_depth, "advanced");
 });

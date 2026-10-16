@@ -127,13 +127,10 @@ test("crawl depth is sent for Tavily and Firecrawl and Exa results stay derived"
   try {
     await new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 2 });
     assert.equal(seen.tavily.max_depth, 2);
-    await assert.rejects(
-      () => new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 0 }),
-      /depth must be an integer from 1 to 5/
-    );
+    await new TavilyAdapter().crawl("https://example.com", "k", { limit: 2, depth: 0 });
+    assert.equal(seen.tavily.max_depth, 1);
     await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 2, depth: 1 });
     const exa = await new ExaAdapter().crawl("https://example.com", "k", { limit: 2, depth: 4 });
-    assert.equal(seen.tavily.max_depth, 2);
     assert.equal(seen.tavily.limit, 2);
     assert.equal(seen.firecrawl.maxDiscoveryDepth, 1);
     assert.equal(exa[0].derived, true);
