@@ -443,6 +443,7 @@ export class FanoutEngine {
     const providerHttpErrors: Record<string, HTTPRequestError> = {};
     let recoveringQuota = false;
     let hasConfirmedPendingResume = false;
+    let hasAmbiguousPendingResume = false;
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
@@ -581,14 +582,15 @@ export class FanoutEngine {
           completedResumeProvider ??= provider;
           completedResumeResults.push(...pageResults);
         } catch (error) {
+          const quotaExhausted = isQuotaExhausted(error);
           // A failed poll does not prove that an accepted async job stopped.
           if (resumeHandleIsUsable && !(error instanceof FirecrawlCrawlTerminalError)) {
             pendingJobs.push(resumeJob);
+            if (!quotaExhausted) hasAmbiguousPendingResume = true;
           } else if (error instanceof FirecrawlCrawlTerminalError) {
             terminalResumeJobs.push(resumeJob);
           }
           const durationMs = Math.round(performance.now() - start);
-          const quotaExhausted = isQuotaExhausted(error);
           recoveringQuota ||= quotaExhausted;
           errors[provider] = (error as Error).message;
           const httpError = findHttpRequestError(error);
@@ -656,11 +658,11 @@ export class FanoutEngine {
 
     // In random mode, an unfinished saved crawl does not unlock another
     // provider. A quota failure may unlock fallback unless another saved
-    // handle was explicitly confirmed as still pending.
+    // handle was confirmed pending or its poll failed ambiguously.
     if (
       pendingJobs.length > 0 &&
       quotaFallbackProviders !== undefined &&
-      (!recoveringQuota || hasConfirmedPendingResume)
+      (!recoveringQuota || hasConfirmedPendingResume || hasAmbiguousPendingResume)
     ) {
       return {
         results: completedResumeResults,
