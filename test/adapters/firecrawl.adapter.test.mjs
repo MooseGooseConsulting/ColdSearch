@@ -257,32 +257,31 @@ test("firecrawl search honors providerOptions limit (clamped 1..100) and sources
   assert.deepEqual(bodies[1].sources, ["web", "news"]);
 });
 
-test("firecrawl crawl returns pending and the jobId after the short poll cap", async () => {
+test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending job", async () => {
   const originalSetTimeout = globalThis.setTimeout;
-  const originalClearTimeout = globalThis.clearTimeout;
   globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
-  globalThis.clearTimeout = (...args) => originalClearTimeout(...args);
 
+  let pollCount = 0;
   const restore = installFetchMock({
-    "POST https://api.firecrawl.dev/v2/crawl": async ({ init }) => {
-      const body = JSON.parse(init.body);
-      assert.deepEqual(body.scrapeOptions.formats, ["html", "markdown"]); // normalized calls retain text content
-      return jsonResponse({ success: true, id: "job-42" });
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "job-pending" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-pending": async () => {
+      pollCount++;
+      return jsonResponse({ success: true, status: "scraping" });
     },
-    "GET https://api.firecrawl.dev/v2/crawl/job-42": async () =>
-      jsonResponse({ success: true, status: "scraping" }),
   });
   try {
-    const adapter = new FirecrawlAdapter();
-    const results = await adapter.crawl("https://x.example", "k", {
-      limit: 1,
-      providerOptions: { formats: ["html"] },
-    });
-    assert.equal(results[0].status, "pending");
-    assert.equal(results[0].jobId, "job-42");
+    const results = await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 1 });
+    assert.deepEqual(results, [{
+      url: "https://example.com",
+      title: "",
+      content: "",
+      status: "pending",
+      jobId: "job-pending",
+    }]);
+    assert.equal(pollCount, 30);
   } finally {
     restore();
     globalThis.setTimeout = originalSetTimeout;
-    globalThis.clearTimeout = originalClearTimeout;
   }
 });

@@ -657,16 +657,25 @@ const isToolCachePayload = (p: unknown): p is ToolCallResult =>
   typeof (p as ToolCallResult).meta === "object" &&
   Array.isArray((p as ToolCallResult).meta.warnings);
 
-function requestsJinaNoCache(
+function requestsJinaReplayBypass(
   provider: string,
   tool: string,
   params: Record<string, unknown>
 ): boolean {
   if (provider !== "jina" || tool !== "reader") return false;
-  return Object.entries(params).some(([name, value]) =>
-    name.toLowerCase() === "x-no-cache" &&
-    (value === true || (typeof value === "string" && value.trim().toLowerCase() === "true"))
-  );
+  return Object.entries(params).some(([name, value]) => {
+    const normalizedName = name.toLowerCase();
+    if (
+      normalizedName === "x-no-cache" &&
+      (value === true || (typeof value === "string" && value.trim().toLowerCase() === "true"))
+    ) {
+      return true;
+    }
+    return normalizedName === "x-set-cookie" &&
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== "";
+  });
 }
 
 /**
@@ -700,7 +709,7 @@ export async function executeToolCall(
   }
 
   const cacheEnabled = config.cache?.enabled !== false;
-  const noCache = options?.noCache === true || requestsJinaNoCache(provider, tool, params);
+  const noCache = options?.noCache === true || requestsJinaReplayBypass(provider, tool, params);
   const toolTtl = parseDuration(config.cache?.tool_ttl ?? "6h", 21600);
   const effectiveTtl = options?.freshness
     ? parseDuration(options.freshness, toolTtl)
