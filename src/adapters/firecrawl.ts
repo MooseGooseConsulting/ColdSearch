@@ -41,6 +41,7 @@ const FIRECRAWL_FORMATS: readonly string[] = [
   "markdown",
   "html",
   "rawHtml",
+  "rawBase64",
   "links",
   "screenshot",
   "json",
