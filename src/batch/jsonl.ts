@@ -1,9 +1,33 @@
 import fs from "node:fs";
+import { INTENT_DEFS, isSearchIntent } from "../dispatch/intents.js";
 import { getToolProfile } from "../registry/tool-profiles.js";
 import type { CapabilityName } from "../types.js";
 import type { BatchInputRecord, BatchOutputRecord } from "./types.js";
 
 const CAPABILITIES: CapabilityName[] = ["search", "extract", "crawl"];
+const BATCH_INPUT_FIELDS = new Set([
+  "id",
+  "capability",
+  "tool",
+  "query",
+  "url",
+  "input",
+  "limit",
+  "format",
+  "depth",
+  "providers",
+  "singleProvider",
+  "noCache",
+  "intent",
+  "commonOptions",
+]);
+const COMMON_OPTION_FIELDS = new Set([
+  "limit",
+  "includeDomains",
+  "excludeDomains",
+  "timeRange",
+  "includeContent",
+]);
 
 /** Aggregate batch input validation failure. */
 export class BatchInputError extends Error {
@@ -25,7 +49,7 @@ export class BatchInputError extends Error {
  * - `tool` is a provider-tool name exposed by `coldsearch tool list` and
  *   requires an `input` object.
  * - Optional knobs are type-checked (`limit`, `format`, `depth`, `providers`,
- *   `singleProvider`, `noCache`).
+ *   `singleProvider`, `noCache`, `intent`, `commonOptions`).
  */
 export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecord {
   const errors: string[] = [];
@@ -33,6 +57,12 @@ export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecor
     throw new BatchInputError(["record must be a JSON object"]);
   }
   const record = raw as Record<string, unknown>;
+
+  for (const field of Object.keys(record)) {
+    if (!BATCH_INPUT_FIELDS.has(field)) {
+      errors.push(`'${field}' is not a supported batch input field`);
+    }
+  }
 
   if (typeof record.id !== "string" || record.id.trim() === "") {
     errors.push("'id' is required and must be a non-empty string");
@@ -118,6 +148,65 @@ export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecor
   }
   if (record.noCache !== undefined && typeof record.noCache !== "boolean") {
     errors.push("'noCache' must be a boolean when present");
+  }
+
+  if (record.intent !== undefined) {
+    if (!hasCapability) {
+      errors.push("'intent' is only valid for capability records");
+    } else if (typeof record.intent !== "string" || !isSearchIntent(record.intent)) {
+      errors.push("'intent' must be a supported capability intent");
+    } else if (
+      CAPABILITIES.includes(record.capability as CapabilityName) &&
+      INTENT_DEFS[record.intent].category !== record.capability
+    ) {
+      errors.push(`'intent' '${record.intent}' does not match capability '${String(record.capability)}'`);
+    }
+  }
+
+  if (record.commonOptions !== undefined) {
+    if (!hasCapability) {
+      errors.push("'commonOptions' is only valid for capability records");
+    }
+    if (
+      record.commonOptions === null ||
+      typeof record.commonOptions !== "object" ||
+      Array.isArray(record.commonOptions)
+    ) {
+      errors.push("'commonOptions' must be an object when present");
+    } else {
+      const commonOptions = record.commonOptions as Record<string, unknown>;
+      for (const field of Object.keys(commonOptions)) {
+        if (!COMMON_OPTION_FIELDS.has(field)) {
+          errors.push(`'commonOptions.${field}' is not a supported common option`);
+        }
+      }
+      if (
+        commonOptions.limit !== undefined &&
+        (typeof commonOptions.limit !== "number" ||
+          !Number.isFinite(commonOptions.limit) ||
+          commonOptions.limit < 1)
+      ) {
+        errors.push("'commonOptions.limit' must be a positive number when present");
+      }
+      for (const field of ["includeDomains", "excludeDomains"] as const) {
+        const value = commonOptions[field];
+        if (
+          value !== undefined &&
+          (!Array.isArray(value) || value.some((domain) => typeof domain !== "string"))
+        ) {
+          errors.push(`'commonOptions.${field}' must be an array of strings when present`);
+        }
+      }
+      if (commonOptions.timeRange !== undefined && typeof commonOptions.timeRange !== "string") {
+        errors.push("'commonOptions.timeRange' must be a string when present");
+      }
+      if (
+        commonOptions.includeContent !== undefined &&
+        typeof commonOptions.includeContent !== "boolean"
+      ) {
+        errors.push("'commonOptions.includeContent' must be a boolean when present");
+      }
+    }
   }
 
   if (errors.length > 0) throw new BatchInputError(errors);

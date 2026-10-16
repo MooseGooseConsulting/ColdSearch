@@ -269,6 +269,8 @@ export class LocalBatchExecutor implements BatchExecutor {
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,
+      intent: record.intent,
+      commonOptions: record.commonOptions,
     };
   }
 

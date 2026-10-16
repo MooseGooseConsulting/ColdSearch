@@ -1,4 +1,10 @@
-import type { CapabilityName, CrawlResult, PendingCrawlJob } from "../types.js";
+import type {
+  CapabilityName,
+  CommonOptions,
+  CrawlResult,
+  PendingCrawlJob,
+} from "../types.js";
+import type { SearchIntent } from "../dispatch/intents.js";
 
 /**
  * One batch input record (one JSON object per line of the input JSONL).
@@ -33,6 +39,10 @@ export interface BatchInputRecord {
   singleProvider?: boolean;
   /** Bypass the read-through replay cache for this record. */
   noCache?: boolean;
+  /** Dispatch goal for a capability record. */
+  intent?: SearchIntent;
+  /** Portable provider options for a capability record. */
+  commonOptions?: CommonOptions;
 }
 
 /** Per-record error detail in a batch output record. */
