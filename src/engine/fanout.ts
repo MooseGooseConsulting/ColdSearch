@@ -671,9 +671,14 @@ export class FanoutEngine {
       (provider) => !resumeProviders.has(provider)
     );
     const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
+    const providersToTry = [...providers, ...quotaProviders];
 
     // Random mode unlocks the remaining pool only after quota exhaustion.
-    for (const provider of [...providers, ...quotaProviders]) {
+    for (const [providerIndex, provider] of providersToTry.entries()) {
+      // Resume filtering can leave no selected provider. Do not enter the
+      // quota-only tail unless polling actually observed quota exhaustion.
+      if (providerIndex >= providers.length && !recoveringQuota) break;
+
       const start = performance.now();
       let keyRef = "none";
       try {
@@ -751,8 +756,9 @@ export class FanoutEngine {
             key_ref: keyRef,
             result_count: pageResults.length,
           });
-          // An unfinished crawl does not unlock random-mode quota fallbacks.
-          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
+          // An accepted pending crawl ends random-mode recovery, even when a
+          // quota error had already unlocked the fallback pool.
+          if (quotaFallbackProviders !== undefined) break;
           continue;
         }
 
