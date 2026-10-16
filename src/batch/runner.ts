@@ -436,11 +436,12 @@ function mergeResumedCrawlResults(
 
   const result = outputRecord.result as Record<string, unknown>;
   const currentResults = Array.isArray(result.results) ? result.results : [];
-  // Keep run order and duplicates: different providers can return useful,
-  // non-identical content for the same URL, so URL-based deduplication loses data.
+  // Keep the current resume's pages first, followed by prior fallback pages.
+  // Different providers can return useful, non-identical content for the same
+  // URL, so URL-based deduplication would lose data.
   return {
     ...outputRecord,
-    result: { ...result, results: [...priorResults, ...currentResults] },
+    result: { ...result, results: [...currentResults, ...priorResults] },
   };
 }
 
