@@ -502,7 +502,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
             routing: this.routingInfo(
               "search",
               options,
-              historySnapshot?.providers ?? [],
+              // The replay makes no provider calls. Origin providers remain
+              // available through origin_execution_id and cache provenance.
+              [],
               reranker
             ),
             source: "cache",
