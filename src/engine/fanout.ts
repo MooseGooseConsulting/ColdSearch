@@ -897,6 +897,7 @@ export class FanoutEngine {
           });
           attempts.push({
             provider,
+            ...provenance,
             success: false,
             pending: true,
             error: pendingMessage,
