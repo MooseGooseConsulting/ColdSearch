@@ -118,7 +118,21 @@ export async function replayAdapterInvocation<T>(
   const sequence = createFixtureSequence(fixtures);
   const restore = installMock(sequence.handlers);
   try {
-    const result = await adapterMethod();
+    let result: T;
+    try {
+      result = await adapterMethod();
+    } catch (error) {
+      const remaining = sequence.remaining();
+      if (remaining > 0) {
+        const consumed = fixtures.length - remaining;
+        throw new Error(
+          `replayAdapterInvocation: expected ${fixtures.length} HTTP exchanges, consumed ${consumed} before adapter rejection`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+
     const consumed = fixtures.length - sequence.remaining();
     if (sequence.remaining() > 0) {
       throw new Error(

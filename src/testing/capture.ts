@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdir } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -287,6 +287,62 @@ export function trackCaptureTask(task: Promise<void>): void {
   void tracked.then(() => pendingCaptureTasks.delete(tracked));
 }
 
+function assertSafeCaptureDirectory(
+  directory: string,
+  info: Awaited<ReturnType<typeof lstat>>,
+  isTarget: boolean,
+  currentUid: number | undefined
+): void {
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`Capture path component is not a real directory: ${directory}`);
+  }
+
+  // Trust root-owned system directories and directories owned by this process.
+  // An untrusted owner can change a directory's mode or replace its entries.
+  const trustedOwner = info.uid === 0 || (currentUid !== undefined && info.uid === currentUid);
+  if (!trustedOwner) {
+    throw new Error(`Capture path component has an untrusted owner: ${directory}`);
+  }
+
+  const writableByOthers = (info.mode & 0o022) !== 0;
+  const sticky = (info.mode & 0o1000) !== 0;
+  // A sticky shared ancestor (such as /tmp) protects entries owned by this
+  // process. Never write directly into a shared-writable capture directory.
+  if (writableByOthers && (isTarget || !sticky)) {
+    throw new Error(`Capture directory is writable by other users: ${directory}`);
+  }
+}
+
+/** Create missing components privately and reject unsafe or symlinked paths. */
+async function ensureSafeCaptureDirectory(directory: string): Promise<string> {
+  const target = path.resolve(directory);
+  const root = path.parse(target).root;
+  const segments = target.slice(root.length).split(path.sep).filter(Boolean);
+  const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  let current = root;
+  let info = await lstat(current);
+  assertSafeCaptureDirectory(current, info, segments.length === 0, currentUid);
+
+  for (let index = 0; index < segments.length; index++) {
+    const next = path.join(current, segments[index]!);
+    try {
+      info = await lstat(next);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try {
+        await mkdir(next, { mode: 0o700 });
+      } catch (mkdirError) {
+        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+      }
+      info = await lstat(next);
+    }
+    assertSafeCaptureDirectory(next, info, index === segments.length - 1, currentUid);
+    current = next;
+  }
+
+  return target;
+}
+
 /** Read a bounded prefix without exposing a partial known secret at its edge. */
 export async function readCaptureResponsePrefix(
   response: Response,
@@ -331,7 +387,10 @@ export async function readCaptureResponsePrefix(
         ).catch(() => undefined);
         break;
       }
-      if (result.kind === "read-error") break;
+      if (result.kind === "read-error") {
+        truncated = true;
+        break;
+      }
       const { done, value } = result.read;
       if (done) break;
       const remaining = RESPONSE_BODY_LIMIT_BYTES - totalBytes;
@@ -347,6 +406,7 @@ export async function readCaptureResponsePrefix(
     }
   } catch {
     // A capture read is best effort and must not affect the provider response.
+    truncated = true;
   } finally {
     if (truncated) void reader.cancel().catch(() => undefined);
     if (!releaseAfterRead) reader.releaseLock();
@@ -371,7 +431,7 @@ export async function readCaptureResponsePrefix(
   const safePrefix = longestSecret > 1
     ? text.slice(0, Math.max(0, text.length - longestSecret + 1))
     : text;
-  return `${safePrefix}…[capture truncated at 64 KiB]`;
+  return `${safePrefix}…[capture prefix incomplete]`;
 }
 
 /**
@@ -388,8 +448,8 @@ export function recordCapture(input: CaptureInput): Promise<void> {
     try {
       const now = new Date();
       const record = buildCaptureRecord(input, now);
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      const file = path.join(dir, captureFileName(now));
+      const safeDir = await ensureSafeCaptureDirectory(dir);
+      const file = path.join(safeDir, captureFileName(now));
       await appendFile(
         file,
         `${JSON.stringify(record)}\n`,
