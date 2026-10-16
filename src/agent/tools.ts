@@ -9,6 +9,7 @@ export interface ToolContext {
   llm: LLMClient;
   searchFn: (query: string) => Promise<NormalizedResult[]>;
   fetchFn: (url: string) => Promise<string>;
+  onToolFailure?: (error: unknown) => void;
 }
 
 /**
@@ -59,6 +60,7 @@ export const fetchTool: Tool = {
       }
       return content;
     } catch (error) {
+      context.onToolFailure?.(error);
       return `Error fetching ${url}: ${(error as Error).message}`;
     }
   },

@@ -2,14 +2,16 @@ import { lookup } from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
+import { randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { APP_USER_AGENT } from "../app.js";
 import {
   LocalExecutionBackend,
   type ExecutionBackend,
 } from "../execution/backend.js";
 import { createLLMClient, type LLMClient, type LLMProvider, type LLMEndpointConfig } from "./llm.js";
-import { tools, parseAgentPayload } from "./tools.js";
-import { ResearchContext } from "./context.js";
+import { tools, parseAgentPayload, type ToolContext } from "./tools.js";
+import { ResearchContext, type ResearchStep } from "./context.js";
 
 /**
  * Agent configuration options.
@@ -34,6 +36,27 @@ export interface AgentOptions {
   llm?: LLMClient;
   /** Bypass the result cache for the agent's internal searches */
   noCache?: boolean;
+  /**
+   * Explicit run ID for this agent run (e.g. `run_20260622T173012Z_7f3a9c`).
+   * Generated via createRunId() when absent; empty/whitespace-only values are
+   * rejected.
+   */
+  runId?: string;
+  /** In-memory resolved provider keys for redacting the durable agent trace. */
+  onSecretsUsed?: (secrets: string[]) => void;
+}
+
+/**
+ * Generate a log-friendly agent run ID: UTC timestamp plus 3 random bytes,
+ * e.g. `run_20260622T173012Z_7f3a9c`. The same ID correlates one agent run
+ * across its output, steps, execution history, and usage-log entries.
+ */
+export function createRunId(now: Date = new Date()): string {
+  const stamp = now
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z");
+  return `run_${stamp}_${randomBytes(3).toString("hex")}`;
 }
 
 interface ValidatedFetchTarget {
@@ -152,16 +175,14 @@ function isBlockedHostname(hostname: string): boolean {
  */
 export interface AgentResult {
   answer: string;
+  /** Run ID correlating this run across output, steps, and usage logs. */
+  run_id: string;
   sources: Array<{
     url: string;
     title: string;
     snippet: string;
   }>;
-  steps: Array<{
-    type: string;
-    description: string;
-    timestamp: Date;
-  }>;
+  steps: ResearchStep[];
 }
 
 /**
@@ -171,6 +192,9 @@ export class SearchAgent {
   private llm: LLMClient;
   private backend: ExecutionBackend;
   private noCache: boolean;
+  /** Run ID fallback from construction; research() options override it. */
+  private runId?: string;
+  private onSecretsUsed?: (secrets: string[]) => void;
 
   constructor(options: AgentOptions = {}) {
     this.llm =
@@ -184,6 +208,8 @@ export class SearchAgent {
     this.backend =
       options.executionBackend ?? new LocalExecutionBackend(options.configPath);
     this.noCache = options.noCache ?? false;
+    this.runId = options.runId;
+    this.onSecretsUsed = options.onSecretsUsed;
   }
 
   /**
@@ -192,9 +218,43 @@ export class SearchAgent {
   async research(goal: string, options: AgentOptions = {}): Promise<AgentResult> {
     const maxSteps = options.maxSteps || 5;
     const maxSources = options.maxSources || 5;
-    
-    const context = new ResearchContext(goal, maxSources);
+
+    // An explicit run ID must be non-empty; the CLI rejects it early, but the
+    // agent boundary enforces it too so library callers can't slip one through.
+    const explicitRunId = options.runId ?? this.runId;
+    if (
+      explicitRunId !== undefined &&
+      (explicitRunId.trim() === "" || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(explicitRunId))
+    ) {
+      throw new Error("Explicit run ID must be non-empty and contain no control characters");
+    }
+    // Trim surrounding whitespace so the canonical ID is stable for
+    // correlation; a padded value would mismatch across logs and output.
+    const runId = explicitRunId?.trim() ?? createRunId();
+    const onSecretsUsed = options.onSecretsUsed ?? this.onSecretsUsed;
+
+    const context = new ResearchContext(goal, maxSources, runId);
     context.currentQuery = goal;
+    const complete = async (messages: Array<{ role: "system" | "user" | "assistant"; content: string }>) => {
+      try {
+        return await this.llm.complete(messages);
+      } catch (error) {
+        // Preserve the original error class/message for CLI classification,
+        // while making already-completed tool actions available for history.
+        if (error && typeof error === "object") {
+          try {
+            Object.defineProperty(error, "agentSteps", {
+              value: context.steps.map((step) => ({ ...step })),
+              configurable: true,
+            });
+          } catch {
+            // The original failure is more useful than replacing it if a
+            // custom error object cannot accept trace metadata.
+          }
+        }
+        throw error;
+      }
+    };
 
     const systemPrompt = `You are a research assistant that helps users find information. You have access to these tools:
 
@@ -225,7 +285,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
 
     for (let step = 0; step < maxSteps; step++) {
       // Get agent's next action
-      const response = await this.llm.complete(messages);
+      const response = await complete(messages);
       const content = response.content.trim();
 
       messages.push({ role: "assistant", content });
@@ -244,6 +304,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
         const result = context.generateResponse(payload.answer);
         return {
           answer: result.answer,
+          run_id: runId,
           sources: result.sources,
           steps: result.steps,
         };
@@ -259,9 +320,12 @@ Be thorough but efficient. Focus on authoritative sources.`;
       }
 
       // Execute tool
-      context.addStep(tool.name as any, JSON.stringify(payload));
+      const agentStep = context.addStep(tool.name as any, JSON.stringify(payload));
+      const stepStartedAt = performance.now();
+      let toolFailed = false;
+      let reportedToolFailure: string | undefined;
       
-      const toolContext = {
+      const toolContext: ToolContext = {
         query: context.currentQuery,
         llm: this.llm,
         searchFn: async (q: string) => {
@@ -270,27 +334,41 @@ Be thorough but efficient. Focus on authoritative sources.`;
             limitSet: false,
             rerankStrategy: "rrf",
             noCache: this.noCache,
+            runId,
+            onSecretsUsed: (secrets) => onSecretsUsed?.(secrets),
           });
           // Track sources
           result.results.forEach((r) => context.addSource(r));
           return result.results;
         },
         fetchFn: this.fetchContent.bind(this),
+        onToolFailure: (error) => {
+          toolFailed = true;
+          reportedToolFailure = error instanceof Error ? error.message : String(error);
+        },
       };
 
       try {
         const toolResult = await tool.execute(toolContext, ...payload.args);
+        context.completeStep(
+          agentStep,
+          toolFailed ? "failed" : "success",
+          performance.now() - stepStartedAt,
+          reportedToolFailure
+        );
         messages.push({ role: "user", content: `Result:\n${toolResult}` });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        context.completeStep(agentStep, "failed", performance.now() - stepStartedAt, message);
         messages.push({
           role: "user",
-          content: `Error: ${(error as Error).message}`,
+          content: `Error: ${message}`,
         });
       }
     }
 
     // Max steps reached - synthesize what we have
-    const finalResponse = await this.llm.complete([
+    const finalResponse = await complete([
       ...messages,
       {
         role: "user",
@@ -300,7 +378,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
 
     let finalPayload = parseAgentPayload(finalResponse.content);
     if (!finalPayload || finalPayload.type !== "final") {
-      const retryResponse = await this.llm.complete([
+      const retryResponse = await complete([
         ...messages,
         {
           role: "user",
@@ -318,6 +396,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
     const result = context.generateResponse(answer);
     return {
       answer: result.answer,
+      run_id: runId,
       sources: result.sources,
       steps: result.steps,
     };

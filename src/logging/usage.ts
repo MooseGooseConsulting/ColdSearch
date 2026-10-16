@@ -9,7 +9,8 @@ export interface UsageLogEntry {
   capability?: CapabilityName;
   tool?: string;
   catalogued?: boolean;
-  runId?: string;
+  /** Agent run ID this usage entry belongs to (agent-triggered calls only). */
+  run_id?: string;
   key: string;
   success: boolean;
   /** Provider accepted an asynchronous job that is not complete yet. */

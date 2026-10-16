@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { APP_NAME, LEGACY_APP_NAME, formatVersionString } from "./app.js";
-import { SearchAgent } from "./agent/agent.js";
+import { createRunId, SearchAgent } from "./agent/agent.js";
+import type { ResearchStep } from "./agent/context.js";
 import { resolveLlmConfig, LLM_PROVIDERS, REASONING_EFFORTS, type ReasoningEffort, type LLMEndpointConfig, type LLMProvider } from "./agent/llm.js";
 import { LocalExecutionBackend } from "./execution/backend.js";
 import {
@@ -37,7 +38,7 @@ import { runBatch } from "./batch/runner.js";
 import { getKeyReference } from "./logging/usage.js";
 import { HistoryStore } from "./history/store.js";
 import { searchHistory } from "./history/search.js";
-import { newExecutionId, type ExecutionRecord } from "./history/types.js";
+import { newExecutionId, type AgentRunStep, type ExecutionRecord } from "./history/types.js";
 import { redactSensitive } from "./history/redact.js";
 import { CacheStore } from "./cache/cache.js";
 import { classifyError } from "./http.js";
@@ -448,6 +449,27 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.maxSources = parseInt(args[i], 10);
         break;
 
+      case "--run-id":
+        i++;
+        const runId = args[i];
+        // Empty/whitespace-only explicit run IDs fail early: a generated ID
+        // is always non-empty, so a blank explicit value is a caller bug. A
+        // flag-looking token means the value was omitted (like --config).
+        if (
+          runId === undefined ||
+          runId.startsWith("--") ||
+          runId.trim() === "" ||
+          /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(runId)
+        ) {
+          throw new Error(
+            "Invalid --run-id. Provide a non-empty single-line ID without control characters."
+          );
+        }
+        // Trim so the canonical ID never carries caller whitespace, which
+        // would silently break correlation across output/steps/usage logs.
+        options.runId = runId.trim();
+        break;
+
       case "--help":
       case "-h":
         printHelp();
@@ -524,6 +546,16 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
       throw new Error("--time-range is only valid with search");
     }
   }
+  // These command surfaces dispatch before the agent branch in main(), even
+  // when --agent is also present. Reject the run ID whenever agent execution
+  // will not actually be selected.
+  const higherPriorityMode = Boolean(
+    options.toolCommand || options.historyCommand || options.cacheCommand ||
+    options.configCommand || options.batch || options.status
+  );
+  if (options.runId !== undefined && (!options.agent || higherPriorityMode)) {
+    throw new Error("--run-id requires agent mode to execute; a higher-priority command was selected.");
+  }
 
   return options;
 }
@@ -581,6 +613,8 @@ Options:
     --llm-key-ref REF    Override credential reference (env:NAME or doppler:NAME)
     --max-steps N        Maximum research steps (default: 5)
     --max-sources N      Maximum sources to collect (default: 5)
+    --run-id ID          Explicit run ID for this agent run (e.g.
+                         run_20260622T173012Z_7f3a9c); generated when absent
     
   General Options:
     -l, --limit N        Return at most N results (default: 10; history: 20)
@@ -643,6 +677,7 @@ Examples:
   # Agent mode
   ${APP_NAME} --agent "explain quantum computing"
   ${APP_NAME} --agent --max-steps 10 "latest fusion energy developments"
+  ${APP_NAME} --agent --run-id run_20260622T173012Z_7f3a9c "research goal"
 `);
 }
 
@@ -957,6 +992,68 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   // > TOML [agent.llm] > environment fallback and code defaults (applied
   // inside createLLMClient).
   const config = loadConfig(options.config);
+  const runId = options.runId ?? createRunId();
+  const startedAt = Date.now();
+  const resolvedSecrets = new Set<string>();
+  const history = new HistoryStore({ path: config.history?.path });
+  const onSecretsUsed = (secrets: string[]) => {
+    for (const secret of secrets) {
+      if (secret) resolvedSecrets.add(secret);
+    }
+  };
+  const redactAgentText = (value: string): string => {
+    const secrets = [...resolvedSecrets];
+    // General history redaction deliberately avoids substring replacement for
+    // short credentials. Agent arguments are structured text, so drop the
+    // affected description/error in full when it contains a short key.
+    if (secrets.some((secret) => secret.length > 0 && secret.length < 8 && value.includes(secret))) {
+      return "[REDACTED]";
+    }
+    return redactSensitive(value, secrets);
+  };
+  const toHistorySteps = (steps: ResearchStep[]): AgentRunStep[] => {
+    return steps.map((step) => ({
+      type: step.type,
+      description: redactAgentText(step.description),
+      timestamp: step.timestamp.toISOString(),
+      run_id: runId,
+      outcome: step.outcome ?? "failed",
+      duration_ms: step.duration_ms ?? 0,
+      ...(step.error
+        ? { error: redactAgentText(step.error) }
+        : {}),
+    }));
+  };
+  const persistAgentRun = (
+    steps: ResearchStep[],
+    outcome: "success" | "failed",
+    resultCount: number,
+    errorMessage?: string
+  ) => {
+    history.append({
+      id: newExecutionId(),
+      timestamp: new Date().toISOString(),
+      command: "agent",
+      run_id: runId,
+      input: redactAgentText(options.query),
+      agent_steps: toHistorySteps(steps),
+      source: "live",
+      attempts: [],
+      ...(errorMessage
+        ? { errors: { agent: redactAgentText(errorMessage) } }
+        : {}),
+      result_count: resultCount,
+      raw_available: false,
+      duration_ms: Math.max(0, Date.now() - startedAt),
+      outcome,
+    });
+  };
+  const warnHistoryFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `Warning: agent run history was not recorded: ${redactAgentText(message)}`
+    );
+  };
   const llm = resolveLlmConfig(
     { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl, keyRef: options.llmKeyRef, reasoningEffort: options.reasoningEffort },
     config.agent?.llm as
@@ -973,16 +1070,49 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     maxSteps: options.maxSteps,
     maxSources: options.maxSources,
     noCache: options.noCache,
+    runId,
+    onSecretsUsed,
   });
 
-  const result = await agent.research(options.query, {
-    maxSteps: options.maxSteps,
-    maxSources: options.maxSources,
-  });
+  let result: Awaited<ReturnType<SearchAgent["research"]>>;
+  try {
+    result = await agent.research(options.query, {
+      maxSteps: options.maxSteps,
+      maxSources: options.maxSources,
+      runId,
+    });
+  } catch (error) {
+    const partialSteps = error && typeof error === "object" && Array.isArray(
+      (error as { agentSteps?: unknown }).agentSteps
+    )
+      ? (error as { agentSteps: ResearchStep[] }).agentSteps
+      : [];
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      persistAgentRun(partialSteps, "failed", 0, message);
+    } catch (persistError) {
+      warnHistoryFailure(persistError);
+    }
+    // Keep the original error class for classification, while making a
+    // generated ID available to correlate any provider records written before
+    // the agent failed.
+    if (error instanceof Error) {
+      error.message = `${error.message} (run_id=${runId})`;
+      throw error;
+    }
+    throw new Error(`${String(error)} (run_id=${runId})`);
+  }
+
+  try {
+    persistAgentRun(result.steps, "success", result.sources.length);
+  } catch (error) {
+    warnHistoryFailure(error);
+  }
 
   const output = {
     mode: "agent",
     goal: options.query,
+    run_id: result.run_id,
     answer: result.answer,
     sources: result.sources,
     steps: result.steps.length,
@@ -1503,6 +1633,8 @@ function summarizeExecution(record: ExecutionRecord) {
     id: record.id,
     timestamp: record.timestamp,
     command: record.command,
+    run_id: record.run_id,
+    agent_step_count: record.agent_steps?.length,
     input: abbrev(record.input, 80),
     providers: record.routing?.providers_attempted ?? record.attempts.map((a) => a.provider),
     source: record.source,
@@ -1529,9 +1661,10 @@ function formatRecentRow(record: ExecutionRecord): string {
   const pending = record.pending_jobs?.length
     ? ` pending_jobs=${record.pending_jobs.map((job) => `${job.provider}:${job.jobId}`).join(",")}`
     : "";
+  const runId = record.run_id ? ` run_id=${record.run_id}` : "";
   return (
     `${record.timestamp}  ${record.id}  ${record.command.padEnd(7)} ` +
-    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}${pending}  ` +
+    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}${pending}${runId}  ` +
     `"${abbrev(record.input, 60)}"`
   );
 }
@@ -1582,7 +1715,9 @@ function runHistorySearch(options: ExtendedCLIOptions): void {
           .map((match) => {
             const lines = [
               `${match.execution.timestamp}  ${match.execution.id}  ` +
-                `[${match.matched_on.join(", ")}]  "${abbrev(match.execution.input, 60)}"`,
+                `[${match.matched_on.join(", ")}]` +
+                `${match.execution.run_id ? ` run_id=${match.execution.run_id}` : ""}  ` +
+                `"${abbrev(match.execution.input, 60)}"`,
             ];
             for (const result of match.matching_results ?? []) {
               lines.push(
@@ -1598,6 +1733,7 @@ function runHistorySearch(options: ExtendedCLIOptions): void {
 function formatShowHuman(record: ExecutionRecord): string {
   const lines: string[] = [];
   lines.push(`Execution ${record.id}`);
+  if (record.run_id) lines.push(`  Run ID:    ${record.run_id}`);
   lines.push(
     `  Request:   ${record.command} "${record.input}" at ${record.timestamp} ` +
       `(${record.source}, ${record.outcome}, ${record.duration_ms}ms)`
@@ -1631,6 +1767,17 @@ function formatShowHuman(record: ExecutionRecord): string {
         (attempt.result_count !== undefined ? ` results=${attempt.result_count}` : "") +
         (attempt.key_ref ? ` key=${attempt.key_ref}` : "")
     );
+  }
+  if (record.agent_steps) {
+    lines.push(`  Agent steps (${record.agent_steps.length}):`);
+    for (const [index, step] of record.agent_steps.entries()) {
+      const outcome = step.outcome ? ` ${step.outcome}` : "";
+      const duration = typeof step.duration_ms === "number" ? ` (${step.duration_ms}ms)` : "";
+      lines.push(
+        `    ${index + 1}. ${step.timestamp} ${step.type}${outcome}${duration}: ${step.description}` +
+          (step.error ? `; error=${step.error}` : "")
+      );
+    }
   }
   if (record.result === undefined || record.result === null) {
     lines.push(`  Result:    (no result recorded)`);

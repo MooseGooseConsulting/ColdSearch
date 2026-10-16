@@ -94,12 +94,18 @@ export interface FanoutOptions {
   requireFeatures?: string[];
   /**
    * Portable invocation options, translated per provider through the wired
-   * tool's mapsCommonOptions view before the adapter call (1:1 scalar
-   * mappings only). An explicit search limit is offered to providers that
-   * declare a limit mapping; the reranker truncation still applies after
-   * merging.
+   * tool's mapsCommonOptions view before the adapter call. Only `limit` is
+   * forwarded.
    */
   commonOptions?: CommonOptions;
+  /**
+   * Agent run ID for usage-log correlation. Present only when an agent run
+   * triggered this call; non-agent calls stay valid without it. `run_id`
+   * never replaces the per-execution `execution_id`.
+   */
+  runId?: string;
+  /** In-memory callback for agent history redaction; never persisted. */
+  onSecretsUsed?: (secrets: string[]) => void;
 }
 
 /**
@@ -520,6 +526,7 @@ export class FanoutEngine {
           key: keyRef,
           success: true,
           response_time_ms: durationMs,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -552,6 +559,7 @@ export class FanoutEngine {
           response_time_ms: durationMs,
           error: (error as Error).message,
           ...(quotaExhausted ? { quota_exhausted: true } : {}),
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -952,6 +960,7 @@ export class FanoutEngine {
           key: keyRef,
           success: true,
           response_time_ms: durationMs,
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -997,6 +1006,7 @@ export class FanoutEngine {
           response_time_ms: durationMs,
           error: (error as Error).message,
           ...(quotaExhausted ? { quota_exhausted: true } : {}),
+          ...(options.runId ? { run_id: options.runId } : {}),
         });
         attempts.push({
           provider,
@@ -1096,6 +1106,7 @@ export class FanoutEngine {
         key: keyRef,
         success: true,
         response_time_ms: durationMs,
+        ...(options.runId ? { run_id: options.runId } : {}),
       });
 
       return {
@@ -1117,6 +1128,7 @@ export class FanoutEngine {
         response_time_ms: durationMs,
         error: (error as Error).message,
         ...(quotaExhausted ? { quota_exhausted: true } : {}),
+        ...(options.runId ? { run_id: options.runId } : {}),
       });
       return {
         provider,

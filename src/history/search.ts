@@ -5,6 +5,7 @@ import type { ExecutionRecord } from "./types.js";
  * Ordered strongest-weakest; the first tier that matches also ranks the hit.
  */
 export type HistoryMatchReason =
+  | "run_id"
   | "request"
   | "result_title"
   | "result_url"
@@ -25,6 +26,7 @@ export interface HistorySearchMatch {
 }
 
 const REASON_ORDER: HistoryMatchReason[] = [
+  "run_id",
   "request",
   "result_title",
   "result_url",
@@ -101,6 +103,7 @@ export function searchHistory(
     const haystack = text.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   };
+  const exactRunIdQuery = query.trim().toLowerCase();
 
   const matches: { match: HistorySearchMatch; rank: number }[] = [];
 
@@ -108,7 +111,15 @@ export function searchHistory(
     const reasons = new Set<HistoryMatchReason>();
     const matchingResults: MatchingResultItem[] = [];
 
-    // 1. original request/query or URL (plus request parameters) — strongest
+    // Run IDs are exact correlation keys and rank ahead of broader text matches.
+    if (
+      exactRunIdQuery.length > 0 &&
+      record.run_id?.trim().toLowerCase() === exactRunIdQuery
+    ) {
+      reasons.add("run_id");
+    }
+
+    // Original request/query or URL (plus request parameters).
     if (
       matchesAll(record.input) ||
       (record.options !== undefined && matchesAll(JSON.stringify(record.options)))

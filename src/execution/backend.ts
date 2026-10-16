@@ -318,7 +318,17 @@ export class LocalExecutionBackend implements ExecutionBackend {
     }
   }
 
-  /** Record an intent rejected by preflight before normal backend dispatch. */
+  /** Keep resolved credentials available to in-memory agent history redaction. */
+  private reportSecretsUsed(options: FanoutOptions, secrets: string[]): void {
+    if (!options.onSecretsUsed || secrets.length === 0) return;
+    try {
+      options.onSecretsUsed(secrets);
+    } catch {
+      // A redaction observer must never change provider execution behavior.
+    }
+  }
+
+  /** Record an intent rejected by CLI preflight before normal backend dispatch. */
   recordIntentRejection(
     capability: CapabilityName,
     input: string,
@@ -405,6 +415,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "search",
+            ...(options.runId ? { run_id: options.runId } : {}),
             input: redactSensitive(query),
             options: this.requestOptions(options),
             routing: this.routingInfo("search", options, [], reranker),
@@ -429,11 +440,13 @@ export class LocalExecutionBackend implements ExecutionBackend {
     try {
       const result = await this.engine.search(query, options);
       const secrets = result.secretsUsed;
+      this.reportSecretsUsed(options, secrets);
       this.recordExecution(
         {
           id,
           timestamp: new Date().toISOString(),
           command: "search",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(query, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -483,6 +496,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
         warnings,
       };
     } catch (error) {
+      if (error instanceof AllProvidersFailedError) {
+        this.reportSecretsUsed(options, error.secretsUsed);
+      }
       this.recordExecution(this.failedRecord("search", query, options, error, start), warnings);
       this.flushWarnings(warnings);
       throw error;
@@ -549,6 +565,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "extract",
+            ...(options.runId ? { run_id: options.runId } : {}),
             input: redactSensitive(url),
             options: this.requestOptions(options),
             routing: this.routingInfo("extract", options, []),
@@ -579,6 +596,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           id,
           timestamp: new Date().toISOString(),
           command: "extract",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(url, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -644,6 +662,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           id: newExecutionId(),
           timestamp: new Date().toISOString(),
           command: "crawl",
+          ...(options.runId ? { run_id: options.runId } : {}),
           input: redactSensitive(url, secrets),
           options: redactSensitive(this.requestOptions(options), secrets),
           routing: this.routingInfo(
@@ -711,6 +730,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       id: newExecutionId(),
       timestamp: new Date().toISOString(),
       command,
+      ...(options.runId ? { run_id: options.runId } : {}),
       input: redactSensitive(input, secrets),
       options: redactSensitive(this.requestOptions(options), secrets),
       routing: this.routingInfo(
