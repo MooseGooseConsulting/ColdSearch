@@ -20,8 +20,11 @@ provenance; 2026-10-12 audit of usage-log redaction paths.
    references the ref. Cache entries use request/config identity rather than
    credential identity, so they may remain replayable until their TTL expires
    or the cache is cleared.
-2. **History audit trail**: no tamper-evidence (hash chain or similar) on
-   execution records; `raw` payloads are preserved but not integrity-checked.
+2. **History audit trail**: execution records have no integrity check against
+   an independently trusted anchor; `raw` payloads are preserved but not
+   integrity-checked. A hash chain stored alongside the records can detect
+   accidental or partial edits, but a writer who can replace the whole history
+   can recompute that chain.
 3. **Capture file hygiene**: captured envelopes sit on disk unencrypted;
    document + warn when capture dir is inside the state directory.
 4. **Redaction audit command**: no way to verify "no secrets in history/cache/
@@ -34,7 +37,11 @@ provenance; 2026-10-12 audit of usage-log redaction paths.
   available in the process, report unresolved `doppler:` references as
   **not scanned**, and never print values. Any Doppler resolution would need a
   separate, explicit networked mode with a clear warning and consent.
-- Optional history hash chaining (opt-in config flag) for tamper evidence.
+- Optional history hash chaining (opt-in config flag) may detect accidental or
+  partial edits. Do not describe it as tamper-evident against an actor who can
+  rewrite the history files unless the chain head is also anchored outside
+  that actor's write authority, such as with a protected signing key or an
+  independently stored checkpoint.
 - Key-rotation note in docs: after rotation, run `coldsearch cache clear`,
   since `--no-cache` bypasses both lookup and write-back for that invocation
   and does not replace existing entries. Cache entries are not keyed by key

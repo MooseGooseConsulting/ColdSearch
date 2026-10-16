@@ -56,11 +56,12 @@ only.
 1. **PR-B** — Firecrawl live behavior confirms the `formats` passthrough fix
    targets the real contract; `creditsUsed` is available for future
    spend-accounting follow-ups.
-2. **PR-C** — classifier needs: 402 → quota/billing (Exa x402, Firecrawl
-   credits); 403 → credentials but with provider context (Serper 403 =
-   missing key; SearXNG 403 = JSON disabled; plan-gating). Provider identity
-   must reach `classifyError` (thread `policy.label` into
-   `HTTPRequestError`).
+2. **PR-C (implemented in this stack)** — the shared HTTP classifier maps
+   402 → quota and 403 → credentials, carries `RequestPolicy.label` through
+   `HTTPRequestError`, and refines SearXNG 403 to a config hint for the
+   JSON-disabled case. These changes address the live Exa 402 and Serper 403
+   findings and preserve context for provider-specific handling; they are
+   recorded here as completed work, not an outstanding classifier request.
 3. **Docs (PR-F)** — audit doc and PROVIDERS.md need an addendum: Exa keyless
    x402 gateway (402 confirmed live 2026-10-12); Firecrawl anonymous keyless
    tier confirmed live; Serper/Tavily error envelopes confirmed.
