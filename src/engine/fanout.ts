@@ -586,6 +586,8 @@ export class FanoutEngine {
             terminalResumeJobs.push(resumeJob);
           }
           const durationMs = Math.round(performance.now() - start);
+          const quotaExhausted = isQuotaExhausted(error);
+          recoveringQuota ||= quotaExhausted;
           errors[provider] = (error as Error).message;
           const httpError = findHttpRequestError(error);
           if (httpError) providerHttpErrors[provider] = httpError;
@@ -604,6 +606,7 @@ export class FanoutEngine {
             error: (error as Error).message,
             duration_ms: durationMs,
             key_ref: keyRef,
+            ...(quotaExhausted ? { quota_exhausted: true } : {}),
           });
         }
       }
@@ -642,6 +645,20 @@ export class FanoutEngine {
         pendingJobs,
         provider: completedResumeProvider,
         status: "completed",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    // In random mode, an unfinished saved crawl does not unlock another
+    // provider. Only a quota failure while polling that handle can do so.
+    if (pendingJobs.length > 0 && quotaFallbackProviders !== undefined && !recoveringQuota) {
+      return {
+        results: [],
+        pendingJobs,
+        provider: pendingJobs[0]!.provider,
+        status: "pending",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
@@ -733,8 +750,8 @@ export class FanoutEngine {
             key_ref: keyRef,
             result_count: pageResults.length,
           });
-          // A pending async job is not a completed crawl. Try the next
-          // configured provider so it can produce usable results now.
+          // An unfinished crawl does not unlock random-mode quota fallbacks.
+          if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
           continue;
         }
 
