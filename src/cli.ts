@@ -736,24 +736,22 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
   try {
     intentResolution = resolveCommandIntent("search", options, config);
   } catch (error) {
-    if (error instanceof IntentRejectionError) {
-      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.search;
-      const warnings = backend.recordIntentRejection("search", options.query, {
-        limit: options.limit,
-        providers: options.providers,
-        rerankStrategy: options.rerank,
-        singleProvider: options.singleProvider,
-        noCache: options.noCache,
-        freshness: options.freshness,
-        intent,
-        requireFeatures: INTENT_DEFS[intent].requireFeatures,
-        commonOptions: {
-          ...(options.timeRange ? { timeRange: options.timeRange } : {}),
-          ...(intent === "content-backed-retrieval" ? { includeContent: true } : {}),
-        },
-      }, error);
-      for (const warning of warnings) console.error(`Warning: ${warning}`);
-    }
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.search;
+    const warnings = backend.recordIntentRejection("search", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      rerankStrategy: options.rerank,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+      commonOptions: {
+        ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+        ...(intent === "content-backed-retrieval" ? { includeContent: true } : {}),
+      },
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
     throw error;
   }
   renderIntentNotes(intentResolution);
@@ -798,7 +796,9 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
     providers_used: result.providersUsed,
     total: result.results.length,
     errors: Object.keys(result.errors).length > 0 ? result.errors : undefined,
-    skipped_providers: result.skippedProviders,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
   };
 
@@ -821,19 +821,17 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
   try {
     intentResolution = resolveCommandIntent("extract", options, config);
   } catch (error) {
-    if (error instanceof IntentRejectionError) {
-      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.extract;
-      const warnings = backend.recordIntentRejection("extract", options.query, {
-        limit: options.limit,
-        providers: options.providers,
-        singleProvider: options.singleProvider,
-        noCache: options.noCache,
-        freshness: options.freshness,
-        intent,
-        requireFeatures: INTENT_DEFS[intent].requireFeatures,
-      }, error);
-      for (const warning of warnings) console.error(`Warning: ${warning}`);
-    }
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.extract;
+    const warnings = backend.recordIntentRejection("extract", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
     throw error;
   }
   renderIntentNotes(intentResolution);
@@ -860,6 +858,9 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     intent: intentResolution.intent,
     result: result.result,
     provider: result.provider,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
     errors: result.errors ? result.errors : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
   };
@@ -893,19 +894,17 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
   try {
     intentResolution = resolveCommandIntent("crawl", options, config);
   } catch (error) {
-    if (error instanceof IntentRejectionError) {
-      const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.crawl;
-      const warnings = backend.recordIntentRejection("crawl", options.query, {
-        limit: options.limit,
-        providers: options.providers,
-        singleProvider: options.singleProvider,
-        noCache: options.noCache,
-        freshness: options.freshness,
-        intent,
-        requireFeatures: INTENT_DEFS[intent].requireFeatures,
-      }, error);
-      for (const warning of warnings) console.error(`Warning: ${warning}`);
-    }
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.crawl;
+    const warnings = backend.recordIntentRejection("crawl", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
     throw error;
   }
   renderIntentNotes(intentResolution);
@@ -938,6 +937,9 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     results: result.results,
     pendingJobs: result.pendingJobs,
     provider: result.provider,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
     status: result.status,
     total: result.results.length,
     errors: result.errors ? result.errors : undefined,

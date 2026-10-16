@@ -62,7 +62,7 @@ const URL_PARAM_PATTERN = new RegExp(
   `([?&](?:${SENSITIVE_URL_PARAMS.join("|")})=)[^&\\s"'\\])}]*`,
   "gi"
 );
-const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^\/?#\s"'<>]*)/gi;
+const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^\/?#\s"<>]*)/gi;
 
 /**
  * Secrets shorter than this are not substring-replaced inside larger strings:

@@ -118,6 +118,14 @@ export function validateSelectedProviders(
   }
 }
 
+/** No provider survives an intent feature filter; retain exclusions for audit history. */
+export class NoEligibleProviderFeatureError extends Error {
+  constructor(readonly skippedProviders: Record<string, string>, message: string) {
+    super(message);
+    this.name = "NoEligibleProviderFeatureError";
+  }
+}
+
 /**
  * Shared provider resolution logic used by both CLI dry-run and FanoutEngine.
  * Validates config/capability and applies strategy (all vs random), including
@@ -170,7 +178,8 @@ export function resolveCapabilityProviders(
       }
     }
     if (!eligible.length) {
-      throw new Error(
+      throw new NoEligibleProviderFeatureError(
+        skippedProviders,
         `No '${capability}' provider tool satisfies required features: ` +
           `[${options.requireFeatures.join(", ")}] (from [${selected.join(", ")}])`
       );

@@ -1,7 +1,11 @@
 import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
-import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
+import {
+  NoEligibleProviderFeatureError,
+  providerSupportsCapability,
+  resolveCapabilityProviders,
+} from "../providers.js";
 import { FirecrawlCrawlPollError, FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { isQuotaExhausted } from "../http.js";
 import { HTTPRequestError } from "../http.js";
@@ -245,11 +249,22 @@ export class FanoutEngine {
       throw new UnsupportedCommonOptionsError(capability, filtered.issuesByProvider);
     }
 
-    const plan = resolveCapabilityProviders(this.config, capability, {
-      providers: filtered.providers,
-      singleProvider: options.singleProvider,
-      requireFeatures: options.requireFeatures,
-    });
+    let plan: ReturnType<typeof resolveCapabilityProviders>;
+    try {
+      plan = resolveCapabilityProviders(this.config, capability, {
+        providers: filtered.providers,
+        singleProvider: options.singleProvider,
+        requireFeatures: options.requireFeatures,
+      });
+    } catch (error) {
+      if (error instanceof NoEligibleProviderFeatureError) {
+        throw new NoEligibleProviderFeatureError(
+          { ...filtered.skippedProviders, ...error.skippedProviders },
+          error.message
+        );
+      }
+      throw error;
+    }
     return {
       ...plan,
       skippedProviders: { ...filtered.skippedProviders, ...plan.skippedProviders },
@@ -436,11 +451,13 @@ export class FanoutEngine {
     result: ExtractResult | null;
     provider: string;
     errors?: Record<string, string>;
+    skippedProviders: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
     options = resolveOptionsForIntent("extract", this.config, options);
-    const { providers, quotaFallbackProviders } = this.getProvidersForCapability("extract", options);
+    const { providers, quotaFallbackProviders, skippedProviders } =
+      this.getProvidersForCapability("extract", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
@@ -514,6 +531,7 @@ export class FanoutEngine {
           result,
           provider,
           errors: Object.keys(errors).length > 0 ? errors : undefined,
+          skippedProviders,
           attempts,
           secretsUsed,
         };
@@ -547,7 +565,13 @@ export class FanoutEngine {
       }
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed, providerHttpErrors);
+    throw new AllProvidersFailedError(
+      errors,
+      attempts,
+      secretsUsed,
+      providerHttpErrors,
+      skippedProviders
+    );
   }
 
   /**
@@ -562,6 +586,7 @@ export class FanoutEngine {
     fallbackCompleted?: boolean;
     fallbackProvider?: string;
     errors?: Record<string, string>;
+    skippedProviders: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
@@ -614,7 +639,7 @@ export class FanoutEngine {
       resumeProviders.add(job.provider);
     }
 
-    const { providers: selectedProviders, quotaFallbackProviders } =
+    const { providers: selectedProviders, quotaFallbackProviders, skippedProviders } =
       this.getProvidersForCapability("crawl", options);
     const resumeJobsToPoll = resumePendingJobs.splice(0);
     let completedResumeProvider: string | undefined;
@@ -774,6 +799,7 @@ export class FanoutEngine {
           ? { fallbackProvider: options.resumeFallbackProvider }
           : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -788,6 +814,7 @@ export class FanoutEngine {
         provider: completedResumeProvider,
         status: "completed",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -807,6 +834,7 @@ export class FanoutEngine {
         provider: pendingJobs[0]!.provider,
         status: "pending",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -946,6 +974,7 @@ export class FanoutEngine {
             ? { fallbackProvider: provider }
             : {}),
           errors: Object.keys(errors).length > 0 ? errors : undefined,
+          skippedProviders,
           attempts,
           secretsUsed,
         };
@@ -1008,6 +1037,7 @@ export class FanoutEngine {
             }
           : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
+        skippedProviders,
         attempts,
         secretsUsed,
       };
@@ -1018,7 +1048,7 @@ export class FanoutEngine {
       attempts,
       secretsUsed,
       providerHttpErrors,
-      {},
+      skippedProviders,
       terminalResumeJobs,
       discardedResumeJobs
     );
