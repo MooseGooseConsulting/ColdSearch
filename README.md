@@ -143,6 +143,8 @@ npm test
 - `docs/CONFIGURATION.md` - Configuration reference and precedence
 - `docs/reviews/2026-07-16-project-review-and-bright-data.md` - Dated project, GitHub, memory, and Bright Data review
 - `docs/reviews/2026-10-11-provider-contract-audit.md` - Dated native-contract audit of all 8 providers for issue #79 (evidence snapshot)
+- `docs/reviews/2026-10-12-live-probe-ledger.md` - Bounded keyless live probes of provider APIs (what is live-verified vs blocked)
+- `docs/follow-ups/` - Draft follow-up issue designs from the #79 alignment set (not yet filed)
 - `plans/2026-06-22-remaining-implementation-master-plan.md` - Active implementation sequence (informational)
 - `docs/contributing/testing.md` - What to test (and what not to duplicate)
 

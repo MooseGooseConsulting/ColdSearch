@@ -355,3 +355,45 @@ test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending j
     globalThis.setTimeout = originalSetTimeout;
   }
 });
+
+test("provider-envelope fixtures replay through the adapter (Codex on #87)", async (t) => {
+  const { readFileSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "provider-envelopes");
+  const load = (name) => JSON.parse(readFileSync(join(fixtureDir, name), "utf8"));
+
+  const searchFixture = load("firecrawl-search-200.json");
+  assert.equal(searchFixture.fixtureVersion, 1);
+  const searchRestore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/search": async () =>
+      new Response(searchFixture.responseBodyText, {
+        status: searchFixture.status,
+        headers: { "Content-Type": "application/json" },
+      }),
+  });
+  try {
+    const results = await new FirecrawlAdapter().search("q", "k");
+    assert.ok(results.length > 0, "search fixture must normalize to results");
+    assert.equal(results[0].source, "firecrawl");
+  } finally {
+    searchRestore();
+  }
+
+  for (const name of ["firecrawl-scrape-markdown-200.json", "firecrawl-scrape-html-200.json"]) {
+    const scrapeFixture = load(name);
+    const scrapeRestore = installFetchMock({
+      "POST https://api.firecrawl.dev/v2/scrape": async () =>
+        new Response(scrapeFixture.responseBodyText, {
+          status: scrapeFixture.status,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+    try {
+      const result = await new FirecrawlAdapter().extract("https://example.com/x", "k");
+      assert.ok(result.content.length > 0, `${name} must extract content`);
+    } finally {
+      scrapeRestore();
+    }
+  }
+});
