@@ -2,33 +2,25 @@ import type { CapabilityName, Config } from "../types.js";
 
 /**
  * Non-secret request-shaping provider config that must participate in a cache
- * key. A provider's resolved endpoint (configured base URL or
- * `<PROVIDER>_BASE_URL` env fallback) decides which instance answers the
- * request; a cache entry sourced from one instance would replay stale results
- * after the endpoint changes. Only endpoint-like option values are included —
- * never credential material. Kept generic: any configured endpoint-like option
- * shapes the key, not a searxng-specific carve-out.
+ * key. SearXNG's resolved endpoint (configured base URL or its environment
+ * fallback) decides which instance answers the request; a cache entry sourced
+ * from one instance would replay stale results after the endpoint changes.
+ * Fixed-host adapters do not consume provider-specific base URL environment
+ * variables, so those unused values must not shape the key.
  *
- * NOTE: this mirrors `endpointKeyMaterial` in src/tools/substrate.ts, which
- * is frozen by the PR-B adapter-fix stack and cannot be edited here. A later
- * PR should switch the tool path to import this shared copy so both cache
- * surfaces derive endpoint identity from one implementation.
+ * NOTE: src/tools/substrate.ts has a separate tool-cache helper. This
+ * capability-cache resolver does not change that path; align the tool helper
+ * when its owning stack is updated.
  */
 export function endpointKeyMaterial(config: Config, provider: string): Record<string, string> {
-  const options = (config.providers[provider]?.options ?? {}) as Record<string, unknown>;
-  const material: Record<string, string> = {};
-  for (const [name, value] of Object.entries(options)) {
-    if (typeof value !== "string" || value === "") continue;
-    if (!/(base|endpoint|api|url|host|origin)/i.test(name)) continue;
-    // Endpoint-like NAME only: exclude anything that could be credential
-    // material (e.g. an api_key option) from the key material.
-    if (/(key|token|secret|credential|password|authorization)/i.test(name)) continue;
-    material[name] = value;
-  }
-  const envName = `${provider.toUpperCase()}_BASE_URL`;
-  const envValue = process.env[envName];
-  if (envValue) material[envName] = envValue;
-  return material;
+  if (provider.toLowerCase() !== "searxng") return {};
+
+  const configuredBaseUrl = config.providers.searxng?.options?.baseUrl;
+  const baseUrl = typeof configuredBaseUrl === "string"
+    ? configuredBaseUrl
+    : process.env.SEARXNG_BASE_URL;
+
+  return baseUrl ? { baseUrl } : {};
 }
 
 /**
