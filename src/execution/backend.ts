@@ -916,7 +916,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
         ? error.skippedProviders
         : undefined);
     const secrets = redaction?.secrets ?? allFailed?.secretsUsed ?? [];
-    const historySafe = redaction?.complete ?? true;
+    // Feature-rejection diagnostics can echo caller-supplied feature names.
+    // Without a complete key set, do not persist the request or error text.
+    const historySafe = redaction?.complete ??
+      !(error instanceof NoEligibleProviderFeatureError);
     const safeSkippedProviders = this.redactSkippedProviders(
       skippedProviders,
       secrets,
