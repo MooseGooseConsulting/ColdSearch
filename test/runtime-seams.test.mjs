@@ -134,7 +134,7 @@ test("filesystem error codes classify as config", () => {
   }
 });
 
-test("HTTP 401/403 classify as credentials; other HTTP errors as network", () => {
+test("HTTP 401/403 classify as credentials; server/transport errors as network", () => {
   for (const status of [401, 403]) {
     const { category, message } = classifyError(
       new HTTPRequestError(`Request failed with HTTP ${status}`, {
@@ -158,6 +158,128 @@ test("HTTP 401/403 classify as credentials; other HTTP errors as network", () =>
     new HTTPRequestError("Request failed", { url: "https://api.example/x" })
   );
   assert.equal(noStatus.category, "network");
+});
+
+test("HTTP status table: quota, rate_limit, validation, provider rows", () => {
+  const cases = [
+    [402, "quota"],
+    [429, "rate_limit"],
+    // Tavily plan/usage-limit statuses (provider-agnostic rule).
+    [432, "quota"],
+    [433, "quota"],
+    [408, "network"],
+    [500, "network"],
+    [502, "network"],
+    [503, "network"],
+    [504, "network"],
+    [400, "validation"],
+    [422, "validation"],
+    // Unnamed statuses are provider-side conditions, not transport failures.
+    [418, "provider"],
+    [404, "provider"],
+  ];
+  for (const [status, expected] of cases) {
+    const { category } = classifyError(
+      new HTTPRequestError(`Request failed with HTTP ${status}`, {
+        url: "https://api.example/x",
+        status,
+      })
+    );
+    assert.equal(category, expected, `status ${status}`);
+  }
+});
+
+test("SearXNG 403 is a config error and adds the JSON-format operator hint", () => {
+  const { category, message } = classifyError(
+    new HTTPRequestError("SearXNG search failed with HTTP 403", {
+      url: "https://search.example/search",
+      status: 403,
+      label: "SearXNG search",
+    })
+  );
+  assert.equal(category, "config");
+  assert.match(message, /SearXNG search failed with HTTP 403/); // original kept
+  assert.match(message, /formats: \[json\]/);
+  assert.match(message, /settings\.yml/);
+
+  // A non-SearXNG 403 gets no hint.
+  const other = classifyError(
+    new HTTPRequestError("Serper search failed with HTTP 403", {
+      url: "https://google.serper.dev/search",
+      status: 403,
+      label: "Serper search",
+    })
+  );
+  assert.equal(other.category, "credentials");
+  assert.doesNotMatch(other.message, /settings\.yml/);
+});
+
+test("structured provider error bodies are not surfaced in the classified message", () => {
+  // Live-probe shapes (2026-10-12), one per provider.
+  const cases = [
+    {
+      name: "tavily detail.error",
+      label: "Tavily search",
+      status: 432,
+      body: JSON.stringify({ detail: { error: "Plan limit exceeded" } }),
+      category: "quota",
+      fragment: "Plan limit exceeded",
+    },
+    {
+      name: "exa error+tag",
+      label: "Exa search",
+      status: 402,
+      body: JSON.stringify({ error: "Payment required", tag: "X402_PAYMENT_REQUIRED" }),
+      category: "quota",
+      fragment: "Payment required",
+    },
+    {
+      name: "firecrawl error+code",
+      label: "Firecrawl extract",
+      status: 401,
+      body: JSON.stringify({ error: "Invalid API key", code: "AUTH_INVALID" }),
+      category: "credentials",
+      fragment: "Invalid API key",
+    },
+    {
+      name: "serper message+statusCode",
+      label: "Serper search",
+      status: 403,
+      body: JSON.stringify({ message: "Forbidden", statusCode: 403 }),
+      category: "credentials",
+      fragment: "Forbidden",
+    },
+  ];
+
+  for (const c of cases) {
+    const original = `${c.label} failed with HTTP ${c.status}`;
+    const { category, message } = classifyError(
+      new HTTPRequestError(original, {
+        url: "https://api.example/x",
+        status: c.status,
+        body: c.body,
+        label: c.label,
+      })
+    );
+    assert.equal(category, c.category, c.name);
+    assert.match(message, new RegExp(`^${original.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), c.name);
+    assert.equal(message, original, `${c.name}: raw provider response was surfaced`);
+    assert.ok(!message.includes(c.fragment), `${c.name}: ${message}`);
+  }
+});
+
+test("classification never throws on unparseable or shapeless bodies", () => {
+  for (const body of ["{ not json", JSON.stringify([1, 2]), JSON.stringify({ ok: true }), ""]) {
+    const { category, message } = classifyError(
+      new HTTPRequestError("Request failed with HTTP 500", {
+        url: "https://api.example/x",
+        status: 500,
+        body,
+      })
+    );
+    assert.equal(category, "network");
+    assert.equal(message, "Request failed with HTTP 500");
+  }
 });
 
 test("fetchWithPolicy request timeouts classify as network", () => {

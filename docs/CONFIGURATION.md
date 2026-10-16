@@ -67,6 +67,9 @@ structurally valid config). Categories follow the error classification:
 - `config` — TOML / schema / structure
 - `credentials` — key references and env-var presence
 - `network` — transport problems (never triggered by doctor)
+- `quota` — provider account credits or quota are exhausted (HTTP 402, 432, or 433)
+- `rate_limit` — the provider rejected the request for rate limiting (HTTP 429)
+- `validation` — the provider rejected request input (HTTP 400 or 422)
 - `provider` — provider-level configuration (e.g. SearXNG base URL)
 - `unsupported_capability` — a capability no configured provider can back
 - `unsupported_tool` — provider-tool surface gaps (reported by status)
