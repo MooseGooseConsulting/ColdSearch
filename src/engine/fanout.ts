@@ -2,7 +2,7 @@ import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
 import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
-import { FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
+import { FirecrawlCrawlPollError, FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { isQuotaExhausted } from "../http.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
@@ -834,6 +834,12 @@ export class FanoutEngine {
         // resume handle so fallback and final responses stay resumable.
         if (error instanceof FirecrawlCrawlQuotaError) {
           pendingJobs.push({ provider, jobId: error.jobId, url: requestedUrl });
+        }
+        // An ambiguous poll failure after accept may still complete
+        // server-side: retain the handle and stop burning providers.
+        if (error instanceof FirecrawlCrawlPollError) {
+          pendingJobs.push({ provider, jobId: error.jobId, url: requestedUrl });
+          if (quotaFallbackProviders !== undefined) break;
         }
         if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
