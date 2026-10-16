@@ -30,6 +30,12 @@ function isNonEmptyTransportError(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isRetryableTransportErrorName(
+  value: unknown
+): value is "TypeError" | "AbortError" {
+  return value === "TypeError" || value === "AbortError";
+}
+
 export function isFixtureRecord(value: unknown): value is ProviderEnvelopeFixture {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -38,6 +44,7 @@ export function isFixtureRecord(value: unknown): value is ProviderEnvelopeFixtur
     typeof record.provider === "string" &&
     typeof record.method === "string" &&
     typeof record.url === "string" &&
+    (record.errorName === undefined || isRetryableTransportErrorName(record.errorName)) &&
     (isValidHttpStatus(record.status) ||
       (record.status === undefined && isNonEmptyTransportError(record.error)))
   );
@@ -74,7 +81,9 @@ export async function loadFixtures(targetPath: string): Promise<ProviderEnvelope
 /** Rebuild a Response exactly as captured (status, headers, body text). */
 export function fixtureResponse(fixture: ProviderEnvelopeFixture): Response {
   if (fixture.status === undefined && isNonEmptyTransportError(fixture.error)) {
-    throw new Error(`Captured transport failure: ${fixture.error}`);
+    const error = new Error(`Captured transport failure: ${fixture.error}`);
+    if (fixture.errorName) error.name = fixture.errorName;
+    throw error;
   }
   if (!isValidHttpStatus(fixture.status)) {
     throw new Error("Invalid provider envelope fixture: missing or invalid captured HTTP status");

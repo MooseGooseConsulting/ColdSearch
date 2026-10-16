@@ -25,6 +25,7 @@ import { redactUrlUserInfo } from "../history/redact.js";
 const REDACTED = "REDACTED";
 const RESPONSE_BODY_LIMIT_BYTES = 64 * 1024;
 const RESPONSE_BODY_READ_TIMEOUT_MS = 500;
+const INCOMPLETE_CAPTURE_MARKER = "…[capture prefix incomplete]";
 
 /** Header names whose values are always redacted (compared lowercase). */
 const SENSITIVE_HEADER_NAMES = new Set([
@@ -67,6 +68,8 @@ export interface CaptureRecord {
   durationMs: number;
   /** Error message for exchanges that never produced a response. */
   error?: string;
+  /** Retryable transport error class, when the live request retried it. */
+  errorName?: "TypeError" | "AbortError";
 }
 
 export interface CaptureInput {
@@ -80,6 +83,8 @@ export interface CaptureInput {
   responseBodyText?: string;
   durationMs: number;
   error?: string;
+  /** Retryable transport error class, when the live request retried it. */
+  errorName?: "TypeError" | "AbortError";
   /** Resolved secret values from the caller's RequestPolicy, when available. */
   secrets?: string[];
 }
@@ -153,11 +158,48 @@ function redactCredentialKeys(text: string): string {
     );
 }
 
+function redactJsonCredentialValues(text: string): string {
+  const keys = SENSITIVE_VALUE_KEYS.join("|");
+  const keyPattern = new RegExp('"(?:' + keys + ')"\\s*:\\s*"', "gi");
+  let output = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = keyPattern.exec(text)) !== null) {
+    const valueStart = keyPattern.lastIndex;
+    let valueEnd = valueStart;
+    while (valueEnd < text.length) {
+      if (text[valueEnd] === "\\") {
+        valueEnd += 2;
+      } else if (text[valueEnd] === "\"") {
+        break;
+      } else {
+        valueEnd += 1;
+      }
+    }
+
+    const complete = valueEnd < text.length;
+    output += text.slice(cursor, valueStart) + REDACTED;
+    if (complete) {
+      output += "\"";
+      cursor = valueEnd + 1;
+      keyPattern.lastIndex = cursor;
+    } else {
+      const markerStart = text.endsWith(INCOMPLETE_CAPTURE_MARKER)
+        ? text.length - INCOMPLETE_CAPTURE_MARKER.length
+        : text.length;
+      output += text.slice(Math.max(valueStart, markerStart));
+      cursor = text.length;
+      break;
+    }
+  }
+
+  return output + text.slice(cursor);
+}
+
 export function redactText(text: string, secrets: string[]): string {
-  return redactUrlUserInfo(
-    redactCredentialKeys(redactKnownSecrets(text, secrets)),
-    REDACTED
-  );
+  const redacted = redactCredentialKeys(redactKnownSecrets(text, secrets));
+  return redactUrlUserInfo(redactJsonCredentialValues(redacted), REDACTED);
 }
 
 function normalizeHeaders(
@@ -274,6 +316,7 @@ export function buildCaptureRecord(input: CaptureInput, now = new Date()): Captu
     record.responseBodyText = truncateBody(redactText(input.responseBodyText, secrets));
   }
   if (input.error) record.error = redactText(input.error, secrets);
+  if (input.errorName) record.errorName = input.errorName;
   return record;
 }
 
@@ -319,6 +362,11 @@ function assertSafeCaptureDirectory(
       `Capture path component is not a real directory: ${directory}`
     );
   }
+
+  // Windows does not expose POSIX ownership/mode semantics through getuid()
+  // and Stats.mode. Keep the structural checks above, but only apply these
+  // permission checks on platforms where the metadata is meaningful.
+  if (currentUid === undefined) return;
 
   // Trust root-owned system directories and directories owned by this process.
   // An untrusted owner can change a directory's mode or replace its entries.
@@ -459,7 +507,7 @@ export async function readCaptureResponsePrefix(
   const safePrefix = longestSecret > 1
     ? text.slice(0, Math.max(0, text.length - longestSecret + 1))
     : text;
-  return `${safePrefix}…[capture prefix incomplete]`;
+  return `${safePrefix}${INCOMPLETE_CAPTURE_MARKER}`;
 }
 
 /**
@@ -472,10 +520,41 @@ export function recordCapture(input: CaptureInput): Promise<void> {
   const dir = process.env.COLDSEARCH_CAPTURE_DIR?.trim();
   if (!dir) return writeChain;
 
+  return enqueueCaptureWrite(Promise.resolve(input), dir);
+}
+
+/**
+ * Reserve the next JSONL position before an asynchronous response-body read.
+ * The returned writer fills that position once the bounded read completes.
+ */
+export function reserveCaptureRecord(): (input: CaptureInput) => Promise<void> {
+  const dir = process.env.COLDSEARCH_CAPTURE_DIR?.trim();
+  if (!dir) return () => writeChain;
+
+  let resolveInput!: (input: CaptureInput) => void;
+  const input = new Promise<CaptureInput>((resolve) => {
+    resolveInput = resolve;
+  });
+  const write = enqueueCaptureWrite(input, dir);
+  let committed = false;
+  return (captureInput) => {
+    if (!committed) {
+      committed = true;
+      resolveInput(captureInput);
+    }
+    return write;
+  };
+}
+
+function enqueueCaptureWrite(
+  input: Promise<CaptureInput>,
+  dir: string
+): Promise<void> {
   const write = writeChain.then(async () => {
+    const captureInput = await input;
     try {
       const now = new Date();
-      const record = buildCaptureRecord(input, now);
+      const record = buildCaptureRecord(captureInput, now);
       const safeDir = await ensureSafeCaptureDirectory(dir);
       const file = path.join(safeDir, captureFileName(now));
       await appendFile(

@@ -3,6 +3,7 @@ import {
   captureEnabled,
   readCaptureResponsePrefix,
   recordCapture,
+  reserveCaptureRecord,
   trackCaptureTask,
 } from "./testing/capture.js";
 
@@ -160,6 +161,15 @@ function shouldRetryError(error: unknown, externalAborted: boolean): boolean {
   return false;
 }
 
+function retryableTransportErrorName(
+  error: unknown
+): "TypeError" | "AbortError" | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return error.name === "TypeError" || error.name === "AbortError"
+    ? error.name
+    : undefined;
+}
+
 async function safeReadText(response: Response): Promise<string> {
   try {
     return await response.text();
@@ -195,6 +205,7 @@ export async function fetchWithPolicy(
       responseHeaders?: Headers;
       responseBodyText?: string;
       error?: string;
+      errorName?: "TypeError" | "AbortError";
     }, durationMs = Date.now() - attemptStart): void => {
       if (!captureOn || attemptCaptured) return;
       attemptCaptured = true;
@@ -222,10 +233,13 @@ export async function fetchWithPolicy(
         return;
       }
       attemptCaptured = true;
+      const commitCapture = reserveCaptureRecord();
       trackCaptureTask(
-        readCaptureResponsePrefix(captureResponse, policy.secrets).then(
-          (responseBodyText) =>
-            recordCapture({
+        Promise.resolve()
+          .then(() => readCaptureResponsePrefix(captureResponse, policy.secrets))
+          .catch(() => undefined)
+          .then((responseBodyText) =>
+            commitCapture({
               label: policy.label,
               method,
               url: requestUrl,
@@ -237,7 +251,7 @@ export async function fetchWithPolicy(
               responseHeaders: response.headers,
               responseBodyText,
             })
-        )
+          )
       );
     };
 
@@ -313,7 +327,10 @@ export async function fetchWithPolicy(
       const externalAborted = externalSignal?.aborted === true;
 
       if (attempt < retries && shouldRetryError(error, externalAborted)) {
-        recordAttempt({ error: error instanceof Error ? error.message : String(error) });
+        recordAttempt({
+          error: error instanceof Error ? error.message : String(error),
+          errorName: retryableTransportErrorName(error),
+        });
         await sleep(withJitter(retryDelayMs * (attempt + 1)), externalSignal);
         continue;
       }
