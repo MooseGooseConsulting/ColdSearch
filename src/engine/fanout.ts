@@ -656,7 +656,7 @@ export class FanoutEngine {
     // provider. Only a quota failure while polling that handle can do so.
     if (pendingJobs.length > 0 && quotaFallbackProviders !== undefined && !recoveringQuota) {
       return {
-        results: [],
+        results: completedResumeResults,
         pendingJobs,
         provider: pendingJobs[0]!.provider,
         status: "pending",
