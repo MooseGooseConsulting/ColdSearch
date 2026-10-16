@@ -27,6 +27,8 @@ interface CacheEntry<T = unknown> {
   created_at: number;
   ttl_seconds: number;
   origin_execution_id?: string;
+  /** Separate sanitized history copy; never used as the replay payload. */
+  history_snapshot?: unknown;
 }
 
 /** Provenance metadata returned alongside a cache hit. */
@@ -35,6 +37,8 @@ export interface CacheEntryMeta {
   ttl_seconds: number;
   /** null for entries written before provenance existed ("unknown"). */
   origin_execution_id: string | null;
+  /** Optional sanitized history copy; legacy entries have no snapshot. */
+  history_snapshot?: unknown;
 }
 
 export interface CacheStats {
@@ -139,6 +143,9 @@ export class CacheStore {
             typeof entry.origin_execution_id === "string"
               ? entry.origin_execution_id
               : null,
+          ...(Object.prototype.hasOwnProperty.call(entry, "history_snapshot")
+            ? { history_snapshot: entry.history_snapshot }
+            : {}),
         },
       };
     } catch {
@@ -167,7 +174,7 @@ export class CacheStore {
     key: string,
     payload: T,
     ttlSeconds: number,
-    provenance?: { originExecutionId?: string }
+    provenance?: { originExecutionId?: string; historySnapshot?: unknown }
   ): void {
     if (!this.enabled) return;
 
@@ -187,6 +194,9 @@ export class CacheStore {
         ttl_seconds: ttlSeconds,
         ...(provenance?.originExecutionId
           ? { origin_execution_id: provenance.originExecutionId }
+          : {}),
+        ...(provenance?.historySnapshot !== undefined
+          ? { history_snapshot: provenance.historySnapshot }
           : {}),
       };
 

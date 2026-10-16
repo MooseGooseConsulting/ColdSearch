@@ -106,8 +106,8 @@ export interface FanoutOptions {
   runId?: string;
   /** In-memory callback for agent history redaction; never persisted. */
   onSecretsUsed?: (secrets: string[]) => void;
-  /** Marks an agent run when at least one provider search was actually attempted. */
-  onProviderSearchExecuted?: () => void;
+  /** Marks that configured provider secrets were resolved for this live search. */
+  onConfiguredSecretsResolved?: () => void;
   /** Marks agent free-text history unavailable when secret collection is incomplete. */
   onSecretCollectionIncomplete?: () => void;
 }
@@ -221,6 +221,11 @@ export class FanoutEngine {
     this.usageLogger = new UsageLogger({ path: config.logging?.usage?.path });
     this.keyPool = createKeyPoolManager();
     this.initializeKeyPools();
+  }
+
+  /** Resolve configured credentials for persistence redaction. */
+  resolveConfiguredSecrets(): Promise<{ secrets: string[]; complete: boolean }> {
+    return this.keyPool.resolveAllSecretsWithStatus();
   }
 
   /**

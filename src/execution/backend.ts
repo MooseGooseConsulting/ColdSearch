@@ -137,6 +137,40 @@ const isSearchCachePayload = (p: unknown): p is SearchResult =>
   Array.isArray((p as SearchResult).results) &&
   Array.isArray((p as SearchResult).providersUsed);
 
+interface SearchHistorySnapshot {
+  input: string;
+  options?: Record<string, unknown>;
+  results: NormalizedResult[];
+  providers: string[];
+  result_count: number;
+}
+
+/** A malformed or legacy snapshot must not make cache replay fail. */
+const isSearchHistorySnapshot = (value: unknown): value is SearchHistorySnapshot => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  return (
+    typeof snapshot.input === "string" &&
+    Array.isArray(snapshot.results) &&
+    snapshot.results.every((item) =>
+      !!item &&
+      typeof item === "object" &&
+      typeof (item as NormalizedResult).title === "string" &&
+      typeof (item as NormalizedResult).url === "string" &&
+      typeof (item as NormalizedResult).snippet === "string" &&
+      typeof (item as NormalizedResult).score === "number" &&
+      typeof (item as NormalizedResult).source === "string"
+    ) &&
+    Array.isArray(snapshot.providers) &&
+    snapshot.providers.every((provider) => typeof provider === "string") &&
+    typeof snapshot.result_count === "number" &&
+    (snapshot.options === undefined ||
+      (!!snapshot.options &&
+        typeof snapshot.options === "object" &&
+        !Array.isArray(snapshot.options)))
+  );
+};
+
 const isExtractCachePayload = (p: unknown): p is ExtractOutcome =>
   !!p && typeof p === "object" && "result" in (p as Record<string, unknown>);
 
@@ -346,20 +380,22 @@ export class LocalExecutionBackend implements ExecutionBackend {
     }
   }
 
-  /** Mark agent history redaction as provider-aware after a real search attempt. */
-  private reportProviderSearchExecuted(options: FanoutOptions, attemptCount: number): void {
-    if (attemptCount === 0 || !options.onProviderSearchExecuted) return;
+  /** Signal that the complete configured key set was checked for this live search. */
+  private reportConfiguredSecretsResolved(options: FanoutOptions): void {
     try {
-      options.onProviderSearchExecuted();
+      options.onConfiguredSecretsResolved?.();
     } catch {
-      // An observer must not change provider behavior, but the persisted
-      // agent text must be withheld if it cannot record the search boundary.
       try {
         options.onSecretCollectionIncomplete?.();
       } catch {
-        // Ignore observer failures during provider execution.
+        // Observer failures must not alter provider execution.
       }
     }
+  }
+
+  /** Resolve configured provider credentials for persistence redaction. */
+  resolveProviderSecrets(): Promise<{ secrets: string[]; complete: boolean }> {
+    return this.engine.resolveConfiguredSecrets();
   }
 
   /** Record an intent rejected by CLI preflight before normal backend dispatch. */
@@ -445,12 +481,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
     if (key) {
       const entry = this.cache.getEntry("search", key, isSearchCachePayload);
       if (entry && this.isFresh(entry.meta, ttl)) {
+        const historySnapshot = isSearchHistorySnapshot(entry.meta.history_snapshot)
+          ? entry.meta.history_snapshot
+          : undefined;
         // Exact cache hit: a new execution with zero provider calls, linked
         // to the originating execution when provenance is known.
         // Avoid resolving unrelated credentials during a local cache replay.
-        // The origin record carries any safe content; this entry remains a
-        // content-free link. Agent free text fails closed because the replay
-        // does not reveal which provider credentials may appear in its data.
+        // The separate history snapshot was scrubbed on the live path; legacy
+        // entries without one remain content-free. Agent free text still
+        // fails closed because the replay does not resolve provider secrets.
         this.reportSecretsUsed(options, [], false);
         this.recordExecution(
           {
@@ -458,13 +497,20 @@ export class LocalExecutionBackend implements ExecutionBackend {
             timestamp: new Date().toISOString(),
             command: "search",
             ...(options.runId ? { run_id: options.runId } : {}),
-            input: "[REDACTED]",
-            routing: this.routingInfo("search", options, [], reranker),
+            input: historySnapshot?.input ?? "[REDACTED]",
+            ...(historySnapshot?.options ? { options: historySnapshot.options } : {}),
+            routing: this.routingInfo(
+              "search",
+              options,
+              historySnapshot?.providers ?? [],
+              reranker
+            ),
             source: "cache",
             origin_execution_id: entry.meta.origin_execution_id,
             cache: this.cacheProvenance(entry.meta),
             attempts: [],
-            result_count: entry.payload.results.length,
+            ...(historySnapshot ? { result: historySnapshot.results } : {}),
+            result_count: historySnapshot?.result_count ?? entry.payload.results.length,
             raw_available: false,
             duration_ms: 0,
             outcome: "success",
@@ -477,19 +523,45 @@ export class LocalExecutionBackend implements ExecutionBackend {
 
     const id = newExecutionId();
     const start = performance.now();
+    const configuredSecrets = await this.engine.resolveConfiguredSecrets();
+    const secrets = new Set(configuredSecrets.secrets);
+    this.reportSecretsUsed(options, configuredSecrets.secrets, configuredSecrets.complete);
+    this.reportConfiguredSecretsResolved(options);
     try {
       const result = await this.engine.search(query, options);
-      this.reportProviderSearchExecuted(options, result.attempts.length);
-      const secrets = result.secretsUsed;
-      this.reportSecretsUsed(options, secrets);
+      for (const secret of result.secretsUsed) secrets.add(secret);
+      this.reportSecretsUsed(options, result.secretsUsed);
+      const historySafe = configuredSecrets.complete;
+      const historyInput = historySafe
+        ? redactSensitiveForPersistence(query, [...secrets])
+        : "[REDACTED]";
+      const optionsValue = historySafe
+        ? redactForPersistence(this.requestOptions(options), [...secrets])
+        : null;
+      const historyOptions = optionsValue &&
+        typeof optionsValue === "object" && !Array.isArray(optionsValue)
+        ? optionsValue as Record<string, unknown>
+        : undefined;
+      const historyResults = historySafe
+        ? redactForPersistence(result.results, [...secrets])
+        : null;
+      const historySnapshot: SearchHistorySnapshot | undefined = Array.isArray(historyResults)
+        ? {
+            input: historyInput,
+            options: historyOptions,
+            results: historyResults as NormalizedResult[],
+            providers: [...result.providersUsed],
+            result_count: result.results.length,
+          }
+        : undefined;
       this.recordExecution(
         {
           id,
           timestamp: new Date().toISOString(),
           command: "search",
           ...(options.runId ? { run_id: options.runId } : {}),
-          input: redactSensitiveForPersistence(query, secrets),
-          options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
+          input: historyInput,
+          ...(historyOptions ? { options: historyOptions } : {}),
           routing: this.routingInfo(
             "search",
             options,
@@ -498,14 +570,21 @@ export class LocalExecutionBackend implements ExecutionBackend {
             result.skippedProviders
           ),
           source: "live",
-          attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
-          partitions: redactSensitiveForPersistence(result.partitions, secrets),
-          result: redactForPersistence(result.results, secrets) ?? undefined,
+          attempts: LocalExecutionBackend.toAttempts(result.attempts, [...secrets]).map(
+            (attempt) => {
+              if (!historySafe) delete attempt.error;
+              return attempt;
+            }
+          ),
+          ...(historySafe
+            ? { partitions: redactSensitiveForPersistence(result.partitions, [...secrets]) }
+            : {}),
+          result: Array.isArray(historyResults) ? historyResults : undefined,
           result_count: result.results.length,
           raw_available: false,
-          errors:
+          errors: historySafe &&
             Object.keys(result.errors).length > 0
-              ? redactSensitiveForPersistence(result.errors, secrets)
+              ? redactSensitiveForPersistence(result.errors, [...secrets])
               : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome: Object.keys(result.errors).length > 0 ? "partial" : "success",
@@ -524,7 +603,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           key,
           { results: result.results, providersUsed: result.providersUsed, errors: {} },
           this.searchTtl,
-          { originExecutionId: id }
+          { originExecutionId: id, ...(historySnapshot ? { historySnapshot } : {}) }
         );
       }
       return {
@@ -537,11 +616,20 @@ export class LocalExecutionBackend implements ExecutionBackend {
         warnings,
       };
     } catch (error) {
+      const errorSecrets = error instanceof AllProvidersFailedError
+        ? error.secretsUsed
+        : [];
+      for (const secret of errorSecrets) secrets.add(secret);
       if (error instanceof AllProvidersFailedError) {
-        this.reportProviderSearchExecuted(options, error.attempts.length);
-        this.reportSecretsUsed(options, error.secretsUsed);
+        this.reportSecretsUsed(options, errorSecrets);
       }
-      this.recordExecution(this.failedRecord("search", query, options, error, start), warnings);
+      this.recordExecution(
+        this.failedRecord("search", query, options, error, start, {
+          secrets: [...secrets],
+          complete: configuredSecrets.complete,
+        }),
+        warnings
+      );
       this.flushWarnings(warnings);
       throw error;
     }
@@ -763,14 +851,16 @@ export class LocalExecutionBackend implements ExecutionBackend {
     input: string,
     options: FanoutOptions,
     error: unknown,
-    start: number
+    start: number,
+    redaction?: { secrets: string[]; complete: boolean }
   ): ExecutionRecord {
     const allFailed = error instanceof AllProvidersFailedError ? error : null;
     const skippedProviders = allFailed?.skippedProviders ??
       (error instanceof UnsupportedCommonOptionsError || error instanceof NoEligibleProviderFeatureError
         ? error.skippedProviders
         : undefined);
-    const secrets = allFailed?.secretsUsed ?? [];
+    const secrets = redaction?.secrets ?? allFailed?.secretsUsed ?? [];
+    const historySafe = redaction?.complete ?? true;
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
     };
@@ -779,8 +869,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
       timestamp: new Date().toISOString(),
       command,
       ...(options.runId ? { run_id: options.runId } : {}),
-      input: redactSensitiveForPersistence(input, secrets),
-      options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
+      input: historySafe ? redactSensitiveForPersistence(input, secrets) : "[REDACTED]",
+      ...(historySafe
+        ? { options: redactSensitiveForPersistence(this.requestOptions(options), secrets) }
+        : {}),
       routing: this.routingInfo(
         command,
         options,
@@ -789,9 +881,14 @@ export class LocalExecutionBackend implements ExecutionBackend {
         skippedProviders
       ),
       source: "live",
-      attempts: allFailed ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets) : [],
+      attempts: allFailed
+        ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets).map((attempt) => {
+            if (!historySafe) delete attempt.error;
+            return attempt;
+          })
+        : [],
       raw_available: false,
-      errors: redactSensitiveForPersistence(errors, secrets),
+      ...(historySafe ? { errors: redactSensitiveForPersistence(errors, secrets) } : {}),
       duration_ms: Math.round(performance.now() - start),
       outcome: "failed",
     };

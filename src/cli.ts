@@ -994,9 +994,10 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   const config = loadConfig(options.config);
   const runId = options.runId ?? createRunId();
   const startedAt = Date.now();
+  const backend = new LocalExecutionBackend(options.config);
   const resolvedSecrets = new Set<string>();
   let secretCollectionFailed = false;
-  let providerSearchObserved = false;
+  let providerSecretsChecked = false;
   const history = new HistoryStore({ path: config.history?.path });
   const onSecretsUsed = (secrets: string[]) => {
     try {
@@ -1013,8 +1014,21 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   const onSecretCollectionIncomplete = () => {
     secretCollectionFailed = true;
   };
-  const onProviderSearchExecuted = () => {
-    providerSearchObserved = true;
+  const onConfiguredSecretsResolved = () => {
+    providerSecretsChecked = true;
+  };
+  const ensureProviderSecretsForHistory = async () => {
+    // A live search already resolved the provider pools. Cache replay marks
+    // collection incomplete and must stay fail-closed without secret lookups.
+    if (providerSecretsChecked || secretCollectionFailed) return;
+    providerSecretsChecked = true;
+    try {
+      const configuredSecrets = await backend.resolveProviderSecrets();
+      onSecretsUsed(configuredSecrets.secrets);
+      if (!configuredSecrets.complete) secretCollectionFailed = true;
+    } catch {
+      secretCollectionFailed = true;
+    }
   };
   const redactAgentText = (value: string): string => {
     if (secretCollectionFailed) return "[REDACTED]";
@@ -1046,7 +1060,6 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     resultCount: number,
     details: { errorMessage?: string; result?: string } = {}
   ) => {
-    if (!providerSearchObserved) secretCollectionFailed = true;
     history.append({
       id: newExecutionId(),
       timestamp: new Date().toISOString(),
@@ -1091,8 +1104,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     maxSources: options.maxSources,
     noCache: options.noCache,
     runId,
+    executionBackend: backend,
     onSecretsUsed,
-    onProviderSearchExecuted,
+    onConfiguredSecretsResolved,
     onSecretCollectionIncomplete,
   });
 
@@ -1104,6 +1118,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
       runId,
     });
   } catch (error) {
+    await ensureProviderSecretsForHistory();
     const partialSteps = error && typeof error === "object" && Array.isArray(
       (error as { agentSteps?: unknown }).agentSteps
     )
@@ -1125,6 +1140,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     throw new Error(`${String(error)} (run_id=${runId})`);
   }
 
+  await ensureProviderSecretsForHistory();
   try {
     persistAgentRun(result.steps, "success", result.sources.length, {
       result: result.answer,

@@ -234,12 +234,13 @@ export class KeyPoolManager {
    * Resolve every configured credential value, deduplicated, for persistence
    * redaction. Mirrors how a real invocation resolves keys (env:/doppler:/
    * literal refs), so anything a provider response could echo back is known.
-   * Best-effort: an unresolvable ref (missing env var, unauthenticated
-   * Doppler) has no value to scrub and is skipped. In-memory only.
+   * Returns `complete: false` if any configured ref could not be resolved;
+   * callers persisting free text must then fail closed. Values stay in memory.
    */
-  async resolveAllSecrets(): Promise<string[]> {
+  async resolveAllSecretsWithStatus(): Promise<{ secrets: string[]; complete: boolean }> {
     const secrets: string[] = [];
     const seen = new Set<string>();
+    let complete = true;
     for (const [provider, pool] of this.pools) {
       for (const ref of this.getEffectiveKeyRefs(provider, pool)) {
         try {
@@ -249,11 +250,17 @@ export class KeyPoolManager {
             secrets.push(value);
           }
         } catch {
-          // No value to scrub from an unresolvable ref; keep going.
+          // Keep going so successfully resolved refs still improve redaction,
+          // while exposing that the complete configured set is not known.
+          complete = false;
         }
       }
     }
-    return secrets;
+    return { secrets, complete };
+  }
+
+  async resolveAllSecrets(): Promise<string[]> {
+    return (await this.resolveAllSecretsWithStatus()).secrets;
   }
 
   getProviders(): string[] {
