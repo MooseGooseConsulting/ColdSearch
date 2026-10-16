@@ -606,3 +606,31 @@ test("provider default Exa result count survives an implicit CLI limit", async (
   }
 });
 
+
+test("quota error mid-poll retains the Firecrawl job ID for resume (CodeRabbit on #69)", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "job-quota" }),
+    "GET https://api.firecrawl.dev/v2/crawl/job-quota": async () =>
+      jsonResponse({ success: false, status: "scraping", error: "quota exhausted" }, { status: 402 }),
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", { limit: 1 });
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "job-quota", url: "https://x.example" },
+    ]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    restore();
+  }
+});

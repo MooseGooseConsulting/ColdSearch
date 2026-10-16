@@ -186,7 +186,7 @@ test("quota alternatives respect feature eligibility and do not mutate config po
   assert.deepEqual(config.capabilities.extract.providers, before);
 });
 
-test("all-failed Firecrawl crawl poll preserves quota error classification", async (t) => {
+test("quota error mid-poll retains the Firecrawl job as pending (CodeRabbit on #69)", async (t) => {
   const config = fixture(t, "crawl", ["firecrawl"]);
   const originalSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
@@ -197,17 +197,15 @@ test("all-failed Firecrawl crawl poll preserves quota error classification", asy
   });
   t.after(restore);
 
-  let failure;
-  await assert.rejects(
-    new FanoutEngine(config).crawl("https://x.example", { limit: 1 }),
-    (error) => {
-      failure = error;
-      return error instanceof AllProvidersFailedError;
-    }
+  const out = await new FanoutEngine(config).crawl("https://x.example", { limit: 1 });
+  assert.equal(out.status, "pending");
+  assert.deepEqual(out.pendingJobs, [
+    { provider: "firecrawl", jobId: "quota-job", url: "https://x.example" },
+  ]);
+  assert.ok(
+    out.attempts.some((a) => a.provider === "firecrawl" && a.quota_exhausted === true),
+    "quota attempt must be flagged"
   );
-
-  assert.equal(failure.providerHttpErrors.firecrawl.status, 402);
-  assert.equal(classifyError(failure).category, "quota");
 });
 
 test("backend persists quota recovery as one partial execution with safe provider attempts", async (t) => {

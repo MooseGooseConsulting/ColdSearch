@@ -2,7 +2,7 @@ import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
 import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
-import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
+import { FirecrawlCrawlQuotaError, FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { isQuotaExhausted } from "../http.js";
 import { UsageLogger } from "../logging/usage.js";
 import { assertNormalizedResult } from "../contracts/envelope.js";
@@ -830,6 +830,11 @@ export class FanoutEngine {
           key_ref: keyRef,
           ...(quotaExhausted ? { quota_exhausted: true } : {}),
         });
+        // A quota error mid-poll leaves a live server-side job: retain the
+        // resume handle so fallback and final responses stay resumable.
+        if (error instanceof FirecrawlCrawlQuotaError) {
+          pendingJobs.push({ provider, jobId: error.jobId, url: requestedUrl });
+        }
         if (quotaFallbackProviders !== undefined && !recoveringQuota) break;
       }
     }

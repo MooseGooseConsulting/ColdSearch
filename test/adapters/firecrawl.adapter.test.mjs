@@ -61,9 +61,9 @@ test("firecrawl crawl preserves quota rejection during polling instead of treati
   });
   t.after(restore);
   await assert.rejects(new FirecrawlAdapter().crawl("https://x.example", "k"), (error) => {
-    assert.match(error.message, /crawl poll failed/);
+    assert.match(error.message, /hit quota exhaustion/);
+    assert.equal(error.jobId, "quota-job");
     assert.equal(isQuotaExhausted(error), true);
-    assert.equal(error.cause.status, 402);
     return true;
   });
   assert.equal(pollCount, 1);

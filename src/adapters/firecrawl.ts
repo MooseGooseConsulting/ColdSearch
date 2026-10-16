@@ -24,6 +24,20 @@ export class FirecrawlCrawlTerminalError extends Error {
 }
 
 /**
+ * Quota exhaustion mid-poll: the job exists server-side and stays resumable,
+ * so it carries the jobId across the adapter boundary (CodeRabbit on #69).
+ */
+export class FirecrawlCrawlQuotaError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, detail: string, cause?: unknown) {
+    super(`Firecrawl crawl job '${jobId}' hit quota exhaustion: ${detail}`, { cause });
+    this.name = "FirecrawlCrawlQuotaError";
+    this.jobId = jobId;
+  }
+}
+
+/**
  * Live v2 scrape accepts markdown, html, rawHtml, and rawBase64.
  * It rejects the common "text" value. Markdown is the page-content format.
  */
@@ -353,7 +367,10 @@ export class FirecrawlAdapter implements SearchAdapter {
             error.status === 408 ||
             error.status === 429;
 
-          if (!isTransientStatus || isQuotaExhausted(error)) {
+          if (isQuotaExhausted(error)) {
+            throw new FirecrawlCrawlQuotaError(jobId, error.message, error);
+          }
+          if (!isTransientStatus) {
             throw new Error(
               `Firecrawl crawl poll failed for job ${jobId}: ${error.message}`,
               { cause: error }
