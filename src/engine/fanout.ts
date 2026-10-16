@@ -599,6 +599,7 @@ export class FanoutEngine {
             success: false,
             response_time_ms: durationMs,
             error: (error as Error).message,
+            ...(quotaExhausted ? { quota_exhausted: true } : {}),
           });
           attempts.push({
             provider,
