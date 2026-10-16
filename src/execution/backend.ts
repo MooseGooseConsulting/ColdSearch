@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { effectiveJinaReturnFormat } from "../adapters/jina.js";
 import { loadConfig } from "../config.js";
 import {
   AllProvidersFailedError,
@@ -386,20 +387,12 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
-    const requestFormat = options.format;
-    const configuredReturnFormat = Object.entries(jinaOptions).find(
-      ([name, value]) =>
-        name.toLowerCase() === "x-return-format" && value !== undefined && value !== null
-    )?.[1];
-    const effectiveReturnFormat =
-      requestFormat ??
-      (configuredReturnFormat === undefined ? undefined : String(configuredReturnFormat));
+    const effectiveReturnFormat = effectiveJinaReturnFormat({
+      format: options.format,
+      providerOptions: jinaOptions,
+    });
     const key = useCache
-      ? cacheKey(
-          "extract",
-          url,
-          effectiveReturnFormat === undefined ? {} : { format: effectiveReturnFormat }
-        )
+      ? cacheKey("extract", url, { format: effectiveReturnFormat })
       : null;
 
     if (key) {
