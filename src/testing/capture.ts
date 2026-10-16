@@ -287,6 +287,23 @@ export function trackCaptureTask(task: Promise<void>): void {
   void tracked.then(() => pendingCaptureTasks.delete(tracked));
 }
 
+class UnsafeCaptureDirectoryError extends Error {}
+
+let unsafeCaptureDirectoryWarningIssued = false;
+
+function warnUnsafeCaptureDirectory(): void {
+  if (unsafeCaptureDirectoryWarningIssued) return;
+  unsafeCaptureDirectoryWarningIssued = true;
+  try {
+    process.emitWarning(
+      "Capture records are being skipped because COLDSEARCH_CAPTURE_DIR or one of its parent directories is unsafe; choose a private directory with trusted ancestors.",
+      { code: "COLDSEARCH_UNSAFE_CAPTURE_DIR" }
+    );
+  } catch {
+    // Capture diagnostics must not affect the operator's request either.
+  }
+}
+
 function assertSafeCaptureDirectory(
   directory: string,
   info: Awaited<ReturnType<typeof lstat>>,
@@ -294,14 +311,18 @@ function assertSafeCaptureDirectory(
   currentUid: number | undefined
 ): void {
   if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`Capture path component is not a real directory: ${directory}`);
+    throw new UnsafeCaptureDirectoryError(
+      `Capture path component is not a real directory: ${directory}`
+    );
   }
 
   // Trust root-owned system directories and directories owned by this process.
   // An untrusted owner can change a directory's mode or replace its entries.
   const trustedOwner = info.uid === 0 || (currentUid !== undefined && info.uid === currentUid);
   if (!trustedOwner) {
-    throw new Error(`Capture path component has an untrusted owner: ${directory}`);
+    throw new UnsafeCaptureDirectoryError(
+      `Capture path component has an untrusted owner: ${directory}`
+    );
   }
 
   const writableByOthers = (info.mode & 0o022) !== 0;
@@ -309,7 +330,9 @@ function assertSafeCaptureDirectory(
   // A sticky shared ancestor (such as /tmp) protects entries owned by this
   // process. Never write directly into a shared-writable capture directory.
   if (writableByOthers && (isTarget || !sticky)) {
-    throw new Error(`Capture directory is writable by other users: ${directory}`);
+    throw new UnsafeCaptureDirectoryError(
+      `Capture directory is writable by other users: ${directory}`
+    );
   }
 }
 
@@ -456,7 +479,8 @@ export function recordCapture(input: CaptureInput): Promise<void> {
         { encoding: "utf8", mode: 0o600 }
       );
       await chmod(file, 0o600);
-    } catch {
+    } catch (error) {
+      if (error instanceof UnsafeCaptureDirectoryError) warnUnsafeCaptureDirectory();
       // Capture failures are swallowed: the operator's request must not fail
       // because an evidence file could not be written.
     }

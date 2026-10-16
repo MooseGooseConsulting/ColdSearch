@@ -275,7 +275,14 @@ export async function fetchWithPolicy(
         // Record the complete transient exchange from a clone before the
         // original response is discarded for retry.
         recordResponse(response, Date.now() - attemptStart);
-        await response.body?.cancel();
+        const cancelResponseBody = response.body?.cancel();
+        if (captureOn) {
+          // A cloned response tees the body, so awaiting cancellation of the
+          // original can wait for the asynchronous capture reader to finish.
+          void cancelResponseBody?.catch(() => undefined);
+        } else {
+          await cancelResponseBody;
+        }
         // Honor the server's Retry-After hint on 429/503 (capped); otherwise
         // fall back to linear backoff. Jitter spreads retries of parallel
         // callers sharing the same rate limiter.

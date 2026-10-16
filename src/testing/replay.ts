@@ -160,11 +160,33 @@ export async function replayAdapterTest<T>(
   fixtures: ProviderEnvelopeFixture[],
   installMock: (handlers: Record<string, () => Promise<Response>>) => () => void
 ): Promise<T[]> {
-  const restore = installMock(fixtureHandlers(fixtures));
+  const sequence = createFixtureSequence(fixtures);
+  const restore = installMock(sequence.handlers);
   try {
     const results: T[] = [];
-    for (const fixture of fixtures) {
-      results.push(await adapterMethod(fixture));
+    for (const [index, fixture] of fixtures.entries()) {
+      const remainingBefore = sequence.remaining();
+      let result: T;
+      try {
+        result = await adapterMethod(fixture);
+      } catch (error) {
+        const consumed = remainingBefore - sequence.remaining();
+        if (consumed !== 1) {
+          throw new Error(
+            `replayAdapterTest: expected 1 HTTP exchange for fixture ${index + 1}, consumed ${consumed} before adapter rejection`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+
+      const consumed = remainingBefore - sequence.remaining();
+      if (consumed !== 1) {
+        throw new Error(
+          `replayAdapterTest: expected 1 HTTP exchange for fixture ${index + 1}, consumed ${consumed}`
+        );
+      }
+      results.push(result);
     }
     return results;
   } finally {
