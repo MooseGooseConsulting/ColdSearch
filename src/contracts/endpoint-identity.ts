@@ -1,19 +1,77 @@
 import type { CapabilityName, Config } from "../types.js";
 
 /**
+ * Canonical fixed endpoints used by registered providers. Keep host and API
+ * version in the identity so a code-level endpoint change cannot replay data
+ * cached against the previous upstream. Values are deliberately explicit:
+ * fixed-host adapters do not consume arbitrary provider-specific *_BASE_URL
+ * variables.
+ */
+const BUILTIN_ENDPOINTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  brave: {
+    apiRoot: "https://api.search.brave.com/res/v1",
+    webSearch: "https://api.search.brave.com/res/v1/web/search",
+    newsSearch: "https://api.search.brave.com/res/v1/news/search",
+    imageSearch: "https://api.search.brave.com/res/v1/images/search",
+    videoSearch: "https://api.search.brave.com/res/v1/videos/search",
+    llmContext: "https://api.search.brave.com/res/v1/llm/context",
+    answers: "https://api.search.brave.com/res/v1/chat/completions",
+  },
+  brightdata: {
+    request: "https://api.brightdata.com/request",
+    datasetsList: "https://api.brightdata.com/datasets/list",
+    datasetMetadata: "https://api.brightdata.com/datasets/{id}/metadata",
+    scrape: "https://api.brightdata.com/datasets/v3/scrape",
+    trigger: "https://api.brightdata.com/datasets/v3/trigger",
+    progress: "https://api.brightdata.com/datasets/v3/progress/{id}",
+    snapshotMetadata: "https://api.brightdata.com/datasets/snapshots/{id}",
+    cancel: "https://api.brightdata.com/datasets/v3/snapshot/{id}/cancel",
+    snapshot: "https://api.brightdata.com/datasets/v3/snapshot/{id}",
+    discover: "https://api.brightdata.com/discover",
+  },
+  exa: {
+    tool: "https://api.exa.ai/{tool}",
+    search: "https://api.exa.ai/search",
+    contents: "https://api.exa.ai/contents",
+    findSimilar: "https://api.exa.ai/findSimilar",
+  },
+  firecrawl: {
+    tool: "https://api.firecrawl.dev/v2/{tool}",
+    search: "https://api.firecrawl.dev/v2/search",
+    scrape: "https://api.firecrawl.dev/v2/scrape",
+    crawl: "https://api.firecrawl.dev/v2/crawl",
+    crawlStatus: "https://api.firecrawl.dev/v2/crawl/{id}",
+  },
+  jina: {
+    reader: "https://r.jina.ai/{target}",
+    search: "https://s.jina.ai/",
+    apiV1: "https://api.jina.ai/v1/{tool}",
+  },
+  serper: {
+    search: "https://google.serper.dev/search",
+    tool: "https://google.serper.dev/{tool}",
+  },
+  tavily: {
+    tool: "https://api.tavily.com/{tool}",
+    search: "https://api.tavily.com/search",
+    extract: "https://api.tavily.com/extract",
+    crawl: "https://api.tavily.com/crawl",
+  },
+};
+
+/**
  * Non-secret request-shaping provider config that must participate in a cache
  * key. SearXNG's resolved endpoint (configured base URL or its environment
  * fallback) decides which instance answers the request; a cache entry sourced
  * from one instance would replay stale results after the endpoint changes.
- * Fixed-host adapters do not consume provider-specific base URL environment
- * variables, so those unused values must not shape the key.
- *
- * NOTE: src/tools/substrate.ts has a separate tool-cache helper. This
- * capability-cache resolver does not change that path; align the tool helper
- * when its owning stack is updated.
+ * Fixed endpoints are listed explicitly below so unused environment values do
+ * not shape either capability or tool cache keys.
  */
 export function endpointKeyMaterial(config: Config, provider: string): Record<string, string> {
-  if (provider.toLowerCase() !== "searxng") return {};
+  const normalizedProvider = provider.toLowerCase();
+  if (normalizedProvider !== "searxng") {
+    return { ...(BUILTIN_ENDPOINTS[normalizedProvider] ?? {}) };
+  }
 
   const configuredBaseUrl = config.providers.searxng?.options?.baseUrl;
   const baseUrl = typeof configuredBaseUrl === "string"
