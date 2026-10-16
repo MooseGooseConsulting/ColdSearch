@@ -19,6 +19,8 @@ export interface ResumeOutcome {
   completedResults?: CrawlResult[];
   /** A fallback provider completed while one or more async crawl handles remained pending. */
   fallbackCompleted?: boolean;
+  /** Provider that produced completed fallback pages retained with pending jobs. */
+  fallbackProvider?: string;
   /** Hash of the original trimmed crawl URL, when available. */
   requestedUrlFingerprint?: string;
 }
@@ -43,6 +45,8 @@ export interface BatchPlanEntry {
   resumeCompletedResults?: CrawlResult[];
   /** Prevents repeating a fallback provider already completed for this pending crawl. */
   resumeFallbackCompleted?: boolean;
+  /** Provider that produced retained fallback pages for the pending crawl. */
+  resumeFallbackProvider?: string;
   /** For `skip`: stable machine reason. */
   reason?: "resume-success" | "resume-error" | "resume-conflict" | "duplicate-identical";
   /** For `conflict`: the output record to append (never executed, never retried). */
@@ -87,7 +91,11 @@ export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> 
 
 function parseCrawlResumeState(raw: unknown): Pick<
   ResumeOutcome,
-  "pendingJobs" | "completedResults" | "fallbackCompleted" | "requestedUrlFingerprint"
+  | "pendingJobs"
+  | "completedResults"
+  | "fallbackCompleted"
+  | "fallbackProvider"
+  | "requestedUrlFingerprint"
 > {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
   const resultRecord = raw as Record<string, unknown>;
@@ -120,6 +128,17 @@ function parseCrawlResumeState(raw: unknown): Pick<
     : [];
   const storedFingerprint = resultRecord.requestedUrlFingerprint;
   const fallbackCompleted = resultRecord.fallbackCompleted === true;
+  const storedFallbackProvider = resultRecord.fallbackProvider;
+  const legacyFallbackProvider = resultRecord.provider;
+  const fallbackProvider = fallbackCompleted
+    ? typeof storedFallbackProvider === "string" && storedFallbackProvider.trim()
+      ? storedFallbackProvider
+      : typeof legacyFallbackProvider === "string" &&
+          legacyFallbackProvider.trim() &&
+          !pendingJobs.some((job) => job.provider === legacyFallbackProvider)
+        ? legacyFallbackProvider
+        : undefined
+    : undefined;
   const requestedUrlFingerprint =
     typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
       ? storedFingerprint
@@ -132,6 +151,7 @@ function parseCrawlResumeState(raw: unknown): Pick<
     ...(pendingJobs.length > 0 ? { pendingJobs } : {}),
     ...(completedResults.length > 0 ? { completedResults } : {}),
     ...(fallbackCompleted ? { fallbackCompleted: true } : {}),
+    ...(fallbackProvider ? { fallbackProvider } : {}),
     ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
   };
 }
@@ -152,6 +172,7 @@ function toResumeOutcome(
   pendingJobs?: PendingCrawlJob[];
   completedResults?: CrawlResult[];
   fallbackCompleted?: boolean;
+  fallbackProvider?: string;
   requestedUrlFingerprint?: string;
 } | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -259,9 +280,18 @@ export function buildBatchPlan(
     const latestResumeState =
       latest?.status === "pending" || latest?.status === "error" ? latest : undefined;
     const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
+    const requestedFingerprint = requestedUrl ? crawlUrlFingerprint(requestedUrl) : undefined;
+    const previousFallbackProvider = [...existing]
+      .reverse()
+      .find(
+        (outcome) =>
+          outcome.fallbackCompleted &&
+          outcome.fallbackProvider &&
+          outcome.requestedUrlFingerprint === requestedFingerprint
+      )?.fallbackProvider;
     const pendingRecordMatchesRequest =
       requestedUrl !== undefined &&
-      latestResumeState?.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
+      latestResumeState?.requestedUrlFingerprint === requestedFingerprint;
     let pendingJobsForRequest: PendingCrawlJob[] | undefined;
     if (requestedUrl !== undefined && latestResumeState) {
       // The persisted job URL may have been redacted. The fingerprint
@@ -307,6 +337,14 @@ export function buildBatchPlan(
                   : {}),
                 ...(pendingRecordMatchesRequest && latestResumeState.fallbackCompleted
                   ? { resumeFallbackCompleted: true }
+                  : {}),
+                ...(pendingRecordMatchesRequest && latestResumeState.fallbackCompleted
+                  ? ((latestResumeState.fallbackProvider ?? previousFallbackProvider)
+                      ? {
+                          resumeFallbackProvider:
+                            latestResumeState.fallbackProvider ?? previousFallbackProvider,
+                        }
+                      : {})
                   : {}),
               }
             : {}),

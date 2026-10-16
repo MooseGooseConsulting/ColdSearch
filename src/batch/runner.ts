@@ -28,7 +28,8 @@ export interface BatchExecutor {
     config: Config,
     resumePendingJobs?: PendingCrawlJob[],
     resumeCompletedResults?: CrawlResult[],
-    resumeFallbackCompleted?: boolean
+    resumeFallbackCompleted?: boolean,
+    resumeFallbackProvider?: string
   ): Promise<BatchOutputRecord>;
 }
 
@@ -108,21 +109,27 @@ function interruptedCrawlResumeState(
   resumePendingJobs: PendingCrawlJob[] | undefined,
   resumeCompletedResults: CrawlResult[] | undefined,
   resumeFallbackCompleted: boolean | undefined,
+  resumeFallbackProvider: string | undefined,
   error: unknown
 ): BatchResumeState | undefined {
   if (record.capability !== "crawl") return undefined;
-  const terminalJobKeys = new Set(
+  const nonResumableJobKeys = new Set(
     error instanceof AllProvidersFailedError
-      ? error.terminalResumeJobs.map((job) => JSON.stringify([job.provider, job.jobId]))
+      ? [...error.terminalResumeJobs, ...error.discardedResumeJobs].map(
+          (job) => JSON.stringify([job.provider, job.jobId])
+        )
       : []
   );
   const pendingJobs = resumePendingJobs?.filter(
-    (job) => !terminalJobKeys.has(JSON.stringify([job.provider, job.jobId]))
+    (job) => !nonResumableJobKeys.has(JSON.stringify([job.provider, job.jobId]))
   );
   const state: BatchResumeState = {
     ...(pendingJobs?.length ? { pendingJobs } : {}),
     ...(resumeCompletedResults?.length ? { completedResults: resumeCompletedResults } : {}),
     ...(resumeFallbackCompleted ? { fallbackCompleted: true } : {}),
+    ...(resumeFallbackCompleted && resumeFallbackProvider
+      ? { fallbackProvider: resumeFallbackProvider }
+      : {}),
     ...(record.url ? { requestedUrlFingerprint: crawlUrlFingerprint(record.url) } : {}),
   };
   return state.pendingJobs?.length ||
@@ -145,7 +152,8 @@ export class LocalBatchExecutor implements BatchExecutor {
     config: Config,
     resumePendingJobs?: PendingCrawlJob[],
     resumeCompletedResults?: CrawlResult[],
-    resumeFallbackCompleted?: boolean
+    resumeFallbackCompleted?: boolean,
+    resumeFallbackProvider?: string
   ): Promise<BatchOutputRecord> {
     const base = {
       id: record.id,
@@ -191,6 +199,7 @@ export class LocalBatchExecutor implements BatchExecutor {
           ...this.fanoutOptions(record),
           resumePendingJobs,
           resumeFallbackCompleted,
+          resumeFallbackProvider,
         });
         this.warn(result.warnings);
         return {
@@ -202,6 +211,7 @@ export class LocalBatchExecutor implements BatchExecutor {
             provider: result.provider,
             status: result.status,
             ...(result.fallbackCompleted ? { fallbackCompleted: true } : {}),
+            ...(result.fallbackProvider ? { fallbackProvider: result.fallbackProvider } : {}),
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
               : {}),
@@ -237,6 +247,7 @@ export class LocalBatchExecutor implements BatchExecutor {
         resumePendingJobs,
         resumeCompletedResults,
         resumeFallbackCompleted,
+        resumeFallbackProvider,
         error
       );
       return {
@@ -452,7 +463,8 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
         config,
         entry.resumePendingJobs,
         entry.resumeCompletedResults,
-        entry.resumeFallbackCompleted
+        entry.resumeFallbackCompleted,
+        entry.resumeFallbackProvider
       );
       const outputRecord = mergeResumedCrawlResults(
         entry.record,
@@ -564,7 +576,8 @@ async function safeExecute(
   config: Config,
   resumePendingJobs?: PendingCrawlJob[],
   resumeCompletedResults?: CrawlResult[],
-  resumeFallbackCompleted?: boolean
+  resumeFallbackCompleted?: boolean,
+  resumeFallbackProvider?: string
 ): Promise<BatchOutputRecord> {
   try {
     return await executor.execute(
@@ -572,7 +585,8 @@ async function safeExecute(
       config,
       resumePendingJobs,
       resumeCompletedResults,
-      resumeFallbackCompleted
+      resumeFallbackCompleted,
+      resumeFallbackProvider
     );
   } catch (error) {
     const resumeState = interruptedCrawlResumeState(
@@ -580,6 +594,7 @@ async function safeExecute(
       resumePendingJobs,
       resumeCompletedResults,
       resumeFallbackCompleted,
+      resumeFallbackProvider,
       error
     );
     return {

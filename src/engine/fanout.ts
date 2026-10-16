@@ -54,6 +54,8 @@ export interface FanoutOptions {
   resumePendingJobs?: PendingCrawlJob[];
   /** Whether a fallback provider already completed while saved crawl jobs were pending. */
   resumeFallbackCompleted?: boolean;
+  /** Provider that produced the completed fallback pages retained for a pending crawl. */
+  resumeFallbackProvider?: string;
 }
 
 /**
@@ -94,12 +96,14 @@ export class AllProvidersFailedError extends Error {
   readonly providerErrors: Record<string, string>;
   readonly secretsUsed: string[];
   readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
+  readonly discardedResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
     secretsUsed: string[],
-    terminalResumeJobs: PendingCrawlJob[] = []
+    terminalResumeJobs: PendingCrawlJob[] = [],
+    discardedResumeJobs: PendingCrawlJob[] = []
   ) {
     super(`All providers failed: ${JSON.stringify(errors)}`);
     this.name = "AllProvidersFailedError";
@@ -107,12 +111,14 @@ export class AllProvidersFailedError extends Error {
     this.attempts = attempts;
     this.secretsUsed = secretsUsed;
     this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
+    this.discardedResumeJobs = discardedResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
     // every resolved key to any wrapper/structured logger that serializes it.
     Object.defineProperty(this, "secretsUsed", { enumerable: false });
     Object.defineProperty(this, "terminalResumeJobs", { enumerable: false });
+    Object.defineProperty(this, "discardedResumeJobs", { enumerable: false });
   }
 }
 
@@ -358,6 +364,7 @@ export class FanoutEngine {
     provider: string;
     status: "completed" | "pending";
     fallbackCompleted?: boolean;
+    fallbackProvider?: string;
     errors?: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
@@ -369,6 +376,7 @@ export class FanoutEngine {
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
     const terminalResumeJobs: PendingCrawlJob[] = [];
+    const discardedResumeJobs: PendingCrawlJob[] = [];
     const resumeProviders = new Set<string>();
 
     // A batch resume is tied to its saved provider job, even if the current
@@ -397,6 +405,7 @@ export class FanoutEngine {
           "Restore the provider configuration or remove the stale pending job from the batch output.";
         errors[job.provider] = message;
         attempts.push({ provider: job.provider, success: false, error: message });
+        discardedResumeJobs.push(job);
         continue;
       }
 
@@ -535,12 +544,20 @@ export class FanoutEngine {
         pendingJobs,
         provider:
           completedResumeProvider ??
+          options.resumeFallbackProvider ??
           pendingJobs[0]?.provider ??
           options.resumePendingJobs?.[0]?.provider ??
           selectedProviders[0] ??
           "unknown",
         status: pending ? "pending" : "completed",
-        ...(pending ? { fallbackCompleted: true } : {}),
+        ...(pending
+          ? {
+              fallbackCompleted: true,
+              ...(options.resumeFallbackProvider
+                ? { fallbackProvider: options.resumeFallbackProvider }
+                : {}),
+            }
+          : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
@@ -658,6 +675,9 @@ export class FanoutEngine {
               ? { fallbackCompleted: true }
               : {}
           ),
+          ...(pendingJobs.length + resumePendingJobs.length > 0
+            ? { fallbackProvider: provider }
+            : {}),
           errors: Object.keys(errors).length > 0 ? errors : undefined,
           attempts,
           secretsUsed,
@@ -691,14 +711,27 @@ export class FanoutEngine {
         pendingJobs: remainingPendingJobs,
         provider: remainingPendingJobs[0]!.provider,
         status: "pending",
-        ...(options.resumeFallbackCompleted ? { fallbackCompleted: true } : {}),
+        ...(options.resumeFallbackCompleted
+          ? {
+              fallbackCompleted: true,
+              ...(options.resumeFallbackProvider
+                ? { fallbackProvider: options.resumeFallbackProvider }
+                : {}),
+            }
+          : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
       };
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed, terminalResumeJobs);
+    throw new AllProvidersFailedError(
+      errors,
+      attempts,
+      secretsUsed,
+      terminalResumeJobs,
+      discardedResumeJobs
+    );
   }
 
   /**

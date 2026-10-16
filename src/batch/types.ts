@@ -47,6 +47,7 @@ export interface BatchResumeState {
   pendingJobs?: PendingCrawlJob[];
   completedResults?: CrawlResult[];
   fallbackCompleted?: boolean;
+  fallbackProvider?: string;
   requestedUrlFingerprint?: string;
 }
 

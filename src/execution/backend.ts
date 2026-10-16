@@ -48,6 +48,7 @@ export type CrawlOutcome = {
   provider: string;
   status: "completed" | "pending";
   fallbackCompleted?: boolean;
+  fallbackProvider?: string;
   errors?: Record<string, string>;
   warnings?: string[];
 };
@@ -508,6 +509,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
         provider: result.provider,
         status: result.status,
         fallbackCompleted: result.fallbackCompleted,
+        fallbackProvider: result.fallbackProvider,
         errors: result.errors,
         warnings,
       };
