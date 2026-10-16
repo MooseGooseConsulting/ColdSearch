@@ -100,7 +100,9 @@ function cacheSafeOptionValue(value: unknown, seen = new Set<object>()): unknown
 
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return undefined;
-  const safe: Record<string, unknown> = {};
+  // Null prototype so adversarial keys like __proto__ stay own properties
+  // and reach stableStringify instead of mutating the accumulator.
+  const safe: Record<string, unknown> = Object.create(null);
   for (const [name, item] of Object.entries(value)) {
     if (SECRET_OPTION_NAME.test(name)) continue;
     const safeItem = cacheSafeOptionValue(item, seen);
