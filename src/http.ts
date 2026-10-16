@@ -99,6 +99,14 @@ export function retryAfterMs(headers: Headers): number | undefined {
   return Math.min(ms, MAX_RETRY_AFTER_MS);
 }
 
+/** Add positive jitter to an authoritative hint without exceeding the wait cap. */
+export function retryAfterDelayMs(hintedMs: number): number {
+  return Math.min(
+    MAX_RETRY_AFTER_MS,
+    hintedMs + Math.round(Math.random() * hintedMs * 0.2)
+  );
+}
+
 /**
  * Apply ±20% jitter to a backoff delay so parallel callers (and retrying
  * providers) do not synchronize their retry storms. Exported for tests.
@@ -180,7 +188,7 @@ export async function fetchWithPolicy(
             : undefined;
         const delay =
           hinted !== undefined
-            ? hinted + Math.round(Math.random() * hinted * 0.2)
+            ? retryAfterDelayMs(hinted)
             : withJitter(retryDelayMs * (attempt + 1));
         await sleep(delay, externalSignal);
         continue;

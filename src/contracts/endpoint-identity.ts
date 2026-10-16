@@ -57,6 +57,33 @@ function providerOptionKeyMaterial(config: Config, provider: string): Record<str
   return (cacheSafeOptionValue(options) as Record<string, unknown> | undefined) ?? {};
 }
 
+/** Include non-secret environment fallbacks that actually shape a capability request. */
+function providerEnvironmentKeyMaterial(
+  config: Config,
+  provider: string,
+  capability: CapabilityName
+): Record<string, string> {
+  if (provider !== "brightdata") return {};
+
+  const options = config.providers[provider]?.options ?? {};
+  const hasConfiguredValue = (keys: string[]) =>
+    keys.some((key) => {
+      const value = options[key];
+      return typeof value === "string" && value.trim() !== "";
+    });
+
+  const fallback =
+    capability === "search"
+      ? { keys: ["zone", "serpZone"], envName: "BRIGHTDATA_SERP_ZONE" }
+      : capability === "extract"
+        ? { keys: ["unlockerZone", "zone"], envName: "BRIGHTDATA_UNLOCKER_ZONE" }
+        : undefined;
+
+  if (!fallback || hasConfiguredValue(fallback.keys)) return {};
+  const value = process.env[fallback.envName];
+  return value?.trim() ? { [fallback.envName]: value.trim() } : {};
+}
+
 /**
  * Config-level cache identity for a capability: the configured provider pool,
  * routing strategy, each pooled provider's endpoint, and its non-secret
@@ -76,11 +103,14 @@ export function capabilityCacheIdentity(
 
   const endpoints: Record<string, Record<string, string>> = {};
   const providerOptions: Record<string, Record<string, unknown>> = {};
+  const providerEnvironment: Record<string, Record<string, string>> = {};
   for (const provider of providers) {
     const material = endpointKeyMaterial(config, provider);
     if (Object.keys(material).length > 0) endpoints[provider] = material;
     const options = providerOptionKeyMaterial(config, provider);
     if (Object.keys(options).length > 0) providerOptions[provider] = options;
+    const environment = providerEnvironmentKeyMaterial(config, provider, capability);
+    if (Object.keys(environment).length > 0) providerEnvironment[provider] = environment;
   }
 
   return {
@@ -88,5 +118,6 @@ export function capabilityCacheIdentity(
     strategy: capabilityConfig?.strategy ?? "all",
     ...(Object.keys(endpoints).length > 0 ? { endpoints } : {}),
     ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
+    ...(Object.keys(providerEnvironment).length > 0 ? { providerEnvironment } : {}),
   };
 }
