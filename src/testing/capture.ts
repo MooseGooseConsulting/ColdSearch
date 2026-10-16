@@ -206,7 +206,10 @@ function redactJsonCredentialValues(text: string): string {
           keyPattern.lastIndex = valueStart + scalar[0].length;
           continue;
         }
-        output += text.slice(cursor, valueStart) + REDACTED;
+        // Preserve JSON validity for replay: numbers zero, bools/null stay
+        // literal (Devin on #86). Strings handled by the quote path below.
+        const replacement = /true|false|null/.test(scalar[0]) ? "null" : "0";
+        output += text.slice(cursor, valueStart) + replacement;
         cursor = valueStart + scalar[0].length;
         keyPattern.lastIndex = cursor;
         continue;
@@ -215,12 +218,13 @@ function redactJsonCredentialValues(text: string): string {
         if (!sensitive) continue;
         const close = rest[0] === "{" ? "}" : "]";
         const end = rest.indexOf(close);
+        const replacement = rest[0] === "{" ? "{}" : "[]";
         if (end < 0) {
-          output += text.slice(cursor, valueStart) + REDACTED + text.slice(valueStart);
+          output += text.slice(cursor, valueStart) + replacement;
           cursor = text.length;
           break;
         }
-        output += text.slice(cursor, valueStart) + REDACTED + close;
+        output += text.slice(cursor, valueStart) + replacement;
         cursor = valueStart + end + 1;
         keyPattern.lastIndex = cursor;
         continue;
@@ -634,9 +638,11 @@ function enqueueCaptureWrite(
         warnUnsafeCaptureDirectory();
       } else {
         // Non-unsafe failures (read-only FS, full disk, quota) still must
-        // not fail the request, but emit a warning so loss is visible.
+        // not fail the request, but emit a warning so loss is visible. The
+        // directory itself is redacted: it may contain credentials (Devin).
+        const raw = error instanceof Error ? error.message : String(error);
         process.emitWarning(
-          `ColdSearch capture write failed: ${error instanceof Error ? error.message : String(error)}`,
+          `ColdSearch capture write failed: ${redactText(raw, [])}`,
           { code: "COLDSEARCH_CAPTURE_WRITE_FAILED" }
         );
       }
