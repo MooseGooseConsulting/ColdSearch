@@ -1667,10 +1667,6 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
         inconclusive = true;
         continue;
       }
-      if (schemaShapeIsTruncated(expected)) {
-        inconclusive = true;
-        continue;
-      }
 
       const matchedColdEntry = [...coldItemsByIndex.entries()].find(([, candidate]) =>
         findMatchingToolItem(nativeItem, [candidate])
@@ -1691,11 +1687,9 @@ function compareToolRawResultArraySchemas(target, nativeSample, coldSample, nati
         }
         return false;
       }
-      if (schemaShapeIsTruncated(actual)) {
-        inconclusive = true;
-        continue;
-      }
-      if (!schemaShapeContains(expected, actual)) return false;
+      const shapeComparison = compareCapturedSchemaShape(expected, actual);
+      if (shapeComparison === false) return false;
+      if (shapeComparison === null) inconclusive = true;
     }
 
     if (nativeArray.truncated || nativeObjects.some(schemaShapeIsTruncated)) {
@@ -1738,6 +1732,68 @@ function schemaShapeIsTruncated(shape) {
     (shape.fields && Object.values(shape.fields).some(schemaShapeIsTruncated)) ||
     (shape.items && shape.items.some(schemaShapeIsTruncated))
   );
+}
+
+// Returns false only for a proven schema loss, null when captured evidence is
+// incomplete, and true when every captured native shape is present in the
+// captured ColdSearch shape. A truncated child does not make complete sibling
+// fields inconclusive.
+function compareCapturedSchemaShape(expected, actual) {
+  if (!expected || !actual || expected.type === "truncated" || actual.type === "truncated") {
+    return null;
+  }
+  if (expected.type !== actual.type) return false;
+
+  let inconclusive = Boolean(
+    expected.fields_truncated || expected.items_truncated ||
+    actual.fields_truncated || actual.items_truncated
+  );
+
+  if (expected.type === "object") {
+    const expectedFields = expected.fields || {};
+    const actualFields = actual.fields || {};
+    for (const [key, expectedField] of Object.entries(expectedFields)) {
+      const actualField = actualFields[key];
+      if (!actualField) {
+        if (actual.fields_truncated) {
+          inconclusive = true;
+          continue;
+        }
+        return false;
+      }
+
+      const comparison = compareCapturedSchemaShape(expectedField, actualField);
+      if (comparison === false) return false;
+      if (comparison === null) inconclusive = true;
+    }
+    return inconclusive ? null : true;
+  }
+
+  if (expected.type === "array") {
+    const expectedItems = expected.items || [];
+    const actualItems = actual.items || [];
+    for (const expectedItem of expectedItems) {
+      let matched = false;
+      let possibleMatch = false;
+      for (const actualItem of actualItems) {
+        const comparison = compareCapturedSchemaShape(expectedItem, actualItem);
+        if (comparison === true) {
+          matched = true;
+          break;
+        }
+        if (comparison === null) possibleMatch = true;
+      }
+      if (matched) continue;
+      if (possibleMatch || actual.items_truncated) {
+        inconclusive = true;
+        continue;
+      }
+      return false;
+    }
+    return inconclusive ? null : true;
+  }
+
+  return inconclusive ? null : true;
 }
 
 function schemaShapeContains(expected, actual) {
