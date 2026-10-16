@@ -393,6 +393,21 @@ export class LocalExecutionBackend implements ExecutionBackend {
     }
   }
 
+  /** Resolve current provider credentials for history and report the result. */
+  private async resolveConfiguredSecretsForHistory(
+    options: FanoutOptions
+  ): Promise<{ secrets: string[]; complete: boolean }> {
+    let resolved: { secrets: string[]; complete: boolean };
+    try {
+      resolved = await this.engine.resolveConfiguredSecrets();
+    } catch {
+      resolved = { secrets: [], complete: false };
+    }
+    this.reportSecretsUsed(options, resolved.secrets, resolved.complete);
+    this.reportConfiguredSecretsResolved(options);
+    return resolved;
+  }
+
   /** Resolve configured provider credentials for persistence redaction. */
   resolveProviderSecrets(): Promise<{ secrets: string[]; complete: boolean }> {
     return this.engine.resolveConfiguredSecrets();
@@ -484,21 +499,51 @@ export class LocalExecutionBackend implements ExecutionBackend {
         const historySnapshot = isSearchHistorySnapshot(entry.meta.history_snapshot)
           ? entry.meta.history_snapshot
           : undefined;
+        const configuredSecrets = await this.resolveConfiguredSecretsForHistory(options);
+        const secrets = configuredSecrets.secrets;
+        const historySafe = configuredSecrets.complete && historySnapshot !== undefined;
+        const historyInput = historySafe && historySnapshot
+          ? redactSensitiveForPersistence(historySnapshot.input, secrets)
+          : "[REDACTED]";
+        const replayOptionsInput = historySafe && historySnapshot
+          ? { ...(historySnapshot.options ?? {}), ...this.requestOptions(options) }
+          : null;
+        // Freshness is an invocation-level read policy, not part of the cache
+        // identity. If this replay omitted --freshness, don't retain an older
+        // origin value from the snapshot.
+        if (replayOptionsInput) {
+          if (options.freshness) {
+            replayOptionsInput.freshness = options.freshness;
+          } else {
+            delete replayOptionsInput.freshness;
+          }
+        }
+        const replayOptionsValue = replayOptionsInput
+          ? redactForPersistence(replayOptionsInput, secrets)
+          : null;
+        const replayOptions = replayOptionsValue &&
+          typeof replayOptionsValue === "object" && !Array.isArray(replayOptionsValue)
+          ? replayOptionsValue as Record<string, unknown>
+          : undefined;
+        const historyResultsValue = historySafe && historySnapshot
+          ? redactForPersistence(historySnapshot.results, secrets)
+          : null;
+        const historyResults = Array.isArray(historyResultsValue)
+          ? historyResultsValue as NormalizedResult[]
+          : undefined;
         // Exact cache hit: a new execution with zero provider calls, linked
         // to the originating execution when provenance is known.
-        // Avoid resolving unrelated credentials during a local cache replay.
-        // The separate history snapshot was scrubbed on the live path; legacy
-        // entries without one remain content-free. Agent free text still
-        // fails closed because the replay does not resolve provider secrets.
-        this.reportSecretsUsed(options, [], false);
+        // Re-check current credentials because the safe snapshot may predate
+        // key rotation. Keep the replay content-free if the full key set is
+        // unavailable; otherwise redact the snapshot again with current keys.
         this.recordExecution(
           {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "search",
             ...(options.runId ? { run_id: options.runId } : {}),
-            input: historySnapshot?.input ?? "[REDACTED]",
-            ...(historySnapshot?.options ? { options: historySnapshot.options } : {}),
+            input: historyInput,
+            ...(replayOptions ? { options: replayOptions } : {}),
             routing: this.routingInfo(
               "search",
               options,
@@ -511,7 +556,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             origin_execution_id: entry.meta.origin_execution_id,
             cache: this.cacheProvenance(entry.meta),
             attempts: [],
-            ...(historySnapshot ? { result: historySnapshot.results } : {}),
+            ...(historyResults ? { result: historyResults } : {}),
             result_count: historySnapshot?.result_count ?? entry.payload.results.length,
             raw_available: false,
             duration_ms: 0,
@@ -525,12 +570,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
 
     const id = newExecutionId();
     const start = performance.now();
-    const configuredSecrets = await this.engine.resolveConfiguredSecrets();
-    const secrets = new Set(configuredSecrets.secrets);
-    this.reportSecretsUsed(options, configuredSecrets.secrets, configuredSecrets.complete);
-    this.reportConfiguredSecretsResolved(options);
+    // Resolve every configured key concurrently with provider dispatch. The
+    // result is still awaited before history is persisted, since a missing
+    // ref means free-text history must fail closed.
+    const configuredSecretsPromise = this.resolveConfiguredSecretsForHistory(options);
+    const secrets = new Set<string>();
     try {
       const result = await this.engine.search(query, options);
+      const configuredSecrets = await configuredSecretsPromise;
+      for (const secret of configuredSecrets.secrets) secrets.add(secret);
       for (const secret of result.secretsUsed) secrets.add(secret);
       this.reportSecretsUsed(options, result.secretsUsed);
       const historySafe = configuredSecrets.complete;
@@ -569,7 +617,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
             options,
             result.attempts.map((a) => a.provider),
             reranker,
-            result.skippedProviders
+            this.redactSkippedProviders(
+              result.skippedProviders,
+              [...secrets],
+              historySafe
+            )
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, [...secrets]).map(
@@ -618,6 +670,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
         warnings,
       };
     } catch (error) {
+      const configuredSecrets = await configuredSecretsPromise;
+      for (const secret of configuredSecrets.secrets) secrets.add(secret);
       const errorSecrets = error instanceof AllProvidersFailedError
         ? error.secretsUsed
         : [];
@@ -736,7 +790,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             options,
             result.attempts.map((a) => a.provider),
             undefined,
-            result.skippedProviders
+            this.redactSkippedProviders(result.skippedProviders, secrets, false)
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -805,7 +859,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             options,
             result.attempts.map((a) => a.provider),
             undefined,
-            result.skippedProviders
+            this.redactSkippedProviders(result.skippedProviders, secrets, false)
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -863,6 +917,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
         : undefined);
     const secrets = redaction?.secrets ?? allFailed?.secretsUsed ?? [];
     const historySafe = redaction?.complete ?? true;
+    const safeSkippedProviders = this.redactSkippedProviders(
+      skippedProviders,
+      secrets,
+      redaction?.complete === true
+    );
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
     };
@@ -880,7 +939,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
         options,
         (allFailed?.attempts ?? []).map((a) => a.provider),
         undefined,
-        skippedProviders
+        safeSkippedProviders
       ),
       source: "live",
       attempts: allFailed
@@ -894,5 +953,18 @@ export class LocalExecutionBackend implements ExecutionBackend {
       duration_ms: Math.round(performance.now() - start),
       outcome: "failed",
     };
+  }
+
+  /** Redact routing explanations only when the configured key set is complete. */
+  private redactSkippedProviders(
+    skippedProviders: Record<string, string> | undefined,
+    secrets: string[],
+    complete: boolean
+  ): Record<string, string> | undefined {
+    if (!complete || !skippedProviders) return undefined;
+    const safe = redactSensitiveForPersistence(skippedProviders, secrets);
+    return safe && typeof safe === "object" && !Array.isArray(safe)
+      ? safe as Record<string, string>
+      : undefined;
   }
 }
