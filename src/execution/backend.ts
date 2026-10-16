@@ -391,8 +391,22 @@ export class LocalExecutionBackend implements ExecutionBackend {
       format: options.format,
       providerOptions: jinaOptions,
     });
+    const jinaCacheHeaders = Object.fromEntries(
+      Object.entries(jinaOptions)
+        .filter(([name, value]) => {
+          const normalizedName = name.toLowerCase();
+          return normalizedName.startsWith("x-") &&
+            !["x-return-format", "x-no-cache", "x-set-cookie"].includes(normalizedName) &&
+            value !== undefined &&
+            value !== null;
+        })
+        .map(([name, value]) => [name.toLowerCase(), String(value)])
+    );
     const key = useCache
-      ? cacheKey("extract", url, { format: effectiveReturnFormat })
+      ? cacheKey("extract", url, {
+          format: effectiveReturnFormat,
+          providerHeaders: jinaCacheHeaders,
+        })
       : null;
 
     if (key) {
