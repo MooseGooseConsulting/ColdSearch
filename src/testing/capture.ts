@@ -143,8 +143,8 @@ function redactCredentialKeys(text: string): string {
   const keys = SENSITIVE_VALUE_KEYS.join("|");
   return text
     .replace(
-      new RegExp(`([?&](?:${keys})=)[^&#"\\s]+`, "gi"),
-      `$1${REDACTED}`
+      new RegExp(`(^|[?&])((?:${keys})=)[^&#"\\s]+`, "gi"),
+      `$1$2${REDACTED}`
     )
     .replace(
       new RegExp(`("(?:${keys})"\\s*:\\s*")[^"]*(")`, "gi"),
