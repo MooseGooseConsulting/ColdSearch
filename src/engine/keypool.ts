@@ -241,19 +241,32 @@ export class KeyPoolManager {
     const secrets: string[] = [];
     const seen = new Set<string>();
     let complete = true;
+    const refs = new Set<string>();
     for (const [provider, pool] of this.pools) {
-      for (const ref of this.getEffectiveKeyRefs(provider, pool)) {
+      for (const ref of this.getEffectiveKeyRefs(provider, pool)) refs.add(ref);
+    }
+
+    // Check the whole configured set concurrently so unrelated unavailable
+    // Doppler refs don't add their ten-second timeouts one after another. Each
+    // failed lookup still marks the set incomplete, which makes history callers
+    // withhold free text instead of persisting with partial coverage.
+    const resolvedRefs = await Promise.all(
+      [...refs].map(async (ref) => {
         try {
-          const value = await this.resolveKeyRef(ref);
-          if (value && !seen.has(value)) {
-            seen.add(value);
-            secrets.push(value);
-          }
+          return { value: await this.resolveKeyRef(ref), complete: true };
         } catch {
-          // Keep going so successfully resolved refs still improve redaction,
-          // while exposing that the complete configured set is not known.
-          complete = false;
+          return { value: "", complete: false };
         }
+      })
+    );
+    for (const resolved of resolvedRefs) {
+      if (!resolved.complete) {
+        complete = false;
+        continue;
+      }
+      if (resolved.value && !seen.has(resolved.value)) {
+        seen.add(resolved.value);
+        secrets.push(resolved.value);
       }
     }
     return { secrets, complete };
