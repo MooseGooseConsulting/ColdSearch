@@ -102,6 +102,22 @@ export function createRegisteredAdapter(provider: string): SearchAdapter {
   return getProviderMetadata(provider).createAdapter();
 }
 
+/** Validate an explicit provider selection without applying routing strategy. */
+export function validateSelectedProviders(
+  config: Config,
+  capability: CapabilityName,
+  providers: readonly string[]
+): void {
+  for (const provider of providers) {
+    if (!config.providers[provider]) {
+      throw new Error(`Provider '${provider}' is not configured`);
+    }
+    if (!providerSupportsCapability(provider, capability)) {
+      throw new Error(`Provider '${provider}' does not implement capability '${capability}'`);
+    }
+  }
+}
+
 /**
  * Shared provider resolution logic used by both CLI dry-run and FanoutEngine.
  * Validates config/capability and applies strategy (all vs random), including
@@ -132,14 +148,7 @@ export function resolveCapabilityProviders(
     throw new Error(`No providers configured for ${capability}`);
   }
 
-  for (const provider of selected) {
-    if (!config.providers[provider]) {
-      throw new Error(`Provider '${provider}' is not configured`);
-    }
-    if (!providerSupportsCapability(provider, capability)) {
-      throw new Error(`Provider '${provider}' does not implement capability '${capability}'`);
-    }
-  }
+  validateSelectedProviders(config, capability, selected);
 
   let eligible = selected;
   if (options.requireFeatures && options.requireFeatures.length > 0) {

@@ -11,7 +11,7 @@ import {
   loadConfig,
   resolveConfigPath,
 } from "./config.js";
-import { resolveCapabilityProviders } from "./providers.js";
+import { resolveCapabilityProviders, validateSelectedProviders } from "./providers.js";
 import {
   getToolProfile,
   listToolProfiles,
@@ -665,6 +665,9 @@ function resolveCommandIntent(
 ): IntentResolution {
   const intent = options.intent ?? DEFAULT_COMMAND_INTENTS[command];
   validateIntentCategory(command, intent);
+  if (options.providers?.length) {
+    validateSelectedProviders(config, command, options.providers);
+  }
   return rejectIntent(resolveIntent(intent, config, options.providers));
 }
 
