@@ -25,9 +25,14 @@ export interface TranslationResult {
 
 const FILTER_OPTIONS = ["includeDomains", "excludeDomains", "timeRange"] as const;
 
+function skippedProviderReason(issues: string[]): string {
+  return `Not called because this tool cannot honor the requested filters: ${issues.join("; ")}`;
+}
+
 /** A provider cannot be selected when it would have to ignore a requested filter. */
 export class UnsupportedCommonOptionsError extends Error {
   readonly category = "unsupported_capability" as const;
+  readonly skippedProviders: Record<string, string>;
 
   constructor(capability: CapabilityCategory, providerIssues: Record<string, string[]>) {
     const details = Object.entries(providerIssues)
@@ -37,6 +42,12 @@ export class UnsupportedCommonOptionsError extends Error {
       `No configured ${capability} provider can honor the requested common filters (${details})`
     );
     this.name = "UnsupportedCommonOptionsError";
+    this.skippedProviders = Object.fromEntries(
+      Object.entries(providerIssues).map(([provider, issues]) => [
+        provider,
+        skippedProviderReason(issues),
+      ])
+    );
   }
 }
 
@@ -98,8 +109,7 @@ export function filterProvidersByCommonOptions(
     const issues = unsupportedCommonFilterOptions(view, commonOptions);
     if (issues.length === 0) return true;
     issuesByProvider[provider] = issues;
-    skippedProviders[provider] =
-      `Not called because this tool cannot honor the requested filters: ${issues.join("; ")}`;
+    skippedProviders[provider] = skippedProviderReason(issues);
     return false;
   });
 

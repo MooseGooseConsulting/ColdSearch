@@ -48,6 +48,8 @@ export interface FanoutOptions {
   limitSet?: boolean;
   /** Specific providers to use (defaults to all configured) */
   providers?: string[];
+  /** Original caller override retained for history when intent routing narrows `providers`. */
+  requestedProviders?: string[];
   /** Reranker strategy */
   rerankStrategy?: "rrf" | "score" | "none";
   /** Operation type */

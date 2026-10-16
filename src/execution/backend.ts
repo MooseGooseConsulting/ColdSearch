@@ -15,6 +15,7 @@ import {
   IntentRejectionError,
   resolveOptionsForIntent,
 } from "../dispatch/intents.js";
+import { UnsupportedCommonOptionsError } from "../dispatch/translate.js";
 import { HistoryStore } from "../history/store.js";
 import { redactForPersistence, redactSensitive } from "../history/redact.js";
 import {
@@ -275,11 +276,12 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   private requestOptions(options: FanoutOptions): Record<string, unknown> {
+    const requestedProviders = options.requestedProviders ?? options.providers;
     return {
       limit: options.limit,
       limitSet: options.limitSet !== false,
       ...(options.rerankStrategy ? { rerankStrategy: options.rerankStrategy } : {}),
-      ...(options.providers?.length ? { providers: options.providers } : {}),
+      ...(requestedProviders?.length ? { providers: requestedProviders } : {}),
       ...(options.singleProvider ? { singleProvider: true } : {}),
       ...(options.noCache ? { noCache: true } : {}),
       ...(options.freshness ? { freshness: options.freshness } : {}),
@@ -299,11 +301,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
     input: string,
     options: FanoutOptions
   ): FanoutOptions {
+    const requestedOptions: FanoutOptions = {
+      ...options,
+      requestedProviders: [...(options.requestedProviders ?? options.providers ?? [])],
+    };
     try {
-      return resolveOptionsForIntent(capability, this.config, options);
+      return resolveOptionsForIntent(capability, this.config, requestedOptions);
     } catch (error) {
       if (error instanceof IntentRejectionError) {
-        this.flushWarnings(this.recordIntentRejection(capability, input, options, error));
+        this.flushWarnings(this.recordIntentRejection(capability, input, requestedOptions, error));
       }
       throw error;
     }
@@ -331,11 +337,12 @@ export class LocalExecutionBackend implements ExecutionBackend {
     reranker?: string,
     providersSkipped?: Record<string, string>
   ): ExecutionRecord["routing"] {
+    const requestedProviders = options.requestedProviders ?? options.providers;
     return {
       strategy: options.singleProvider
         ? "single-provider"
         : this.config.capabilities[capability]?.strategy ?? "all",
-      requested_providers: options.providers?.length ? options.providers : undefined,
+      requested_providers: requestedProviders?.length ? requestedProviders : undefined,
       providers_attempted: providersAttempted,
       ...(reranker ? { reranker } : {}),
       ...(providersSkipped && Object.keys(providersSkipped).length > 0
@@ -679,6 +686,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
     start: number
   ): ExecutionRecord {
     const allFailed = error instanceof AllProvidersFailedError ? error : null;
+    const skippedProviders = allFailed?.skippedProviders ??
+      (error instanceof UnsupportedCommonOptionsError ? error.skippedProviders : undefined);
     const secrets = allFailed?.secretsUsed ?? [];
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
@@ -694,7 +703,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
         options,
         (allFailed?.attempts ?? []).map((a) => a.provider),
         undefined,
-        allFailed?.skippedProviders
+        skippedProviders
       ),
       source: "live",
       attempts: allFailed ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets) : [],
