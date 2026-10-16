@@ -17,6 +17,8 @@ export interface ResumeOutcome {
   pendingJobs?: PendingCrawlJob[];
   /** Completed pages already returned alongside pending crawl handles. */
   completedResults?: CrawlResult[];
+  /** A fallback provider completed while one or more async crawl handles remained pending. */
+  fallbackCompleted?: boolean;
   /** Hash of the original trimmed crawl URL, when available. */
   requestedUrlFingerprint?: string;
 }
@@ -39,6 +41,8 @@ export interface BatchPlanEntry {
   resumePendingJobs?: PendingCrawlJob[];
   /** Completed pages from the previous pending record, retained in later output. */
   resumeCompletedResults?: CrawlResult[];
+  /** Prevents repeating a fallback provider already completed for this pending crawl. */
+  resumeFallbackCompleted?: boolean;
   /** For `skip`: stable machine reason. */
   reason?: "resume-success" | "resume-error" | "resume-conflict" | "duplicate-identical";
   /** For `conflict`: the output record to append (never executed, never retried). */
@@ -96,6 +100,7 @@ function toResumeOutcome(
   conflict: boolean;
   pendingJobs?: PendingCrawlJob[];
   completedResults?: CrawlResult[];
+  fallbackCompleted?: boolean;
   requestedUrlFingerprint?: string;
 } | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -141,6 +146,7 @@ function toResumeOutcome(
         })
       : [];
     const storedFingerprint = resultRecord.requestedUrlFingerprint;
+    const fallbackCompleted = resultRecord.fallbackCompleted === true;
     const requestedUrlFingerprint =
       typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
         ? storedFingerprint
@@ -154,6 +160,7 @@ function toResumeOutcome(
       conflict: false,
       pendingJobs,
       ...(completedResults.length > 0 ? { completedResults } : {}),
+      ...(fallbackCompleted ? { fallbackCompleted: true } : {}),
       ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
     };
   }
@@ -280,6 +287,9 @@ export function buildBatchPlan(
                   : {}),
                 ...(pendingRecordMatchesRequest && latest.completedResults?.length
                   ? { resumeCompletedResults: latest.completedResults }
+                  : {}),
+                ...(pendingRecordMatchesRequest && latest.fallbackCompleted
+                  ? { resumeFallbackCompleted: true }
                   : {}),
               }
             : {}),

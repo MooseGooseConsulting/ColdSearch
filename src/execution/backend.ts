@@ -47,6 +47,7 @@ export type CrawlOutcome = {
   pendingJobs: PendingCrawlJob[];
   provider: string;
   status: "completed" | "pending";
+  fallbackCompleted?: boolean;
   errors?: Record<string, string>;
   warnings?: string[];
 };
@@ -60,21 +61,28 @@ const SEARCH_PROVIDER_LIMIT_OPTIONS = [
 ] as const;
 
 /** Cache identity for provider-defined search counts when the CLI limit is implicit. */
-function searchProviderLimitIdentity(config: Config): Record<string, unknown> {
+function searchProviderLimitIdentity(
+  config: Config,
+  includeConfiguredLimits: boolean
+): Record<string, unknown> {
   const providers = config.capabilities.search?.providers ?? [];
   return {
     providers,
-    configuredLimits: Object.fromEntries(
-      providers.map((provider) => {
-        const options = config.providers[provider]?.options ?? {};
-        const configured = Object.fromEntries(
-          SEARCH_PROVIDER_LIMIT_OPTIONS
-            .filter((key) => options[key] !== undefined)
-            .map((key) => [key, options[key]])
-        );
-        return [provider, configured];
-      })
-    ),
+    ...(includeConfiguredLimits
+      ? {
+          configuredLimits: Object.fromEntries(
+            providers.map((provider) => {
+              const options = config.providers[provider]?.options ?? {};
+              const configured = Object.fromEntries(
+                SEARCH_PROVIDER_LIMIT_OPTIONS
+                  .filter((key) => options[key] !== undefined)
+                  .map((key) => [key, options[key]])
+              );
+              return [provider, configured];
+            })
+          ),
+        }
+      : {}),
   };
 }
 
@@ -266,7 +274,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
           limit: options.limit,
           limitSet: options.limitSet !== false,
           rerankStrategy: reranker,
-          searchProviderLimitIdentity: searchProviderLimitIdentity(this.config),
+          searchProviderLimitIdentity: searchProviderLimitIdentity(
+            this.config,
+            options.limitSet === false
+          ),
         })
       : null;
 
@@ -496,6 +507,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
         pendingJobs: result.pendingJobs,
         provider: result.provider,
         status: result.status,
+        fallbackCompleted: result.fallbackCompleted,
         errors: result.errors,
         warnings,
       };

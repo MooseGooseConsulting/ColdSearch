@@ -22,7 +22,8 @@ export interface BatchExecutor {
     record: BatchInputRecord,
     config: Config,
     resumePendingJobs?: PendingCrawlJob[],
-    resumeCompletedResults?: CrawlResult[]
+    resumeCompletedResults?: CrawlResult[],
+    resumeFallbackCompleted?: boolean
   ): Promise<BatchOutputRecord>;
 }
 
@@ -109,7 +110,8 @@ export class LocalBatchExecutor implements BatchExecutor {
     record: BatchInputRecord,
     config: Config,
     resumePendingJobs?: PendingCrawlJob[],
-    resumeCompletedResults?: CrawlResult[]
+    resumeCompletedResults?: CrawlResult[],
+    resumeFallbackCompleted?: boolean
   ): Promise<BatchOutputRecord> {
     const base = {
       id: record.id,
@@ -154,7 +156,7 @@ export class LocalBatchExecutor implements BatchExecutor {
         const result = await this.backend.crawl(record.url!, {
           ...this.fanoutOptions(record),
           resumePendingJobs,
-          resumeCompletedResults,
+          resumeFallbackCompleted,
         });
         this.warn(result.warnings);
         return {
@@ -165,6 +167,7 @@ export class LocalBatchExecutor implements BatchExecutor {
             pendingJobs: result.pendingJobs,
             provider: result.provider,
             status: result.status,
+            ...(result.fallbackCompleted ? { fallbackCompleted: true } : {}),
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
               : {}),
@@ -406,7 +409,8 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
         entry.record,
         config,
         entry.resumePendingJobs,
-        entry.resumeCompletedResults
+        entry.resumeCompletedResults,
+        entry.resumeFallbackCompleted
       );
       const outputRecord = mergeResumedCrawlResults(
         entry.record,
@@ -517,10 +521,17 @@ async function safeExecute(
   record: BatchInputRecord,
   config: Config,
   resumePendingJobs?: PendingCrawlJob[],
-  resumeCompletedResults?: CrawlResult[]
+  resumeCompletedResults?: CrawlResult[],
+  resumeFallbackCompleted?: boolean
 ): Promise<BatchOutputRecord> {
   try {
-    return await executor.execute(record, config, resumePendingJobs, resumeCompletedResults);
+    return await executor.execute(
+      record,
+      config,
+      resumePendingJobs,
+      resumeCompletedResults,
+      resumeFallbackCompleted
+    );
   } catch (error) {
     return {
       id: record.id,

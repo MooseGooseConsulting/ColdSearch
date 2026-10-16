@@ -52,8 +52,8 @@ export interface FanoutOptions {
   depth?: number;
   /** Existing async jobs supplied by batch resume. */
   resumePendingJobs?: PendingCrawlJob[];
-  /** Pages retained from a prior pending batch attempt, used to suppress duplicate fallback crawls. */
-  resumeCompletedResults?: CrawlResult[];
+  /** Whether a fallback provider already completed while saved crawl jobs were pending. */
+  resumeFallbackCompleted?: boolean;
 }
 
 /**
@@ -353,6 +353,7 @@ export class FanoutEngine {
     pendingJobs: PendingCrawlJob[];
     provider: string;
     status: "completed" | "pending";
+    fallbackCompleted?: boolean;
     errors?: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
@@ -518,29 +519,35 @@ export class FanoutEngine {
       }
     }
 
-    // Return recovered work once every saved handle has been checked. Keep
-    // unfinished handles alongside those results for the next batch resume.
-    if (completedResumeProvider) {
+    // A completed fallback remains usable even if its saved handles later
+    // terminate without results, so never repeat it once the marker is set.
+    if (options.resumeFallbackCompleted) {
+      const pending = pendingJobs.length > 0;
       return {
         results: completedResumeResults,
         pendingJobs,
-        provider: completedResumeProvider,
-        status: pendingJobs.length > 0 ? "pending" : "completed",
+        provider:
+          completedResumeProvider ??
+          pendingJobs[0]?.provider ??
+          options.resumePendingJobs?.[0]?.provider ??
+          selectedProviders[0] ??
+          "unknown",
+        status: pending ? "pending" : "completed",
+        ...(pending ? { fallbackCompleted: true } : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
       };
     }
 
-    // Batch output may already contain pages from a completed fallback
-    // provider. Keep those pages in the runner and wait for the saved async
-    // handle instead of launching the same fallback again on each resume.
-    if (pendingJobs.length > 0 && options.resumeCompletedResults?.length) {
+    // If the resumed provider completed and no handles remain, it supplied the
+    // final result. Otherwise a fallback may still complete while handles wait.
+    if (completedResumeProvider && pendingJobs.length === 0) {
       return {
-        results: [],
+        results: completedResumeResults,
         pendingJobs,
-        provider: pendingJobs[0]!.provider,
-        status: "pending",
+        provider: completedResumeProvider,
+        status: "completed",
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
@@ -548,7 +555,7 @@ export class FanoutEngine {
     }
 
     const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
-    const fallbackPartialResults: CrawlResult[] = [];
+    const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -639,6 +646,11 @@ export class FanoutEngine {
           pendingJobs: [...pendingJobs, ...resumePendingJobs],
           provider,
           status: pendingJobs.length + resumePendingJobs.length > 0 ? "pending" : "completed",
+          ...(
+            pendingJobs.length + resumePendingJobs.length > 0
+              ? { fallbackCompleted: true }
+              : {}
+          ),
           errors: Object.keys(errors).length > 0 ? errors : undefined,
           attempts,
           secretsUsed,
@@ -672,6 +684,7 @@ export class FanoutEngine {
         pendingJobs: remainingPendingJobs,
         provider: remainingPendingJobs[0]!.provider,
         status: "pending",
+        ...(options.resumeFallbackCompleted ? { fallbackCompleted: true } : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
         secretsUsed,
