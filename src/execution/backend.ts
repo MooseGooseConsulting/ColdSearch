@@ -386,8 +386,20 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
+    const requestFormat = options.format;
+    const configuredReturnFormat = Object.entries(jinaOptions).find(
+      ([name, value]) =>
+        name.toLowerCase() === "x-return-format" && value !== undefined && value !== null
+    )?.[1];
+    const effectiveReturnFormat =
+      requestFormat ??
+      (configuredReturnFormat === undefined ? undefined : String(configuredReturnFormat));
     const key = useCache
-      ? cacheKey("extract", url, options.format ? { format: options.format } : {})
+      ? cacheKey(
+          "extract",
+          url,
+          effectiveReturnFormat === undefined ? {} : { format: effectiveReturnFormat }
+        )
       : null;
 
     if (key) {
