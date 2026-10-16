@@ -35,6 +35,19 @@ at the initial PR head.
 | Bright Data | — | egress blocked | **blocked: sandbox egress** |
 | SearXNG | — | no public instance in config | **not_run: no instance** — requires a configured instance; keyless-by-design claim structurally sound but unexercised |
 
+## Relationship to committed replay fixtures
+
+The committed Firecrawl replay fixtures
+(`test/fixtures/provider-envelopes/firecrawl-search-200.json` and
+`test/fixtures/provider-envelopes/firecrawl-scrape-markdown-200.json`) are
+representative, sanitized examples for exercising adapter parsing; they are
+not verbatim copies of the live probe captures. The search fixture uses
+`limit:10` (the live probe above used `limit:2`), and the markdown scrape
+fixture omits the live response's `statusCode`, `creditsUsed`, and `cacheState`
+metadata. Their notes describe the provider response shape, not exact request
+and response equality. Use this ledger for the live probe details and the
+fixtures for replay coverage; raw capture files are not committed.
+
 ## Consequences for the stack
 
 1. **PR-B** — Firecrawl live behavior confirms the `formats` passthrough fix
