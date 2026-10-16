@@ -109,21 +109,33 @@ const SEARCH_FILTER_OPTIONS: Record<string, readonly string[]> = {
   brightdata: ["zone", "serpZone", "searchEngine", "searchCountry", "country"],
 };
 
-function normalizeFilterValue(provider: string, key: string, value: unknown): unknown {
+function normalizeFilterValue(
+  provider: string,
+  key: string,
+  value: unknown,
+  allOptions: Record<string, unknown> = {}
+): unknown {
+  // Mirror the adapter: highlights mode ignores maxCharacters entirely.
+  if (provider === "exa" && key === "maxCharacters" && allOptions.highlights === true) {
+    return undefined;
+  }
   if (value === undefined || value === null) return undefined;
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return undefined;
     if (provider === "brave" && key === "safesearch") {
-      const v = trimmed.toLowerCase();
-      return ["off", "moderate", "strict"].includes(v) ? v : undefined;
+      // Match the adapter exactly: only the lowercase enum reaches the wire
+      // (BraveAdapter checks BRAVE_SAFESEARCH_VALUES without case folding).
+      // A case-variant config omits the param, so it must key identically
+      // to an absent value rather than to the corrected lowercase form.
+      return ["off", "moderate", "strict"].includes(trimmed) ? trimmed : undefined;
     }
     if (provider === "firecrawl" && key === "sources") {
+      // Key the raw config value, not the sanitized subset: sanitizeSources
+      // throws on invalid entries while a filtered key would silently map
+      // distinct invalid configs to the same entry.
       if (!Array.isArray(value)) return undefined;
-      const allowed = (value as unknown[]).filter(
-        (s): s is string => typeof s === "string" && ["web", "news", "images"].includes(s)
-      );
-      return allowed.length > 0 ? allowed : undefined;
+      return value.length > 0 ? value : undefined;
     }
     if (provider === "tavily" && key === "search_depth") {
       return ["basic", "advanced", "fast", "ultra-fast"].includes(trimmed) ? trimmed : undefined;
@@ -140,10 +152,7 @@ function normalizeFilterValue(provider: string, key: string, value: unknown): un
   }
   if (Array.isArray(value)) {
     if (provider === "firecrawl" && key === "sources") {
-      const allowed = (value as unknown[]).filter(
-        (s): s is string => typeof s === "string" && ["web", "news", "images"].includes(s)
-      );
-      return allowed.length > 0 ? allowed : undefined;
+      return value.length > 0 ? value : undefined;
     }
     if (
       (provider === "exa" && (key === "includeDomains" || key === "excludeDomains")) ||
@@ -165,7 +174,7 @@ function searchFilterIdentity(config: Config): Record<string, unknown> {
       const options = config.providers[provider]?.options ?? {};
       const filters = Object.fromEntries(
         keys
-          .map((key) => [key, normalizeFilterValue(provider, key, options[key])] as const)
+          .map((key) => [key, normalizeFilterValue(provider, key, options[key], options)] as const)
           .filter(([, v]) => v !== undefined)
       );
       return [provider, filters];
@@ -199,6 +208,29 @@ function extractProviderFormatIdentity(
       }
       return [provider, String(format)];
     })
+  );
+}
+
+/**
+ * Effective Bright Data extract country per provider in the default extract
+ * pool (Codex on #83: country/searchCountry reach the Unlocker wire via
+ * optionalStringOption but were absent from the extract cache key).
+ * Mirrors the adapter precedence: country, then searchCountry, default "us".
+ */
+function brightdataCountryIdentity(config: Config): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers
+      .filter((provider) => provider === "brightdata")
+      .map((provider) => {
+        const providerOptions = config.providers[provider]?.options ?? {};
+        const pick = (name: string): unknown =>
+          Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+        const raw = pick("country") ?? pick("searchcountry");
+        const country =
+          typeof raw === "string" && raw.trim() ? raw.trim() : "us";
+        return [provider, country];
+      })
   );
 }
 
@@ -540,6 +572,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           format: effectiveReturnFormat,
           providerFormats: extractProviderFormatIdentity(this.config, options),
           providerHeaders: jinaCacheHeaders,
+          brightdataCountry: brightdataCountryIdentity(this.config),
         })
       : null;
 

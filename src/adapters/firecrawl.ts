@@ -90,6 +90,13 @@ function sanitizeFormats(value: unknown): string[] {
 /** Request Markdown alongside configured formats for the normalized content field. */
 function normalizedTextFormats(value: unknown): string[] {
   const formats = sanitizeFormats(value);
+  // rawBase64 must be the only requested format (Firecrawl rejects combos);
+  // surfacing it now beats sending a request the API will refuse.
+  if (formats.includes("rawBase64") && formats.length > 1) {
+    throw new Error(
+      'Invalid Firecrawl formats: "rawBase64" must be the only requested format.'
+    );
+  }
   return formats.includes("markdown") ? formats : [...formats, "markdown"];
 }
 
