@@ -294,6 +294,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
     for (let step = 0; step < maxSteps; step++) {
       // Get agent's next action
       const responseStartedAt = performance.now();
+      const responseStartedAtWallClock = new Date();
       const response = await complete(messages);
       const content = response.content.trim();
 
@@ -308,6 +309,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
           "rejected_action",
           `Malformed model response: ${JSON.stringify(excerpt)}`
         );
+        rejectedStep.timestamp = responseStartedAtWallClock;
         context.completeStep(
           rejectedStep,
           "failed",
@@ -342,6 +344,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
           "rejected_action",
           `Unknown tool action: ${excerpt}`
         );
+        rejectedStep.timestamp = responseStartedAtWallClock;
         context.completeStep(
           rejectedStep,
           "failed",
