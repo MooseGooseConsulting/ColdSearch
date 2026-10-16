@@ -325,8 +325,9 @@ function assertSafeCaptureDirectory(
     );
   }
 
-  const writableByOthers = (info.mode & 0o022) !== 0;
-  const sticky = (info.mode & 0o1000) !== 0;
+  const mode = Number(info.mode);
+  const writableByOthers = (mode & 0o022) !== 0;
+  const sticky = (mode & 0o1000) !== 0;
   // A sticky shared ancestor (such as /tmp) protects entries owned by this
   // process. Never write directly into a shared-writable capture directory.
   if (writableByOthers && (isTarget || !sticky)) {
