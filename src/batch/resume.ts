@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import {
   DUPLICATE_ID_CONFLICT,
   isConflictError,
@@ -6,12 +7,27 @@ import {
   type BatchInputRecord,
   type BatchOutputRecord,
 } from "./types.js";
+import type { CrawlResult, PendingCrawlJob } from "../types.js";
 
-/** Compact per-id resume outcome: planning needs status + conflict flag only. */
+/** Compact per-id resume outcome; pending crawls retain handles and prior pages. */
 export interface ResumeOutcome {
-  status: "success" | "error";
+  status: "success" | "pending" | "error";
   /** True for duplicate/conflict error records, which --retry-errors never retries. */
   conflict: boolean;
+  pendingJobs?: PendingCrawlJob[];
+  /** Completed pages already returned alongside pending crawl handles. */
+  completedResults?: CrawlResult[];
+  /** A fallback provider completed while one or more async crawl handles remained pending. */
+  fallbackCompleted?: boolean;
+  /** Provider that produced completed fallback pages retained with pending jobs. */
+  fallbackProvider?: string;
+  /** Hash of the original trimmed crawl URL, when available. */
+  requestedUrlFingerprint?: string;
+}
+
+/** Persist a stable URL fingerprint without storing the URL itself. */
+export function crawlUrlFingerprint(url: string): string {
+  return createHash("sha256").update(url.trim()).digest("hex");
 }
 
 /** Maps batch `id` -> compact outcomes already present in the output file. */
@@ -23,6 +39,14 @@ export type BatchPlanAction = "execute" | "skip" | "conflict";
 export interface BatchPlanEntry {
   record: BatchInputRecord;
   action: BatchPlanAction;
+  /** Existing async jobs to poll instead of starting duplicate work. */
+  resumePendingJobs?: PendingCrawlJob[];
+  /** Completed pages from the previous pending record, retained in later output. */
+  resumeCompletedResults?: CrawlResult[];
+  /** Prevents repeating a fallback provider already completed for this pending crawl. */
+  resumeFallbackCompleted?: boolean;
+  /** Provider that produced retained fallback pages for the pending crawl. */
+  resumeFallbackProvider?: string;
   /** For `skip`: stable machine reason. */
   reason?: "resume-success" | "resume-error" | "resume-conflict" | "duplicate-identical";
   /** For `conflict`: the output record to append (never executed, never retried). */
@@ -33,7 +57,8 @@ export interface BatchPlanEntry {
  * Load the resume index from an existing output file. Malformed, partial, or
  * contract-invalid lines (an interrupted run's last write, foreign data) are
  * ignored — they carry no resumable outcome. A missing file yields an empty
- * index. Payloads are discarded: planning only needs status + conflict flag.
+ * index. Pending crawl outcomes retain their job handles and completed pages
+ * so those pages survive subsequent resume records.
  */
 export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> {
   const index: ResumeIndex = new Map();
@@ -64,16 +89,92 @@ export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> 
   return index;
 }
 
+function parseCrawlResumeState(raw: unknown): Pick<
+  ResumeOutcome,
+  | "pendingJobs"
+  | "completedResults"
+  | "fallbackCompleted"
+  | "fallbackProvider"
+  | "requestedUrlFingerprint"
+> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const resultRecord = raw as Record<string, unknown>;
+  const rawJobs = resultRecord.pendingJobs;
+  const pendingJobs = Array.isArray(rawJobs)
+    ? rawJobs.filter((job): job is PendingCrawlJob => {
+        if (!job || typeof job !== "object" || Array.isArray(job)) return false;
+        const candidate = job as Record<string, unknown>;
+        return (
+          typeof candidate.provider === "string" &&
+          typeof candidate.jobId === "string" &&
+          candidate.jobId.length > 0 &&
+          typeof candidate.url === "string" &&
+          candidate.url.length > 0
+        );
+      })
+    : [];
+  const rawResults = resultRecord.completedResults ?? resultRecord.results;
+  const completedResults = Array.isArray(rawResults)
+    ? rawResults.filter((page): page is CrawlResult => {
+        if (!page || typeof page !== "object" || Array.isArray(page)) return false;
+        const candidate = page as Record<string, unknown>;
+        return (
+          typeof candidate.url === "string" &&
+          typeof candidate.title === "string" &&
+          typeof candidate.content === "string" &&
+          (candidate.status === undefined || candidate.status === "completed")
+        );
+      })
+    : [];
+  const storedFingerprint = resultRecord.requestedUrlFingerprint;
+  const fallbackCompleted = resultRecord.fallbackCompleted === true;
+  const storedFallbackProvider = resultRecord.fallbackProvider;
+  const legacyFallbackProvider = resultRecord.provider;
+  const fallbackProvider = fallbackCompleted
+    ? typeof storedFallbackProvider === "string" && storedFallbackProvider.trim()
+      ? storedFallbackProvider
+      : typeof legacyFallbackProvider === "string" &&
+          legacyFallbackProvider.trim() &&
+          !pendingJobs.some((job) => job.provider === legacyFallbackProvider)
+        ? legacyFallbackProvider
+        : undefined
+    : undefined;
+  const requestedUrlFingerprint =
+    typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
+      ? storedFingerprint
+      : (() => {
+          const pendingUrls = [...new Set(pendingJobs.map((job) => job.url.trim()))];
+          return pendingUrls.length === 1 ? crawlUrlFingerprint(pendingUrls[0]!) : undefined;
+        })();
+
+  return {
+    ...(pendingJobs.length > 0 ? { pendingJobs } : {}),
+    ...(completedResults.length > 0 ? { completedResults } : {}),
+    ...(fallbackCompleted ? { fallbackCompleted: true } : {}),
+    ...(fallbackProvider ? { fallbackProvider } : {}),
+    ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
+  };
+}
+
 /**
  * Validate one parsed output line against the batch output contract and reduce
  * it to the compact resume outcome. A success must have `error: null` and a
  * present, non-null `result`; an error must have `result: null` and an `error`
- * object with a string `message`. Anything else is ignored like a malformed
- * line — it is not a completed outcome and must not cause a resume skip.
+ * object with a string `message`. Pending records are valid non-successes and
+ * retain their job handles and any completed pages for the next resume.
  */
 function toResumeOutcome(
   raw: unknown
-): { id: string; status: "success" | "error"; conflict: boolean } | null {
+): {
+  id: string;
+  status: "success" | "pending" | "error";
+  conflict: boolean;
+  pendingJobs?: PendingCrawlJob[];
+  completedResults?: CrawlResult[];
+  fallbackCompleted?: boolean;
+  fallbackProvider?: string;
+  requestedUrlFingerprint?: string;
+} | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   if (typeof record.id !== "string" || record.id === "") return null;
@@ -84,12 +185,29 @@ function toResumeOutcome(
     return { id: record.id, status: "success", conflict: false };
   }
 
+  if (record.status === "pending") {
+    if (record.error !== null) return null;
+    const result = record.result;
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+    return {
+      id: record.id,
+      status: "pending",
+      conflict: false,
+      ...parseCrawlResumeState(result),
+    };
+  }
+
   if (record.status === "error") {
     if (record.result !== null) return null;
     const error = record.error;
     if (error === null || typeof error !== "object" || Array.isArray(error)) return null;
     if (typeof (error as Record<string, unknown>).message !== "string") return null;
-    return { id: record.id, status: "error", conflict: isConflictError(error as BatchError) };
+    return {
+      id: record.id,
+      status: "error",
+      conflict: isConflictError(error as BatchError),
+      ...parseCrawlResumeState(record.resumeState),
+    };
   }
 
   return null;
@@ -158,6 +276,37 @@ export function buildBatchPlan(
     const hasSuccess = existing.some((r) => r.status === "success");
     const hasRetriableError = existing.some((r) => r.status === "error" && !r.conflict);
     const hasConflict = existing.some((r) => r.status === "error" && r.conflict);
+    const latest = existing[existing.length - 1];
+    const latestResumeState =
+      latest?.status === "pending" || latest?.status === "error" ? latest : undefined;
+    const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
+    const requestedFingerprint = requestedUrl ? crawlUrlFingerprint(requestedUrl) : undefined;
+    const previousFallbackProvider = [...existing]
+      .reverse()
+      .find(
+        (outcome) =>
+          outcome.fallbackCompleted &&
+          outcome.fallbackProvider &&
+          outcome.requestedUrlFingerprint === requestedFingerprint
+      )?.fallbackProvider;
+    const pendingRecordMatchesRequest =
+      requestedUrl !== undefined &&
+      latestResumeState?.requestedUrlFingerprint === requestedFingerprint;
+    let pendingJobsForRequest: PendingCrawlJob[] | undefined;
+    if (requestedUrl !== undefined && latestResumeState) {
+      // The persisted job URL may have been redacted. The fingerprint
+      // binds this record to the request, so rebind its jobs to the
+      // current input URL before FanoutEngine validates them.
+      pendingJobsForRequest = pendingRecordMatchesRequest
+        ? latestResumeState.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
+        : latestResumeState.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
+    }
+    const canResumePendingJob = Boolean(
+      requestedUrl &&
+        pendingJobsForRequest?.some(
+          (job) => job.provider.trim().length > 0 && job.jobId.trim().length > 0
+        )
+    );
 
     const firstInput = seen.get(record.id);
     if (firstInput === undefined) {
@@ -165,13 +314,41 @@ export function buildBatchPlan(
       seen.set(record.id, canonicalizeRecord(record));
       if (hasSuccess) {
         plan.push({ record, action: "skip", reason: "resume-success" });
-      } else if (hasRetriableError && !options.retryErrors) {
+      } else if (
+        hasRetriableError &&
+        !options.retryErrors &&
+        !canResumePendingJob
+      ) {
         plan.push({ record, action: "skip", reason: "resume-error" });
       } else {
         // Execute, including when the id only has a conflict record so far
         // (the primary never produced its own outcome) and retriable-error
         // retries when --retry-errors is set.
-        plan.push({ record, action: "execute" });
+        plan.push({
+          record,
+          action: "execute",
+          ...(latestResumeState
+            ? {
+                ...(pendingJobsForRequest?.length
+                  ? { resumePendingJobs: pendingJobsForRequest }
+                  : {}),
+                ...(pendingRecordMatchesRequest && latestResumeState.completedResults?.length
+                  ? { resumeCompletedResults: latestResumeState.completedResults }
+                  : {}),
+                ...(pendingRecordMatchesRequest && latestResumeState.fallbackCompleted
+                  ? { resumeFallbackCompleted: true }
+                  : {}),
+                ...(pendingRecordMatchesRequest && latestResumeState.fallbackCompleted
+                  ? ((latestResumeState.fallbackProvider ?? previousFallbackProvider)
+                      ? {
+                          resumeFallbackProvider:
+                            latestResumeState.fallbackProvider ?? previousFallbackProvider,
+                        }
+                      : {})
+                  : {}),
+              }
+            : {}),
+        });
       }
       continue;
     }

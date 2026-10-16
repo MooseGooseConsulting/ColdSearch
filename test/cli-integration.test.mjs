@@ -400,6 +400,20 @@ test("invalid --reasoning-effort is reported as a config error", () => {
   assert.match(result.stderr, /^Error \(config\): Invalid reasoning effort/);
 });
 
+test("--depth rejects missing, blank, fractional, negative, and trailing-junk values", () => {
+  for (const depthArgs of [
+    ["--depth"],
+    ["--depth", ""],
+    ["--depth", "1.5"],
+    ["--depth", "-1"],
+    ["--depth", "2pages"],
+  ]) {
+    const result = runCli(["crawl", ...depthArgs, "https://example.com"]);
+    assert.equal(result.status, 1, JSON.stringify(depthArgs));
+    assert.match(result.stderr, /^Error \([^)]*\): Invalid depth:/);
+  }
+});
+
 test("status --json includes the config path", () => {
   const { result, configPath } = withTempDir((dir) => {
     const usagePath = path.join(dir, "usage.jsonl").replaceAll("\\", "/");

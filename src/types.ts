@@ -21,16 +21,39 @@ export interface CrawlResult {
   url: string;
   title: string;
   content: string;
+  /** Internal adapter marker: the accepted crawl job has not finished. */
+  status?: "completed" | "pending";
+  jobId?: string;
+  /** True when crawl is synthesized (Exa search + contents), not a native crawler. */
+  derived?: boolean;
 }
+
+/** A provider crawl accepted for asynchronous processing but not yet complete. */
+export interface PendingCrawlJob {
+  provider: string;
+  jobId: string;
+  url: string;
+}
+
+export type ContentFormat = "markdown" | "text";
 
 export type CapabilityName = "search" | "extract" | "crawl";
 
 export interface AdapterCallOptions {
   providerOptions?: Record<string, unknown>;
+  /** Caller limit. Search adapters send this as the provider's count field. */
+  limit?: number;
+  /** Extract output format. Adapters send the provider's native field or keep text. */
+  format?: ContentFormat;
+  /** Crawl depth. Sent as the provider's depth field, or ignored when the crawl is derived. */
+  depth?: number;
 }
 
 export interface CrawlCallOptions extends AdapterCallOptions {
   limit?: number;
+  depth?: number;
+  /** Resume polling this provider job without starting a duplicate crawl. */
+  resumeJobId?: string;
 }
 
 export interface SearchAdapter {

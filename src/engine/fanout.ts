@@ -1,7 +1,8 @@
 import { createAdapter } from "../adapters/index.js";
 import { KeyPoolManager, createKeyPoolManager } from "./keypool.js";
 import { rerank, type RerankerOptions } from "./reranker.js";
-import { resolveCapabilityProviders } from "../providers.js";
+import { providerSupportsCapability, resolveCapabilityProviders } from "../providers.js";
+import { FirecrawlCrawlTerminalError } from "../adapters/firecrawl.js";
 import { UsageLogger } from "../logging/usage.js";
 import type {
   CapabilityName,
@@ -9,6 +10,7 @@ import type {
   NormalizedResult,
   ExtractResult,
   CrawlResult,
+  PendingCrawlJob,
 } from "../types.js";
 import { performance } from "node:perf_hooks";
 
@@ -23,6 +25,8 @@ export type OperationType = "search" | "extract" | "crawl";
 export interface FanoutOptions {
   /** Maximum results to return */
   limit: number;
+  /** Whether `limit` was supplied by the caller. False preserves provider defaults. */
+  limitSet?: boolean;
   /** Specific providers to use (defaults to all configured) */
   providers?: string[];
   /** Reranker strategy */
@@ -39,9 +43,19 @@ export interface FanoutOptions {
   /**
    * Per-invocation `--freshness <duration>` override of the config `[cache]`
    * TTL. Threaded from the CLI to the execution backend; FanoutEngine itself
-   * ignores this flag.
+   * ignores this flag. This is not a provider published-date filter.
    */
   freshness?: string;
+  /** Extract `--format`. Search and crawl ignore it. */
+  format?: "markdown" | "text";
+  /** Crawl `--depth`. Search and extract ignore it. */
+  depth?: number;
+  /** Existing async jobs supplied by batch resume. */
+  resumePendingJobs?: PendingCrawlJob[];
+  /** Whether a fallback provider already completed while saved crawl jobs were pending. */
+  resumeFallbackCompleted?: boolean;
+  /** Provider that produced the completed fallback pages retained for a pending crawl. */
+  resumeFallbackProvider?: string;
 }
 
 /**
@@ -64,6 +78,8 @@ interface ProviderResult {
 export interface FanoutAttempt {
   provider: string;
   success: boolean;
+  /** Provider accepted the crawl but the async job has not completed. */
+  pending?: boolean;
   error?: string;
   duration_ms?: number;
   key_ref?: string;
@@ -79,22 +95,30 @@ export class AllProvidersFailedError extends Error {
   readonly attempts: FanoutAttempt[];
   readonly providerErrors: Record<string, string>;
   readonly secretsUsed: string[];
+  readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
+  readonly discardedResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
-    secretsUsed: string[]
+    secretsUsed: string[],
+    terminalResumeJobs: PendingCrawlJob[] = [],
+    discardedResumeJobs: PendingCrawlJob[] = []
   ) {
     super(`All providers failed: ${JSON.stringify(errors)}`);
     this.name = "AllProvidersFailedError";
     this.providerErrors = errors;
     this.attempts = attempts;
     this.secretsUsed = secretsUsed;
+    this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
+    this.discardedResumeJobs = discardedResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
     // every resolved key to any wrapper/structured logger that serializes it.
     Object.defineProperty(this, "secretsUsed", { enumerable: false });
+    Object.defineProperty(this, "terminalResumeJobs", { enumerable: false });
+    Object.defineProperty(this, "discardedResumeJobs", { enumerable: false });
   }
 }
 
@@ -167,7 +191,13 @@ export class FanoutEngine {
 
     // Execute searches in parallel
     const results = await Promise.allSettled(
-      providers.map((provider) => this.searchProvider(provider, query))
+      providers.map((provider) =>
+        this.searchProvider(
+          provider,
+          query,
+          options.limitSet === false ? undefined : options.limit
+        )
+      )
     );
 
     // Collect results and errors
@@ -274,6 +304,7 @@ export class FanoutEngine {
         if (apiKey) secretsUsed.push(apiKey);
         const result = await adapter.extract(url, apiKey, {
           providerOptions: this.config.providers[provider]?.options,
+          format: options.format,
         });
 
         const durationMs = Math.round(performance.now() - start);
@@ -329,15 +360,222 @@ export class FanoutEngine {
    */
   async crawl(url: string, options: FanoutOptions): Promise<{
     results: CrawlResult[];
+    pendingJobs: PendingCrawlJob[];
     provider: string;
+    status: "completed" | "pending";
+    fallbackCompleted?: boolean;
+    fallbackProvider?: string;
     errors?: Record<string, string>;
     attempts: FanoutAttempt[];
     secretsUsed: string[];
   }> {
-    const providers = this.getProvidersForCapability("crawl", options);
     const errors: Record<string, string> = {};
     const attempts: FanoutAttempt[] = [];
     const secretsUsed: string[] = [];
+    const requestedUrl = url.trim();
+    const resumePendingJobs: PendingCrawlJob[] = [];
+    const pendingJobs: PendingCrawlJob[] = [];
+    const terminalResumeJobs: PendingCrawlJob[] = [];
+    const discardedResumeJobs: PendingCrawlJob[] = [];
+    const resumeProviders = new Set<string>();
+
+    // A batch resume is tied to its saved provider job, even if the current
+    // invocation uses random or single-provider selection. Providers removed
+    // from configuration or without crawl support cannot resume that handle;
+    // report it and discard it instead of keeping it pending forever.
+    for (const job of options.resumePendingJobs ?? []) {
+      let unavailableReason: string | undefined;
+      if (job.url.trim() !== requestedUrl) {
+        unavailableReason = `saved URL ${JSON.stringify(job.url)} does not match requested URL ${JSON.stringify(requestedUrl)}`;
+      } else if (!this.config.providers[job.provider]) {
+        unavailableReason = "provider is no longer configured";
+      } else {
+        try {
+          if (!providerSupportsCapability(job.provider, "crawl")) {
+            unavailableReason = "provider no longer supports crawl";
+          }
+        } catch {
+          unavailableReason = "provider is no longer available in this build";
+        }
+      }
+
+      if (unavailableReason) {
+        const message =
+          `Cannot resume ${job.provider} crawl job '${job.jobId}': ${unavailableReason}. ` +
+          "Restore the provider configuration or remove the stale pending job from the batch output.";
+        errors[job.provider] = message;
+        attempts.push({ provider: job.provider, success: false, error: message });
+        discardedResumeJobs.push(job);
+        continue;
+      }
+
+      resumePendingJobs.push(job);
+      resumeProviders.add(job.provider);
+    }
+
+    const selectedProviders = this.getProvidersForCapability("crawl", options);
+    const resumeJobsToPoll = resumePendingJobs.splice(0);
+    let completedResumeProvider: string | undefined;
+    const completedResumeResults: CrawlResult[] = [];
+
+    // Poll every saved handle before starting fallback work. A provider can
+    // own several outstanding jobs for the same URL, and each job must be
+    // polled independently even when an earlier one remains pending.
+    for (const provider of resumeProviders) {
+      const providerJobs = resumeJobsToPoll.filter((job) => job.provider === provider);
+      for (const resumeJob of providerJobs) {
+        const start = performance.now();
+        let keyRef = "none";
+        let resumeHandleIsUsable = true;
+        try {
+          const adapter = createAdapter(provider);
+          if (!adapter.crawl) {
+            resumeHandleIsUsable = false;
+            throw new Error(
+              `Cannot resume ${provider} crawl job '${resumeJob.jobId}': provider adapter no longer supports crawl.`
+            );
+          }
+
+          const keyResult = await this.keyPool.getNextKeyWithRefOrEmpty(provider);
+          const apiKey = keyResult.value;
+          keyRef = keyResult.ref;
+          if (apiKey) secretsUsed.push(apiKey);
+          const results = await adapter.crawl(url, apiKey, {
+            limit: options.limit,
+            depth: options.depth,
+            providerOptions: this.config.providers[provider]?.options,
+            resumeJobId: resumeJob.jobId,
+          });
+
+          const durationMs = Math.round(performance.now() - start);
+          const pendingResults = results.filter((result) => result.status === "pending");
+          const pageResults = results.filter((result) => result.status !== "pending");
+          if (pendingResults.length > 0) {
+            if (pageResults.length > 0) {
+              completedResumeProvider ??= provider;
+              completedResumeResults.push(...pageResults);
+            }
+            const providerPendingJobs = pendingResults.map((result) => {
+              if (!result.jobId) {
+                throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
+              }
+              return {
+                provider,
+                jobId: result.jobId,
+                url: result.url || url,
+              };
+            });
+            pendingJobs.push(...providerPendingJobs);
+            const pendingMessage = "Provider crawl is still pending";
+            this.usageLogger.write({
+              timestamp: new Date().toISOString(),
+              provider,
+              capability: "crawl",
+              key: keyRef,
+              success: false,
+              pending: true,
+              response_time_ms: durationMs,
+              error: pendingMessage,
+            });
+            attempts.push({
+              provider,
+              success: false,
+              pending: true,
+              error: pendingMessage,
+              duration_ms: durationMs,
+              key_ref: keyRef,
+              result_count: pageResults.length,
+            });
+            continue;
+          }
+
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: true,
+            response_time_ms: durationMs,
+          });
+          attempts.push({
+            provider,
+            success: true,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+            result_count: pageResults.length,
+          });
+          completedResumeProvider ??= provider;
+          completedResumeResults.push(...pageResults);
+        } catch (error) {
+          // A failed poll does not prove that an accepted async job stopped.
+          if (resumeHandleIsUsable && !(error instanceof FirecrawlCrawlTerminalError)) {
+            pendingJobs.push(resumeJob);
+          } else if (error instanceof FirecrawlCrawlTerminalError) {
+            terminalResumeJobs.push(resumeJob);
+          }
+          const durationMs = Math.round(performance.now() - start);
+          errors[provider] = (error as Error).message;
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            response_time_ms: durationMs,
+            error: (error as Error).message,
+          });
+          attempts.push({
+            provider,
+            success: false,
+            error: (error as Error).message,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+          });
+        }
+      }
+    }
+
+    // A completed fallback remains usable even if its saved handles later
+    // terminate without results, so never repeat it once the marker is set.
+    if (options.resumeFallbackCompleted) {
+      const pending = pendingJobs.length > 0;
+      return {
+        results: completedResumeResults,
+        pendingJobs,
+        provider:
+          completedResumeProvider ??
+          options.resumeFallbackProvider ??
+          pendingJobs[0]?.provider ??
+          options.resumePendingJobs?.[0]?.provider ??
+          selectedProviders[0] ??
+          "unknown",
+        status: pending ? "pending" : "completed",
+        ...(pending ? { fallbackCompleted: true } : {}),
+        ...(options.resumeFallbackProvider
+          ? { fallbackProvider: options.resumeFallbackProvider }
+          : {}),
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    // If the resumed provider completed and no handles remain, it supplied the
+    // final result. Otherwise a fallback may still complete while handles wait.
+    if (completedResumeProvider && pendingJobs.length === 0) {
+      return {
+        results: completedResumeResults,
+        pendingJobs,
+        provider: completedResumeProvider,
+        status: "completed",
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
+    const fallbackPartialResults: CrawlResult[] = [...completedResumeResults];
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -363,10 +601,51 @@ export class FanoutEngine {
         if (apiKey) secretsUsed.push(apiKey);
         const results = await adapter.crawl(url, apiKey, {
           limit: options.limit,
+          depth: options.depth,
           providerOptions: this.config.providers[provider]?.options,
         });
 
         const durationMs = Math.round(performance.now() - start);
+        const pendingResults = results.filter((result) => result.status === "pending");
+        const pageResults = results.filter((result) => result.status !== "pending");
+        if (pendingResults.length > 0) {
+          fallbackPartialResults.push(...pageResults);
+          const providerPendingJobs = pendingResults.map((result) => {
+            if (!result.jobId) {
+              throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
+            }
+            return {
+              provider,
+              jobId: result.jobId,
+              url: result.url || url,
+            };
+          });
+          pendingJobs.push(...providerPendingJobs);
+          const pendingMessage = "Provider crawl is still pending";
+          this.usageLogger.write({
+            timestamp: new Date().toISOString(),
+            provider,
+            capability: "crawl",
+            key: keyRef,
+            success: false,
+            pending: true,
+            response_time_ms: durationMs,
+            error: pendingMessage,
+          });
+          attempts.push({
+            provider,
+            success: false,
+            pending: true,
+            error: pendingMessage,
+            duration_ms: durationMs,
+            key_ref: keyRef,
+            result_count: pageResults.length,
+          });
+          // A pending async job is not a completed crawl. Try the next
+          // configured provider so it can produce usable results now.
+          continue;
+        }
+
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
@@ -380,11 +659,21 @@ export class FanoutEngine {
           success: true,
           duration_ms: durationMs,
           key_ref: keyRef,
-          result_count: results.length,
+          result_count: pageResults.length,
         });
         return {
-          results: results,
+          results: [...fallbackPartialResults, ...pageResults],
+          pendingJobs: [...pendingJobs, ...resumePendingJobs],
           provider,
+          status: pendingJobs.length + resumePendingJobs.length > 0 ? "pending" : "completed",
+          ...(
+            pendingJobs.length + resumePendingJobs.length > 0
+              ? { fallbackCompleted: true }
+              : {}
+          ),
+          ...(pendingJobs.length + resumePendingJobs.length > 0
+            ? { fallbackProvider: provider }
+            : {}),
           errors: Object.keys(errors).length > 0 ? errors : undefined,
           attempts,
           secretsUsed,
@@ -411,7 +700,34 @@ export class FanoutEngine {
       }
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed);
+    const remainingPendingJobs = [...pendingJobs, ...resumePendingJobs];
+    if (remainingPendingJobs.length > 0) {
+      return {
+        results: fallbackPartialResults,
+        pendingJobs: remainingPendingJobs,
+        provider: remainingPendingJobs[0]!.provider,
+        status: "pending",
+        ...(options.resumeFallbackCompleted
+          ? {
+              fallbackCompleted: true,
+              ...(options.resumeFallbackProvider
+                ? { fallbackProvider: options.resumeFallbackProvider }
+                : {}),
+            }
+          : {}),
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        attempts,
+        secretsUsed,
+      };
+    }
+
+    throw new AllProvidersFailedError(
+      errors,
+      attempts,
+      secretsUsed,
+      terminalResumeJobs,
+      discardedResumeJobs
+    );
   }
 
   /**
@@ -419,7 +735,8 @@ export class FanoutEngine {
    */
   private async searchProvider(
     provider: string,
-    query: string
+    query: string,
+    limit?: number
   ): Promise<ProviderResult> {
     const start = performance.now();
     let keyRef = "none";
@@ -432,6 +749,7 @@ export class FanoutEngine {
       const adapter = createAdapter(provider);
       const results = await adapter.search(query, apiKey, {
         providerOptions: this.config.providers[provider]?.options,
+        limit,
       });
 
       const durationMs = Math.round(performance.now() - start);

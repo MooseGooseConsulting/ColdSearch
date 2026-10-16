@@ -33,11 +33,14 @@ export class BraveAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
+    const count = typeof options?.limit === "number" && Number.isFinite(options.limit)
+      ? Math.min(20, Math.max(1, Math.floor(options.limit)))
+      : 10;
     url.searchParams.set("q", query);
-    url.searchParams.set("count", "10");
+    url.searchParams.set("count", String(count));
     url.searchParams.set("offset", "0");
 
     const data = await fetchJson<BraveSearchResponse>(url.toString(), {

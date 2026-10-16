@@ -234,8 +234,10 @@ test("jina embeddings sends Authorization when a key is configured", async () =>
 });
 
 test("jina reader works without any key configured (keyless)", async () => {
+  let authorization;
   await withMockedProviders(
     (req, res) => {
+      authorization = req.headers.authorization;
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("page text");
     },
@@ -249,8 +251,130 @@ test("jina reader works without any key configured (keyless)", async () => {
       };
       const result = await executeToolCall("jina", "reader", { url: "https://example.com" }, config);
       assert.equal(result.ok, true, result.error?.message);
+      assert.equal(authorization, undefined);
     }
   );
+});
+
+test("jina reader falls back to keyless when its optional key reference is unset", async () => {
+  const envName = "COLDSEARCH_MISSING_OPTIONAL_JINA_KEY";
+  const previousKey = process.env[envName];
+  delete process.env[envName];
+  let authorization;
+
+  try {
+    await withMockedProviders(
+      (req, res) => {
+        authorization = req.headers.authorization;
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("page text");
+      },
+      async () => {
+        const config = {
+          capabilities: {},
+          providers: { jina: { keyPool: { keys: [`env:${envName}`] } } },
+          logging: { usage: { path: tmpUsagePath("jina-reader-missing-optional-key") } },
+          history: { path: tmpUsagePath("jina-reader-missing-optional-key-history") },
+          cache: { enabled: false },
+        };
+        const result = await executeToolCall(
+          "jina",
+          "reader",
+          { url: "https://example.com" },
+          config
+        );
+        assert.equal(result.ok, true, result.error?.message);
+        assert.match(result.meta.warnings.join(" "), /continuing keyless/);
+        assert.equal(authorization, undefined);
+      }
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env[envName];
+    else process.env[envName] = previousKey;
+  }
+});
+
+test("SearXNG ignores unused key references", async () => {
+  const envName = "COLDSEARCH_MISSING_UNUSED_SEARXNG_KEY";
+  const previousKey = process.env[envName];
+  delete process.env[envName];
+  let authorization;
+
+  try {
+    await withMockedProviders(
+      (req, res) => {
+        authorization = req.headers.authorization;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ results: [] }));
+      },
+      async (base) => {
+        const config = {
+          capabilities: {},
+          providers: {
+            searxng: {
+              keyPool: { keys: [`env:${envName}`] },
+              options: { baseUrl: base },
+            },
+          },
+          logging: { usage: { path: tmpUsagePath("searxng-unused-key") } },
+          history: { path: tmpUsagePath("searxng-unused-key-history") },
+          cache: { enabled: false },
+        };
+        const result = await executeToolCall("searxng", "search", { q: "test" }, config);
+        assert.equal(result.ok, true, result.error?.message);
+        assert.equal(authorization, undefined);
+      }
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env[envName];
+    else process.env[envName] = previousKey;
+  }
+});
+
+test("jina reader forwards a configured key and profile-listed headers", async () => {
+  const previousKey = process.env.JINA_API_KEY;
+  process.env.JINA_API_KEY = "jina-reader-secret";
+  let request;
+
+  try {
+    await withMockedProviders(
+      (req, res) => {
+        request = { url: req.url, headers: req.headers };
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("page text");
+      },
+      async () => {
+        const config = {
+          capabilities: {},
+          providers: { jina: { keyPool: { keys: ["env:JINA_API_KEY"] } } },
+          logging: { usage: { path: tmpUsagePath("jina-reader-auth") } },
+          history: { path: tmpUsagePath("jina-reader-auth-history") },
+          cache: { enabled: false },
+        };
+        const result = await executeToolCall(
+          "jina",
+          "reader",
+          {
+            url: "example.com/path",
+            "X-Engine": "browser",
+            "X-Return-Format": "text",
+            "X-Unlisted-Option": "must-not-be-forwarded",
+          },
+          config
+        );
+
+        assert.equal(result.ok, true, result.error?.message);
+        assert.equal(request.url, "/https://example.com/path");
+        assert.equal(request.headers.authorization, "Bearer jina-reader-secret");
+        assert.equal(request.headers["x-engine"], "browser");
+        assert.equal(request.headers["x-return-format"], "text");
+        assert.equal(request.headers["x-unlisted-option"], undefined);
+      }
+    );
+  } finally {
+    if (previousKey === undefined) delete process.env.JINA_API_KEY;
+    else process.env.JINA_API_KEY = previousKey;
+  }
 });
 
 test("Brave Answers explicitly disables default streaming unless requested", async () => {

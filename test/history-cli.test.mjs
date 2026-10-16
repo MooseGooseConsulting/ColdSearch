@@ -127,6 +127,26 @@ const SEED = [
     duration_ms: 310,
     outcome: "success",
   },
+  {
+    id: "exec-6",
+    timestamp: "2026-08-10T17:00:00.000Z",
+    command: "crawl",
+    input: "https://example.com",
+    routing: { strategy: "all", providers_attempted: ["firecrawl", "exa"] },
+    source: "live",
+    attempts: [
+      { provider: "firecrawl", success: false, pending: true, result_count: 0 },
+      { provider: "exa", success: true, result_count: 1 },
+    ],
+    result: [{ url: "https://example.com/fallback", title: "Fallback", content: "page" }],
+    result_count: 1,
+    pending_jobs: [
+      { provider: "firecrawl", jobId: "firecrawl-job-1", url: "https://example.com" },
+    ],
+    raw_available: false,
+    duration_ms: 450,
+    outcome: "pending",
+  },
 ];
 
 function seedHistory(historyPath) {
@@ -175,8 +195,13 @@ test("history recent lists newest first including live, cache, and failed record
     const out = JSON.parse(result.stdout);
     assert.equal(out.command, "history recent");
     assert.equal(out.total, SEED.length);
-    assert.equal(out.executions[0].id, "exec-5", "newest execution first");
+    assert.equal(out.executions[0].id, "exec-6", "newest execution first");
+    assert.equal(out.executions[0].pending_jobs[0].jobId, "firecrawl-job-1");
     assert.equal(out.executions[out.executions.length - 1].id, "exec-1");
+
+    const human = runCli(["history", "recent", "--config", configPath]);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /pending_jobs=firecrawl:firecrawl-job-1/);
 
     const sources = new Set(out.executions.map((e) => e.source));
     assert.ok(sources.has("live") && sources.has("cache"), "live and cache records listed");
@@ -199,7 +224,7 @@ test("history recent honors --limit", () => {
     assert.equal(out.executions.length, 2);
     assert.deepEqual(
       out.executions.map((e) => e.id),
-      ["exec-5", "exec-4"]
+      ["exec-6", "exec-5"]
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -279,6 +304,17 @@ test("history show reconstructs request, routing, provenance, attempts, output, 
     assert.equal(live.attempts.length, 2);
     assert.ok(live.attempts.every((a) => a.key_ref), "attempts carry safe key references");
     assert.equal(live.result.length, 2);
+
+    const pending = JSON.parse(
+      runCli(["history", "show", "exec-6", "--config", configPath, "--json"]).stdout
+    );
+    assert.equal(pending.outcome, "pending");
+    assert.equal(pending.result_count, 1);
+    assert.equal(pending.pending_jobs[0].jobId, "firecrawl-job-1");
+
+    const pendingHuman = runCli(["history", "show", "exec-6", "--config", configPath]);
+    assert.equal(pendingHuman.status, 0, pendingHuman.stderr);
+    assert.match(pendingHuman.stdout, /Pending:\s+firecrawl job firecrawl-job-1 \(https:\/\/example\.com\)/);
 
     // Cache replay record: provenance + zero provider calls.
     const replay = JSON.parse(

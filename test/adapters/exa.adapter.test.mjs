@@ -41,7 +41,23 @@ test("exa crawl discovers then fetches contents", async () => {
     assert.equal(searchCalled, 1);
     assert.equal(contentsCalled, 1);
     assert.equal(results.length, 2);
-    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "title", "url"]);
+    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "derived", "status", "title", "url"]);
+    assert.equal(results[0].derived, true);
+    assert.equal(results[0].status, "completed");
+  } finally {
+    restore();
+  }
+});
+
+test("exa findSimilar maps common limit to numResults", async () => {
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/findSimilar": async ({ init }) => {
+      assert.equal(JSON.parse(init.body).numResults, 7);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    await new ExaAdapter().findSimilar("https://example.com", "k", { limit: 7 });
   } finally {
     restore();
   }

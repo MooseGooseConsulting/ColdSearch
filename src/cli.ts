@@ -68,6 +68,10 @@ interface ExtendedCLIOptions extends CLIOptions {
   freshness?: string;
   /** Whether --limit was passed explicitly (history commands default to 20 otherwise) */
   limitSet?: boolean;
+  /** Extract output format. Not a search knob. */
+  format?: "markdown" | "text";
+  /** Crawl depth. Not a cache TTL. */
+  depth?: number;
   /** JSON input string/file for tool calling */
   jsonInput?: string;
   /** `coldsearch tool <sub>` discovery/execution surface */
@@ -187,6 +191,31 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.limit = limit;
         options.limitSet = true;
         break;
+
+      case "--format":
+        i++;
+        if (args[i] !== "markdown" && args[i] !== "text") {
+          throw new Error(`Invalid format: ${args[i]}. Use "markdown" or "text".`);
+        }
+        options.format = args[i] as "markdown" | "text";
+        break;
+
+      case "--depth": {
+        const rawDepth = args[i + 1];
+        const depth = Number(rawDepth);
+        if (
+          typeof rawDepth !== "string" ||
+          rawDepth.trim() === "" ||
+          !/^-?\d+$/.test(rawDepth) ||
+          !Number.isInteger(depth) ||
+          depth < 0
+        ) {
+          throw new Error(`Invalid depth: ${rawDepth}`);
+        }
+        i++;
+        options.depth = depth;
+        break;
+      }
 
       case "--pretty":
       case "-p":
@@ -484,6 +513,8 @@ Options:
     
   General Options:
     -l, --limit N        Return at most N results (default: 10; history: 20)
+    --format markdown|text  Extract format sent to the provider (default: markdown)
+    --depth N            Crawl depth sent to the provider when it has a depth field
     -p, --pretty         Pretty print JSON output
     -j, --json           Force JSON output
     -c, --config PATH    Use custom config file
@@ -587,6 +618,7 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
 
   const result = await backend.search(options.query, {
     limit: options.limit,
+    limitSet: options.limitSet === true,
     providers: options.providers,
     rerankStrategy: options.rerank,
     singleProvider: options.singleProvider,
@@ -636,6 +668,7 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     singleProvider: options.singleProvider,
     noCache: options.noCache,
     freshness: options.freshness,
+    format: options.format,
   });
 
   for (const warning of result.warnings ?? []) {
@@ -680,6 +713,7 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
 
   const result = await backend.crawl(options.query, {
     limit: options.limit,
+    depth: options.depth,
     providers: options.providers,
     singleProvider: options.singleProvider,
   });
@@ -688,12 +722,21 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
     console.error(`Warning: ${warning}`);
   }
 
+  if (result.pendingJobs.length > 0) {
+    const jobIds = [...new Set(result.pendingJobs.map((job) => job.jobId))];
+    console.error(
+      `Warning: crawl is still pending${jobIds.length ? ` (job ${jobIds.join(", ")})` : ""}; results are not complete.`
+    );
+  }
+
   const output = {
     mode: describeCliOutputMode(config, "crawl", options, 1),
     command: "crawl",
     url: options.query,
     results: result.results,
+    pendingJobs: result.pendingJobs,
     provider: result.provider,
+    status: result.status,
     total: result.results.length,
     errors: result.errors ? result.errors : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
@@ -1189,6 +1232,7 @@ function summarizeExecution(record: ExecutionRecord) {
     source: record.source,
     outcome: record.outcome,
     result_count: record.result_count ?? null,
+    pending_jobs: record.pending_jobs?.length ? record.pending_jobs : undefined,
     duration_ms: record.duration_ms,
     origin_execution_id: record.origin_execution_id ?? undefined,
   };
@@ -1206,9 +1250,12 @@ function printData(data: unknown, human: string, options: ExtendedCLIOptions): v
 function formatRecentRow(record: ExecutionRecord): string {
   const providers = (record.routing?.providers_attempted ?? []).join(",") || "-";
   const count = record.result_count !== undefined ? ` results=${record.result_count}` : "";
+  const pending = record.pending_jobs?.length
+    ? ` pending_jobs=${record.pending_jobs.map((job) => `${job.provider}:${job.jobId}`).join(",")}`
+    : "";
   return (
     `${record.timestamp}  ${record.id}  ${record.command.padEnd(7)} ` +
-    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}  ` +
+    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}${pending}  ` +
     `"${abbrev(record.input, 60)}"`
   );
 }
@@ -1293,6 +1340,11 @@ function formatShowHuman(record: ExecutionRecord): string {
       `  Cache:     exact replay of ${record.origin_execution_id ?? "unknown origin"} ` +
         `(created=${record.cache?.created_at ?? "unknown"}, age=${record.cache?.age_seconds ?? "?"}s, ` +
         `zero provider calls)`
+    );
+  }
+  if (record.pending_jobs?.length) {
+    lines.push(
+      `  Pending:   ${record.pending_jobs.map((job) => `${job.provider} job ${job.jobId} (${job.url})`).join(", ")}`
     );
   }
   for (const attempt of record.attempts) {
@@ -1504,14 +1556,17 @@ async function runBatchMode(options: ExtendedCLIOptions): Promise<void> {
             `  ${r.action === "execute" ? "execute" : r.action === "conflict" ? "conflict" : `skip (${r.reason})`}  ${r.id}  ${r.capability ?? r.tool}`
         ),
       ].join("\n")
-    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
+    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.pending ?? 0} pending, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
   printData({ command: "batch", ...summary }, human, options);
 
-  // A batch that finished but had failing items or newly emitted duplicate-ID
-  // conflicts still signals failure to scripts, without ever aborting sibling
-  // items. Conflicts from prior runs are skipped on resume (resume-conflict)
-  // and do not re-flag, so reruns stay deterministic.
-  if (!summary.dry_run && ((summary.failed ?? 0) > 0 || summary.conflicts > 0)) {
+  // A batch with failures, pending work, or newly emitted duplicate-ID
+  // conflicts signals an incomplete run to scripts, without ever aborting
+  // sibling items. Conflicts from prior runs are skipped on resume
+  // (resume-conflict) and do not re-flag, so reruns stay deterministic.
+  if (
+    !summary.dry_run &&
+    ((summary.failed ?? 0) > 0 || (summary.pending ?? 0) > 0 || summary.conflicts > 0)
+  ) {
     process.exitCode = 1;
   }
 }

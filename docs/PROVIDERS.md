@@ -159,7 +159,7 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅ (a `topic:"news"` variant exists but is not separately exposed)
 - `POST /extract` → **extract** ✅
 - `POST /crawl` → **crawl** ✅
-- `POST /map` (URL discovery) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`tavily.map`); not a normalized router
 - Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-11) ❌
 - `POST /research` (async multi-search report; `request_id` + GET poll) ❌
 
@@ -167,8 +167,8 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅
 - `POST /scrape` → **extract** ✅
 - `POST /crawl` (async job, polled) → **crawl** ✅
-- `POST /map` (URL discovery) ❌
-- `POST /extract` (schema / LLM structured extraction) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`firecrawl.map`); not a normalized router
+- `POST /extract` (schema / LLM structured extraction) ❌ not the extract router (`scrape` is)
 - `/scrape` actions (interact: click/scroll/type) ❌
 - `POST /agent` (autonomous browser agent) ❌
 - `POST /batch/scrape` (bulk) ❌
@@ -191,9 +191,9 @@ they go stale fast and are intentionally not mirrored here.
 
 ### Brave — `src/adapters/brave.ts` · [docs](https://api.search.brave.com/app/documentation/)
 - `GET /res/v1/web/search` → **search** ✅ (rate-limit headers `X-RateLimit-*` on every response)
-- `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` ❌
+- `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` are catalogued as deferred candidates; their direct-call schemas are not verified.
 - `/suggest` (autocomplete), `/spellcheck` ❌ (separate prepaid add-on plans)
-- LLM Context `GET/POST /res/v1/llm/context` — repackaged ~2026-02; now included in the standard Search plan ❌
+- LLM Context `GET/POST /res/v1/llm/context` — direct `brave.llmContext` profile; route recorded in the 2026-10-11 provider-contract audit.
 - Answers `POST /res/v1/chat/completions` (OpenAI-compatible, models `brave-pro`/`brave`) — separate Answers plan; catalogued as `brave.answers`, not wired to normalized routing ❌
 
 ### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev) (`serper.dev/docs` now 404s — docs live on the homepage demo + login-gated playground)
@@ -202,9 +202,9 @@ they go stale fast and are intentionally not mirrored here.
 
 ### Jina — `src/adapters/jina.ts` · [docs](https://jina.ai)
 - `r.jina.ai` Reader → **extract** ✅ (keyless: 20 RPM no key / 500 RPM free key; rich `X-*` header surface — see registry profile)
-- `s.jina.ai` search — deferred candidate; key-gated
+- `s.jina.ai` search is catalogued as a deferred candidate; its schema and direct dispatch are not verified.
 - `/v1/embeddings` (v5) and `/v1/rerank` (v3.5) remain callable as direct JSON pass-throughs; ColdSearch preserves provider-native responses but does not validate their request schemas or normalize results
-- `s.jina.ai` search and DeepSearch (`deepsearch.jina.ai`) — deferred candidates pending schema and dispatch reconciliation; no standalone `summarize` endpoint exists
+- Prior unauthenticated probes to Reader and `s.jina.ai` returned `401 AuthenticationRequiredError`; no `JINA_API_KEY` is in the credential set. DeepSearch (`deepsearch.jina.ai`) remains deferred; no standalone `summarize` endpoint exists.
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
 - `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)

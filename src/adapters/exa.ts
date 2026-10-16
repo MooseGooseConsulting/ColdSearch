@@ -103,6 +103,12 @@ const EXA_SEARCH_TYPES: readonly string[] = [
   "deep",
   "deep-reasoning",
 ];
+const EXA_MAX_RESULTS = 100;
+
+function normalizeResultCount(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 10;
+  return Math.min(EXA_MAX_RESULTS, Math.max(1, Math.floor(value)));
+}
 
 export class ExaAdapter implements SearchAdapter {
   name = "exa";
@@ -120,7 +126,8 @@ export class ExaAdapter implements SearchAdapter {
    */
   private buildSearchBody(
     query: string,
-    opts: ExaProviderOptions
+    opts: ExaProviderOptions,
+    limit?: number
   ): Record<string, unknown> {
     // `useAutoprompt` was retired upstream; `type` selects the search mode.
     // searchType arrives from TOML options untyped, so validate it here —
@@ -135,7 +142,7 @@ export class ExaAdapter implements SearchAdapter {
 
     const body: Record<string, unknown> = {
       query,
-      numResults: opts.numResults ?? 10,
+      numResults: normalizeResultCount(limit ?? opts.numResults),
       type: searchType,
     };
 
@@ -174,7 +181,7 @@ export class ExaAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const opts = this.getExaOptions(options);
-    const body = this.buildSearchBody(query, opts);
+    const body = this.buildSearchBody(query, opts, options?.limit);
 
     const data = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -214,6 +221,12 @@ export class ExaAdapter implements SearchAdapter {
   ): Promise<ExtractResult> {
     if (!url || !url.trim()) {
       throw new Error("URL is required");
+    }
+
+    if (options?.format === "text") {
+      throw new Error(
+        'Exa does not support plain-text extract output; use format "markdown" or select another provider'
+      );
     }
 
     const normalizedUrl = url.trim();
@@ -340,6 +353,8 @@ export class ExaAdapter implements SearchAdapter {
       url: result.url || "",
       title: result.title || "",
       content: result.text || "",
+      derived: true,
+      status: "completed" as const,
     }));
   }
 
@@ -370,7 +385,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          numResults: options?.numResults ?? opts.numResults ?? 10,
+          numResults: normalizeResultCount(options?.numResults ?? options?.limit ?? opts.numResults),
           contents: opts.highlights
             ? { highlights: true }
             : { text: { maxCharacters: opts.maxCharacters ?? 15000 } },

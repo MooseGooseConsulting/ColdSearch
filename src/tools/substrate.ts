@@ -17,6 +17,7 @@ import {
   buildBrightDataSummary,
   buildBrightDataToolRequest,
 } from "./brightdata.js";
+import { braveToolPath, jinaDispatch, serperToolUrl } from "./dispatch-paths.js";
 
 export interface ToolCallResult {
   provider: string;
@@ -299,27 +300,36 @@ async function dispatchToolCall(
     registryProfile?.features?.keyless === true ||
     provider === "searxng"
   );
+  // Keyless tools can still use an explicitly configured key. In particular,
+  // Jina Reader supports unauthenticated requests but offers higher limits
+  // when a key is supplied.
+  const supportsOptionalKey = provider === "jina" && tool === "reader";
+  const hasConfiguredKey = supportsOptionalKey && keyPool.hasKeys(provider);
 
-  if (expectsKey && isConfigured) {
+  if ((expectsKey || hasConfiguredKey) && isConfigured) {
     try {
       keyResult = await keyPool.getNextKeyWithRef(provider);
     } catch (err: any) {
-      return {
-        result: {
-          provider,
-          tool,
-          ok: false,
-          catalogued,
-          summary: null,
-          raw: null,
-          error: {
-            code: "KEY_RESOLUTION_FAILED",
-            message: `Key resolution failed: ${err.message}`,
+      if (!expectsKey && supportsOptionalKey) {
+        warnings.push("Optional Jina Reader key could not be resolved; continuing keyless.");
+      } else {
+        return {
+          result: {
+            provider,
+            tool,
+            ok: false,
+            catalogued,
+            summary: null,
+            raw: null,
+            error: {
+              code: "KEY_RESOLUTION_FAILED",
+              message: `Key resolution failed: ${err.message}`,
+            },
+            meta: { duration_ms: 0, safe_key_ref: null, warnings },
           },
-          meta: { duration_ms: 0, safe_key_ref: null, warnings },
-        },
-        secrets: [],
-      };
+          secrets: [],
+        };
+      }
     }
   }
 
@@ -386,7 +396,6 @@ async function dispatchToolCall(
         "Accept-Encoding": "gzip",
         "X-Subscription-Token": apiKey,
       };
-
       if (tool === "answers") {
         method = "POST";
         url = "https://api.search.brave.com/res/v1/chat/completions";
@@ -398,14 +407,7 @@ async function dispatchToolCall(
         body = JSON.stringify({ ...params, stream: useTextParser });
       } else {
         method = "GET";
-        let bravePath = `/res/v1/${tool}`;
-        if (tool === "webSearch") bravePath = "/res/v1/web/search";
-        else if (tool === "llmContext") bravePath = "/res/v1/llm/context";
-        else if (tool === "newsSearch") bravePath = "/res/v1/news/search";
-        else if (tool === "videoSearch") bravePath = "/res/v1/video/search";
-        else if (tool === "imageSearch") bravePath = "/res/v1/image/search";
-
-        const urlObj = new URL(`https://api.search.brave.com${bravePath}`);
+        const urlObj = new URL(`https://api.search.brave.com${braveToolPath(tool)}`);
         for (const [k, v] of Object.entries(params)) {
           urlObj.searchParams.set(k, String(v));
         }
@@ -421,7 +423,7 @@ async function dispatchToolCall(
       requestTimeoutMs = request.timeoutMs;
       requestMaskedZone = request.maskedZone;
     } else if (provider === "serper") {
-      url = `https://google.serper.dev/${tool}`;
+      url = serperToolUrl(tool);
       headers["X-API-KEY"] = apiKey;
       body = JSON.stringify(params);
     } else if (provider === "jina") {
@@ -429,12 +431,15 @@ async function dispatchToolCall(
         headers["Authorization"] = `Bearer ${apiKey}`;
       }
       
-      if (tool === "reader" || (params.url && !params.q)) {
+      const dispatched = jinaDispatch(tool, params);
+      if (dispatched.kind === "reader" || dispatched.kind === "search") {
         delete headers["Content-Type"];
         const acceptEntry = Object.entries(params)
           .filter(([key]) => key.toLowerCase() === "accept")
           .at(-1);
-        const accept = normalizeJinaReaderAccept(acceptEntry?.[1]);
+        const accept = dispatched.kind === "reader"
+          ? normalizeJinaReaderAccept(acceptEntry?.[1])
+          : "text/plain";
         headers["Accept"] = accept;
         useTextParser = accept !== "application/json";
         // Reader options are HTTP headers, not query or JSON-body fields.
@@ -443,23 +448,20 @@ async function dispatchToolCall(
         const readerProfileParams = new Map(
           (registryProfile?.optionalParams ?? []).map((param) => [param.toLowerCase(), param])
         );
-        for (const [key, value] of Object.entries(params)) {
-          const normalized = key.toLowerCase();
-          if (normalized === "accept") continue;
-          const headerName = readerProfileParams.get(normalized);
-          if (headerName && value != null) {
-            headers[headerName] = String(value);
+        if (dispatched.kind === "reader") {
+          for (const [key, value] of Object.entries(params)) {
+            const normalized = key.toLowerCase();
+            if (normalized === "accept") continue;
+            const headerName = readerProfileParams.get(normalized);
+            if (headerName && value != null) {
+              headers[headerName] = String(value);
+            }
           }
         }
         method = "GET";
-        const targetUrl = params.url || params.q || "";
-        // r.jina.ai takes the target URL appended raw (matches JinaAdapter).
-        // Do NOT encode here: encodeURI corrupts already-encoded targets
-        // (%20 -> %2520) and the reader expects the literal URL.
-        url = `https://r.jina.ai/${targetUrl}`;
+        url = dispatched.url;
       } else {
-        // e.g. jina embeddings, rerank
-        url = `https://api.jina.ai/v1/${tool}`;
+        url = dispatched.url;
         body = JSON.stringify(params);
       }
     } else if (provider === "searxng") {

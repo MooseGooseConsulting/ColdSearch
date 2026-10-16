@@ -3,17 +3,34 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { LocalExecutionBackend } from "../execution/backend.js";
 import { KeyPoolManager } from "../engine/keypool.js";
-import type { FanoutOptions } from "../engine/fanout.js";
+import { AllProvidersFailedError, type FanoutOptions } from "../engine/fanout.js";
 import { redactSensitive } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
-import type { CapabilityName, Config } from "../types.js";
+import type { CapabilityName, Config, CrawlResult, PendingCrawlJob } from "../types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
-import { buildBatchPlan, loadResumeIndex, type BatchPlanEntry } from "./resume.js";
-import { DEFAULT_BATCH_LIMIT, type BatchInputRecord, type BatchOutputRecord } from "./types.js";
+import {
+  buildBatchPlan,
+  crawlUrlFingerprint,
+  loadResumeIndex,
+  type BatchPlanEntry,
+} from "./resume.js";
+import {
+  DEFAULT_BATCH_LIMIT,
+  type BatchInputRecord,
+  type BatchOutputRecord,
+  type BatchResumeState,
+} from "./types.js";
 
 /** Executes one validated batch input record into an output record. */
 export interface BatchExecutor {
-  execute(record: BatchInputRecord, config: Config): Promise<BatchOutputRecord>;
+  execute(
+    record: BatchInputRecord,
+    config: Config,
+    resumePendingJobs?: PendingCrawlJob[],
+    resumeCompletedResults?: CrawlResult[],
+    resumeFallbackCompleted?: boolean,
+    resumeFallbackProvider?: string
+  ): Promise<BatchOutputRecord>;
 }
 
 export interface BatchRunOptions {
@@ -58,6 +75,7 @@ export interface BatchRunSummary {
   /** Real runs only. */
   executed?: number;
   succeeded?: number;
+  pending?: number;
   failed?: number;
   /** Dry runs only: the planned records. */
   records?: BatchPlanReportEntry[];
@@ -86,6 +104,41 @@ export async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
+function interruptedCrawlResumeState(
+  record: BatchInputRecord,
+  resumePendingJobs: PendingCrawlJob[] | undefined,
+  resumeCompletedResults: CrawlResult[] | undefined,
+  resumeFallbackCompleted: boolean | undefined,
+  resumeFallbackProvider: string | undefined,
+  error: unknown
+): BatchResumeState | undefined {
+  if (record.capability !== "crawl") return undefined;
+  const nonResumableJobKeys = new Set(
+    error instanceof AllProvidersFailedError
+      ? [...error.terminalResumeJobs, ...error.discardedResumeJobs].map(
+          (job) => JSON.stringify([job.provider, job.jobId])
+        )
+      : []
+  );
+  const pendingJobs = resumePendingJobs?.filter(
+    (job) => !nonResumableJobKeys.has(JSON.stringify([job.provider, job.jobId]))
+  );
+  const state: BatchResumeState = {
+    ...(pendingJobs?.length ? { pendingJobs } : {}),
+    ...(resumeCompletedResults?.length ? { completedResults: resumeCompletedResults } : {}),
+    ...(resumeFallbackCompleted ? { fallbackCompleted: true } : {}),
+    ...(resumeFallbackCompleted && resumeFallbackProvider
+      ? { fallbackProvider: resumeFallbackProvider }
+      : {}),
+    ...(record.url ? { requestedUrlFingerprint: crawlUrlFingerprint(record.url) } : {}),
+  };
+  return state.pendingJobs?.length ||
+    state.completedResults?.length ||
+    state.fallbackCompleted
+    ? state
+    : undefined;
+}
+
 /** Default executor: same backend/tool substrate as the standalone commands. */
 export class LocalBatchExecutor implements BatchExecutor {
   private readonly backend: LocalExecutionBackend;
@@ -94,7 +147,14 @@ export class LocalBatchExecutor implements BatchExecutor {
     this.backend = new LocalExecutionBackend(configPath);
   }
 
-  async execute(record: BatchInputRecord, config: Config): Promise<BatchOutputRecord> {
+  async execute(
+    record: BatchInputRecord,
+    config: Config,
+    resumePendingJobs?: PendingCrawlJob[],
+    resumeCompletedResults?: CrawlResult[],
+    resumeFallbackCompleted?: boolean,
+    resumeFallbackProvider?: string
+  ): Promise<BatchOutputRecord> {
     const base = {
       id: record.id,
       ...(record.capability ? { capability: record.capability } : {}),
@@ -135,14 +195,23 @@ export class LocalBatchExecutor implements BatchExecutor {
         };
       }
       if (record.capability === "crawl") {
-        const result = await this.backend.crawl(record.url!, this.fanoutOptions(record));
+        const result = await this.backend.crawl(record.url!, {
+          ...this.fanoutOptions(record),
+          resumePendingJobs,
+          resumeFallbackCompleted,
+          resumeFallbackProvider,
+        });
         this.warn(result.warnings);
         return {
           ...base,
-          status: "success",
+          status: result.status === "pending" ? "pending" : "success",
           result: {
             results: result.results,
+            pendingJobs: result.pendingJobs,
             provider: result.provider,
+            status: result.status,
+            ...(result.fallbackCompleted ? { fallbackCompleted: true } : {}),
+            ...(result.fallbackProvider ? { fallbackProvider: result.fallbackProvider } : {}),
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
               : {}),
@@ -173,11 +242,20 @@ export class LocalBatchExecutor implements BatchExecutor {
     } catch (error) {
       // The backend throws when every provider for a capability fails; a
       // failed item becomes an error record and never aborts sibling items.
+      const resumeState = interruptedCrawlResumeState(
+        record,
+        resumePendingJobs,
+        resumeCompletedResults,
+        resumeFallbackCompleted,
+        resumeFallbackProvider,
+        error
+      );
       return {
         ...base,
         status: "error",
         result: null,
         error: { message: error instanceof Error ? error.message : String(error) },
+        ...(resumeState ? { resumeState } : {}),
       };
     }
   }
@@ -185,6 +263,9 @@ export class LocalBatchExecutor implements BatchExecutor {
   private fanoutOptions(record: BatchInputRecord): FanoutOptions {
     return {
       limit: record.limit ?? DEFAULT_BATCH_LIMIT,
+      format: record.format,
+      depth: record.depth,
+      limitSet: record.limit !== undefined,
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,
@@ -353,7 +434,8 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
   const persist = (record: BatchOutputRecord): Promise<void> => {
     const enqueued = appendQueue.then(async () => {
       const known = await secrets.knownSecrets();
-      await appendBatchOutput(options.output, redactSensitive(record, known));
+      const redactedRecord = redactSensitive(record, known);
+      await appendBatchOutput(options.output, dedupeRedactedCrawlResults(redactedRecord));
     });
     appendQueue = enqueued;
     return enqueued;
@@ -369,34 +451,152 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
 
   let executed = 0;
   let succeeded = 0;
+  let pending = 0;
   let failed = 0;
   await runWithConcurrency(
     plan.filter((e) => e.action === "execute"),
     options.concurrency,
     async (entry) => {
-      const outputRecord = await safeExecute(executor, entry.record, config);
+      const executedRecord = await safeExecute(
+        executor,
+        entry.record,
+        config,
+        entry.resumePendingJobs,
+        entry.resumeCompletedResults,
+        entry.resumeFallbackCompleted,
+        entry.resumeFallbackProvider
+      );
+      const outputRecord = mergeResumedCrawlResults(
+        entry.record,
+        executedRecord,
+        entry.resumeCompletedResults
+      );
       await persist(outputRecord);
       executed += 1;
       if (outputRecord.status === "success") succeeded += 1;
+      else if (outputRecord.status === "pending") pending += 1;
       else failed += 1;
     }
   );
 
   summary.executed = executed;
   summary.succeeded = succeeded;
+  summary.pending = pending;
   summary.failed = failed;
   return summary;
+}
+
+/** Keep pages already returned by an earlier pending crawl in every later outcome. */
+function mergeResumedCrawlResults(
+  record: BatchInputRecord,
+  outputRecord: BatchOutputRecord,
+  priorResults?: CrawlResult[]
+): BatchOutputRecord {
+  if (
+    record.capability !== "crawl" ||
+    outputRecord.result === null ||
+    typeof outputRecord.result !== "object" ||
+    Array.isArray(outputRecord.result)
+  ) {
+    return outputRecord;
+  }
+
+  const result = outputRecord.result as Record<string, unknown>;
+  const currentResults = Array.isArray(result.results) ? result.results : [];
+  let updatedResult: Record<string, unknown> = result;
+  if (priorResults?.length) {
+    // Keep the current resume's pages first, followed by prior fallback pages.
+    // Exact deduplication happens after redaction in persist, so a raw page and
+    // its previously redacted copy compare in the same representation.
+    updatedResult = { ...updatedResult, results: [...currentResults, ...priorResults] };
+  }
+
+  if (outputRecord.status === "pending" && typeof record.url === "string" && record.url.trim()) {
+    updatedResult = {
+      ...updatedResult,
+      requestedUrlFingerprint: crawlUrlFingerprint(record.url),
+    };
+  }
+
+  if (updatedResult === result) return outputRecord;
+  return {
+    ...outputRecord,
+    result: updatedResult,
+  };
+}
+
+/** Remove exact duplicate crawl pages after redaction, matching persisted data. */
+function dedupeRedactedCrawlResults(record: BatchOutputRecord): BatchOutputRecord {
+  if (
+    record.capability !== "crawl" ||
+    record.result === null ||
+    typeof record.result !== "object" ||
+    Array.isArray(record.result)
+  ) {
+    return record;
+  }
+
+  const result = record.result as Record<string, unknown>;
+  if (!Array.isArray(result.results)) return record;
+
+  const seen = new Set<string>();
+  const dedupedResults: unknown[] = [];
+  for (const page of result.results) {
+    const signature = stableResultSerialization(page);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    dedupedResults.push(page);
+  }
+  if (dedupedResults.length === result.results.length) return record;
+
+  return {
+    ...record,
+    result: { ...result, results: dedupedResults },
+  };
+}
+
+/** Stable JSON key used only to remove exact redacted crawl result objects. */
+function stableResultSerialization(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableResultSerialization).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableResultSerialization(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 /** Belt-and-braces: an unexpected executor throw becomes an error record. */
 async function safeExecute(
   executor: BatchExecutor,
   record: BatchInputRecord,
-  config: Config
+  config: Config,
+  resumePendingJobs?: PendingCrawlJob[],
+  resumeCompletedResults?: CrawlResult[],
+  resumeFallbackCompleted?: boolean,
+  resumeFallbackProvider?: string
 ): Promise<BatchOutputRecord> {
   try {
-    return await executor.execute(record, config);
+    return await executor.execute(
+      record,
+      config,
+      resumePendingJobs,
+      resumeCompletedResults,
+      resumeFallbackCompleted,
+      resumeFallbackProvider
+    );
   } catch (error) {
+    const resumeState = interruptedCrawlResumeState(
+      record,
+      resumePendingJobs,
+      resumeCompletedResults,
+      resumeFallbackCompleted,
+      resumeFallbackProvider,
+      error
+    );
     return {
       id: record.id,
       ...(record.capability ? { capability: record.capability } : {}),
@@ -404,6 +604,7 @@ async function safeExecute(
       status: "error",
       result: null,
       error: { message: error instanceof Error ? error.message : String(error) },
+      ...(resumeState ? { resumeState } : {}),
     };
   }
 }

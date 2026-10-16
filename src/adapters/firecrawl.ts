@@ -8,6 +8,35 @@ import type {
   CrawlCallOptions,
 } from "../types.js";
 
+/** The provider explicitly reported that an accepted crawl job is terminal. */
+export class FirecrawlCrawlTerminalError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, detail: string, status: "failed" | "cancelled" = "failed") {
+    super(
+      status === "cancelled"
+        ? `Firecrawl crawl job '${jobId}' was cancelled: ${detail}`
+        : `Firecrawl crawl job '${jobId}' failed: ${detail}`
+    );
+    this.name = "FirecrawlCrawlTerminalError";
+    this.jobId = jobId;
+  }
+}
+
+/**
+ * Live v2 scrape accepts markdown, html, rawHtml, and rawBase64.
+ * It rejects the common "text" value. Markdown is the page-content format.
+ */
+function firecrawlScrapeFormat(format?: AdapterCallOptions["format"]): "markdown" {
+  if (format === "text") {
+    throw new Error(
+      'Firecrawl does not support plain-text extract output; use format "markdown" or select another provider'
+    );
+  }
+
+  return "markdown";
+}
+
 /**
  * Firecrawl adapter.
  * Provides extract (scrape) and crawl capabilities.
@@ -21,7 +50,7 @@ export class FirecrawlAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const data = await fetchJson<{
       success?: boolean;
@@ -50,7 +79,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           query,
-          limit: 10,
+          limit: typeof options?.limit === "number" && Number.isFinite(options.limit)
+            ? Math.min(100, Math.max(1, Math.floor(options.limit)))
+            : 10,
           scrapeOptions: {
             formats: ["markdown"],
           },
@@ -83,7 +114,7 @@ export class FirecrawlAdapter implements SearchAdapter {
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     // Validate URL
     if (!url || !url.trim()) {
@@ -108,9 +139,9 @@ export class FirecrawlAdapter implements SearchAdapter {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
+        body: JSON.stringify({
         url: normalizedUrl,
-        formats: ["markdown"],
+        formats: [firecrawlScrapeFormat(options?.format)],
       }),
     }, {
       label: "Firecrawl extract",
@@ -145,34 +176,41 @@ export class FirecrawlAdapter implements SearchAdapter {
         ? Math.max(1, Math.floor(rawLimit))
         : 10;
 
-    // Start crawl job
-    const startData = await fetchJson<{
-      success?: boolean;
-      id?: string;
-      error?: string;
-    }>(`${this.baseUrl}/crawl`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        url: normalizedUrl,
-        limit,
-        scrapeOptions: {
-          formats: ["markdown"],
+    // Resume an existing batch job when a prior output record retained its
+    // handle. Starting another job here would duplicate provider work.
+    let jobId = options?.resumeJobId;
+    if (!jobId) {
+      const startData = await fetchJson<{
+        success?: boolean;
+        id?: string;
+        error?: string;
+      }>(`${this.baseUrl}/crawl`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
         },
-      }),
-    }, {
-      label: "Firecrawl crawl start",
-    });
+        body: JSON.stringify({
+          url: normalizedUrl,
+          limit,
+          ...(options?.depth !== undefined
+            ? { maxDiscoveryDepth: Math.max(0, Math.floor(options.depth)) }
+            : {}),
+          scrapeOptions: {
+            formats: ["markdown"],
+          },
+        }),
+      }, {
+        label: "Firecrawl crawl start",
+      });
 
-    if (!startData.success || !startData.id) {
-      throw new Error(`Firecrawl crawl failed: ${startData.error || "No job ID"}`);
+      if (!startData.success || !startData.id) {
+        throw new Error(`Firecrawl crawl failed: ${startData.error || "No job ID"}`);
+      }
+      jobId = startData.id;
     }
 
     // Poll for completion
-    const jobId = startData.id;
     const maxAttempts = 30;
     const pollInterval = 2000; // 2 seconds
 
@@ -181,7 +219,7 @@ export class FirecrawlAdapter implements SearchAdapter {
 
       let statusData: {
         success?: boolean;
-        status?: "scraping" | "completed" | "failed";
+        status?: "scraping" | "completed" | "failed" | "cancelled";
         data?: Array<{
           markdown?: string;
           metadata?: {
@@ -193,7 +231,7 @@ export class FirecrawlAdapter implements SearchAdapter {
       };
 
       try {
-        statusData = await fetchJson(`${this.baseUrl}/crawl/${jobId}`, {
+        statusData = await fetchJson(`${this.baseUrl}/crawl/${encodeURIComponent(jobId)}`, {
           headers: {
             Authorization: `Bearer ${apiKey}`,
           },
@@ -229,8 +267,20 @@ export class FirecrawlAdapter implements SearchAdapter {
         );
       }
 
+      if (statusData.status === "failed" || statusData.status === "cancelled") {
+        const terminalStatus = statusData.status;
+        const detail =
+          statusData.error ||
+          (terminalStatus === "cancelled"
+            ? "Provider reported that the crawl was cancelled"
+            : "Provider reported terminal failure");
+        throw new FirecrawlCrawlTerminalError(jobId, detail, terminalStatus);
+      }
+
       if (statusData.success === false || statusData.error) {
-        throw new Error(`Firecrawl crawl failed for job ${jobId}: ${statusData.error || "Unknown error"}`);
+        throw new Error(
+          `Firecrawl crawl poll returned an error for job '${jobId}': ${statusData.error || "Unknown error"}`
+        );
       }
 
       if (statusData.status === "completed" && statusData.data) {
@@ -238,15 +288,19 @@ export class FirecrawlAdapter implements SearchAdapter {
           url: item.metadata?.sourceURL || "",
           title: item.metadata?.title || "",
           content: item.markdown || "",
+          status: "completed" as const,
+          jobId,
         }));
-      }
-
-      if (statusData.status === "failed") {
-        throw new Error(`Firecrawl crawl failed: ${statusData.error || "Unknown error"}`);
       }
       // If still scraping, continue polling
     }
 
-    throw new Error("Firecrawl crawl timed out");
+    return [{
+      url: normalizedUrl,
+      title: "",
+      content: "",
+      status: "pending",
+      jobId,
+    }];
   }
 }

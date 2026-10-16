@@ -1,13 +1,12 @@
-import type { CapabilityName } from "../types.js";
+import type { CapabilityName, CrawlResult, PendingCrawlJob } from "../types.js";
 
 /**
  * One batch input record (one JSON object per line of the input JSONL).
  *
  * Exactly one of `capability` | `tool` must be set; `id` is the stable,
  * non-empty identity used as the resume key and duplicate key. Optional
- * execution knobs (`limit`, `providers`, `singleProvider`, `noCache`) mirror
- * the standalone CLI flags so a batch item behaves identically to the
- * equivalent `search` / `extract` / `crawl` / `tool call` invocation.
+ * execution knobs mirror the standalone CLI flags so a batch item behaves
+ * identically to the equivalent capability invocation.
  */
 export interface BatchInputRecord {
   /** Stable, non-empty identity; the resume key and duplicate key. */
@@ -24,6 +23,10 @@ export interface BatchInputRecord {
   input?: Record<string, any>;
   /** Maximum results (default: 10, matching the CLI). */
   limit?: number;
+  /** Extract output format. */
+  format?: "markdown" | "text";
+  /** Crawl link depth. */
+  depth?: number;
   /** Provider scope for capability records. */
   providers?: string[];
   /** Force single-provider mode for capability records. */
@@ -39,10 +42,20 @@ export interface BatchError {
   message: string;
 }
 
+/** Crawl state retained when an error interrupts a resumed batch item. */
+export interface BatchResumeState {
+  pendingJobs?: PendingCrawlJob[];
+  completedResults?: CrawlResult[];
+  fallbackCompleted?: boolean;
+  fallbackProvider?: string;
+  requestedUrlFingerprint?: string;
+}
+
 /**
  * One batch output record (one JSON object per line of the output JSONL).
  *
  * - `status: "success"` records have `result` set and `error: null`.
+ * - `status: "pending"` records preserve an async job but are not resumable successes.
  * - `status: "error"` records have `result: null` and a non-null `error`.
  * - Duplicate/conflict records carry `error.code === DUPLICATE_ID_CONFLICT`
  *   and are never retried by `--retry-errors`.
@@ -51,11 +64,13 @@ export interface BatchOutputRecord {
   id: string;
   capability?: CapabilityName;
   tool?: string;
-  status: "success" | "error";
+  status: "success" | "pending" | "error";
   /** Execution result; `null` on error. */
   result: unknown;
   /** `null` on success; `{ message }` (or conflict details) on error. */
   error: BatchError | null;
+  /** Resume data retained on errors that interrupt an existing crawl. */
+  resumeState?: BatchResumeState;
 }
 
 /**

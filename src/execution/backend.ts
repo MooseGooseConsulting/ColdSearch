@@ -20,6 +20,7 @@ import type {
   CapabilityName,
   Config,
   CrawlResult,
+  PendingCrawlJob,
   ExtractResult,
   NormalizedResult,
 } from "../types.js";
@@ -43,10 +44,48 @@ export type ExtractOutcome = {
 
 export type CrawlOutcome = {
   results: CrawlResult[];
+  pendingJobs: PendingCrawlJob[];
   provider: string;
+  status: "completed" | "pending";
+  fallbackCompleted?: boolean;
+  fallbackProvider?: string;
   errors?: Record<string, string>;
   warnings?: string[];
 };
+
+const SEARCH_PROVIDER_LIMIT_OPTIONS = [
+  "numResults",
+  "max_results",
+  "count",
+  "num",
+  "limit",
+] as const;
+
+/** Cache identity for provider-defined search counts when the CLI limit is implicit. */
+function searchProviderLimitIdentity(
+  config: Config,
+  includeConfiguredLimits: boolean
+): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return {
+    providers,
+    ...(includeConfiguredLimits
+      ? {
+          configuredLimits: Object.fromEntries(
+            providers.map((provider) => {
+              const options = config.providers[provider]?.options ?? {};
+              const configured = Object.fromEntries(
+                SEARCH_PROVIDER_LIMIT_OPTIONS
+                  .filter((key) => options[key] !== undefined)
+                  .map((key) => [key, options[key]])
+              );
+              return [provider, configured];
+            })
+          ),
+        }
+      : {}),
+  };
+}
 
 /** Shape guards so a malformed cache file is a miss, never a replay crash. */
 const isSearchCachePayload = (p: unknown): p is SearchResult =>
@@ -180,11 +219,14 @@ export class LocalExecutionBackend implements ExecutionBackend {
   private requestOptions(options: FanoutOptions): Record<string, unknown> {
     return {
       limit: options.limit,
+      limitSet: options.limitSet !== false,
       ...(options.rerankStrategy ? { rerankStrategy: options.rerankStrategy } : {}),
       ...(options.providers?.length ? { providers: options.providers } : {}),
       ...(options.singleProvider ? { singleProvider: true } : {}),
       ...(options.noCache ? { noCache: true } : {}),
       ...(options.freshness ? { freshness: options.freshness } : {}),
+      ...(options.format ? { format: options.format } : {}),
+      ...(options.depth !== undefined ? { depth: options.depth } : {}),
     };
   }
 
@@ -229,7 +271,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const reranker = options.rerankStrategy ?? "rrf";
 
     const key = useCache
-      ? cacheKey("search", query, { limit: options.limit, rerankStrategy: reranker })
+      ? cacheKey("search", query, {
+          limit: options.limit,
+          limitSet: options.limitSet !== false,
+          rerankStrategy: reranker,
+          searchProviderLimitIdentity: searchProviderLimitIdentity(
+            this.config,
+            options.limitSet === false
+          ),
+        })
       : null;
 
     if (key) {
@@ -328,7 +378,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
-    const key = useCache ? cacheKey("extract", url, {}) : null;
+    const key = useCache
+      ? cacheKey("extract", url, options.format ? { format: options.format } : {})
+      : null;
 
     if (key) {
       const entry = this.cache.getEntry("extract", key, isExtractCachePayload);
@@ -438,17 +490,26 @@ export class LocalExecutionBackend implements ExecutionBackend {
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
           result: redactForPersistence(result.results, secrets) ?? undefined,
           result_count: result.results.length,
+          pending_jobs: redactSensitive(result.pendingJobs, secrets),
           raw_available: false,
           errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome:
-            result.errors && Object.keys(result.errors).length > 0 ? "partial" : "success",
+            result.status === "pending"
+              ? "pending"
+              : result.errors && Object.keys(result.errors).length > 0
+                ? "partial"
+                : "success",
         },
         warnings
       );
       return {
         results: result.results,
+        pendingJobs: result.pendingJobs,
         provider: result.provider,
+        status: result.status,
+        fallbackCompleted: result.fallbackCompleted,
+        fallbackProvider: result.fallbackProvider,
         errors: result.errors,
         warnings,
       };

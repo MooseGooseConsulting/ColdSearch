@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { NormalizedResult } from "../types.js";
+import type { NormalizedResult, PendingCrawlJob } from "../types.js";
 
 /**
  * One top-level history execution is recorded per `coldsearch search`,
@@ -12,7 +12,7 @@ export type ExecutionCommand = "search" | "extract" | "crawl" | "tool";
 /** `live`: providers were called. `cache`: exact replay, zero provider calls. */
 export type ExecutionSource = "live" | "cache";
 
-export type ExecutionOutcome = "success" | "partial" | "failed";
+export type ExecutionOutcome = "success" | "partial" | "pending" | "failed";
 
 /**
  * One provider/tool attempt inside an execution. Carries only what the runtime
@@ -22,6 +22,8 @@ export interface ProviderAttempt {
   provider: string;
   tool?: string;
   success: boolean;
+  /** Provider accepted an asynchronous job that has not completed yet. */
+  pending?: boolean;
   error?: string;
   duration_ms?: number;
   key_ref?: string;
@@ -66,6 +68,8 @@ export interface ExecutionRecord {
   partitions?: Record<string, NormalizedResult[]>;
   /** Final normalized/merged output returned to the caller, redacted. */
   result?: unknown;
+  /** Async crawl handles, separate from page results and safe to resume. */
+  pending_jobs?: PendingCrawlJob[];
   result_count?: number;
   /**
    * Raw provider detail, only where the execution path already preserves it

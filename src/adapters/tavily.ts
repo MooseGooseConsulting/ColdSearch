@@ -24,6 +24,8 @@ interface TavilyExtractResponse {
     rawContent?: string;
     raw_content?: string;
   }>;
+  failed_results?: Array<{ error?: string; reason?: string }>;
+  failedResults?: Array<{ error?: string; reason?: string }>;
 }
 
 interface TavilyCrawlResponse {
@@ -45,18 +47,28 @@ export class TavilyAdapter implements SearchAdapter {
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
   private readonly baseUrl = "https://api.tavily.com";
 
-  private sanitizeLimit(limit?: number): number {
+  private sanitizeSearchLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
       return 10;
     }
 
+    return Math.min(20, Math.max(1, Math.floor(limit)));
+  }
+
+  private sanitizeCrawlLimit(limit?: number): number {
+    if (typeof limit !== "number" || !Number.isFinite(limit)) {
+      return 10;
+    }
+
+    // Tavily's crawl `limit` is a link-processing budget, not search's
+    // `max_results` field; do not apply the search endpoint's 20-result cap.
     return Math.max(1, Math.floor(limit));
   }
 
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const response = await fetchJson<TavilySearchResponse>(
       `${this.baseUrl}/search`,
@@ -70,6 +82,7 @@ export class TavilyAdapter implements SearchAdapter {
           query,
           search_depth: "basic",
           include_answer: false,
+          max_results: this.sanitizeSearchLimit(options?.limit),
         }),
       },
       { label: "Tavily search" }
@@ -89,7 +102,7 @@ export class TavilyAdapter implements SearchAdapter {
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
     const response = await fetchJson<TavilyExtractResponse>(
       `${this.baseUrl}/extract`,
@@ -102,6 +115,7 @@ export class TavilyAdapter implements SearchAdapter {
         body: JSON.stringify({
           urls: [url],
           include_images: false,
+          format: options?.format ?? "markdown",
         }),
       },
       { label: "Tavily extract" }
@@ -109,7 +123,13 @@ export class TavilyAdapter implements SearchAdapter {
 
     const result = response.results?.[0];
     if (!result) {
-      throw new Error(`Failed to extract content from ${url}`);
+      const failed = response.failed_results?.[0] ?? response.failedResults?.[0];
+      const reason = failed?.error ?? failed?.reason;
+      throw new Error(
+        reason
+          ? `Failed to extract content from ${url}: ${reason}`
+          : `Failed to extract content from ${url}`
+      );
     }
 
     return {
@@ -130,7 +150,14 @@ export class TavilyAdapter implements SearchAdapter {
       throw new Error("URL is required");
     }
 
-    const limit = this.sanitizeLimit(options?.limit);
+    const limit = this.sanitizeCrawlLimit(options?.limit);
+    let depth: number | undefined;
+    if (options?.depth !== undefined) {
+      depth = options.depth;
+      if (!Number.isInteger(depth) || depth < 1 || depth > 5) {
+        throw new Error("Tavily crawl depth must be an integer from 1 to 5");
+      }
+    }
     const normalizedUrl = url.trim();
 
     const response = await fetchJson<TavilyCrawlResponse>(
@@ -147,6 +174,7 @@ export class TavilyAdapter implements SearchAdapter {
           // `max_results` name is silently ignored upstream.
           limit,
           extract_depth: "basic",
+          ...(depth !== undefined ? { max_depth: depth } : {}),
         }),
       },
       { label: "Tavily crawl", timeoutMs: 120_000 }

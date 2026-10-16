@@ -7,6 +7,7 @@ import {
   listToolProfiles,
   resolveEligibleTools,
   wiredToolForProviderCategory,
+  isHardExcluded,
 } from "../dist/registry/tool-profiles.js";
 
 const CAPABILITY_NAMES = ["search", "extract", "crawl"];
@@ -42,6 +43,32 @@ test("every registered provider has at least one tool profile", () => {
       profiles.length > 0,
       `Provider '${provider}' has no tool profile in the registry`
     );
+  }
+});
+
+test("unverified vertical tools are catalogued as deferred and cannot dispatch", () => {
+  for (const id of [
+    "brave.newsSearch",
+    "brave.imageSearch",
+    "brave.videoSearch",
+    "serper.images",
+    "serper.news",
+    "serper.videos",
+    "serper.shopping",
+    "serper.maps",
+    "serper.places",
+    "serper.scholar",
+    "serper.patents",
+    "serper.autocomplete",
+    "serper.reviews",
+    "jina.search",
+  ]) {
+    const profile = getToolProfile(id);
+    assert.ok(profile, `${id} is missing from the catalog`);
+    assert.equal(profile.status, "deferred", `${id} must not claim an executable schema`);
+    assert.equal(profile.schemaLastVerified, null);
+    assert.deepEqual(profile.requiredParams, []);
+    assert.ok(isHardExcluded(id), `${id} must not reach generic dispatch`);
   }
 });
 

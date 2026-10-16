@@ -24,8 +24,8 @@ export class BatchInputError extends Error {
  *   `extract`/`crawl` require `url`.
  * - `tool` is a provider-tool name exposed by `coldsearch tool list` and
  *   requires an `input` object.
- * - Optional knobs are type-checked (`limit`, `providers`, `singleProvider`,
- *   `noCache`).
+ * - Optional knobs are type-checked (`limit`, `format`, `depth`, `providers`,
+ *   `singleProvider`, `noCache`).
  */
 export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecord {
   const errors: string[] = [];
@@ -84,6 +84,27 @@ export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecor
       record.limit < 1)
   ) {
     errors.push("'limit' must be a positive number when present");
+  }
+  if (
+    record.format !== undefined &&
+    record.format !== "markdown" &&
+    record.format !== "text"
+  ) {
+    errors.push("'format' must be 'markdown' or 'text' when present");
+  }
+  if (record.format !== undefined && (!hasCapability || record.capability !== "extract")) {
+    errors.push("'format' is only valid for 'extract' capability records");
+  }
+  if (
+    record.depth !== undefined &&
+    (typeof record.depth !== "number" ||
+      !Number.isInteger(record.depth) ||
+      record.depth < 0)
+  ) {
+    errors.push("'depth' must be a non-negative integer when present");
+  }
+  if (record.depth !== undefined && (!hasCapability || record.capability !== "crawl")) {
+    errors.push("'depth' is only valid for 'crawl' capability records");
   }
   if (
     record.providers !== undefined &&
