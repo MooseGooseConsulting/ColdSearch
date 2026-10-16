@@ -14,7 +14,7 @@ export interface Source {
  * Research step/operation record.
  */
 export interface ResearchStep {
-  type: "search" | "fetch" | "refine" | "synthesize";
+  type: "search" | "fetch" | "refine" | "synthesize" | "rejected_action";
   description: string;
   timestamp: Date;
   /** Run ID this step belongs to (present for agent-run steps). */

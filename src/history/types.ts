@@ -12,7 +12,7 @@ export type ExecutionCommand = "search" | "extract" | "crawl" | "tool" | "agent"
 
 /** Safe, durable record of an agent action; provider executions stay separate. */
 export interface AgentRunStep {
-  type: "search" | "fetch" | "refine" | "synthesize";
+  type: "search" | "fetch" | "refine" | "synthesize" | "rejected_action";
   description: string;
   timestamp: string;
   run_id: string;

@@ -287,6 +287,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
 
     for (let step = 0; step < maxSteps; step++) {
       // Get agent's next action
+      const responseStartedAt = performance.now();
       const response = await complete(messages);
       const content = response.content.trim();
 
@@ -294,6 +295,19 @@ Be thorough but efficient. Focus on authoritative sources.`;
 
       const payload = parseAgentPayload(content);
       if (!payload) {
+        const excerpt = content.length > 1000
+          ? `${content.slice(0, 1000)}… [truncated]`
+          : content;
+        const rejectedStep = context.addStep(
+          "rejected_action",
+          `Malformed model response: ${JSON.stringify(excerpt)}`
+        );
+        context.completeStep(
+          rejectedStep,
+          "failed",
+          performance.now() - responseStartedAt,
+          "Model response was not valid agent JSON"
+        );
         messages.push({
           role: "user",
           content:
@@ -314,6 +328,20 @@ Be thorough but efficient. Focus on authoritative sources.`;
 
       const tool = tools[payload.tool];
       if (!tool) {
+        const action = JSON.stringify(payload);
+        const excerpt = action.length > 1000
+          ? `${action.slice(0, 1000)}… [truncated]`
+          : action;
+        const rejectedStep = context.addStep(
+          "rejected_action",
+          `Unknown tool action: ${excerpt}`
+        );
+        context.completeStep(
+          rejectedStep,
+          "failed",
+          performance.now() - responseStartedAt,
+          `Unknown tool: ${JSON.stringify(payload.tool)}`
+        );
         messages.push({
           role: "user",
           content: `Unknown tool: ${payload.tool}. Available: search, fetch, refine`,
