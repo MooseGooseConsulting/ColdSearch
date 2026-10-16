@@ -417,6 +417,95 @@ path = ${JSON.stringify(join(dir, "history.jsonl"))}
 }
 
 
+test("search cache distinguishes provider filter changes (Codex P2 on #83)", async () => {
+  // Same query, same pool, different Brave safesearch must not replay.
+  const writeFilterConfig = (safesearch) => {
+    const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-filter-"));
+    const configPath = join(dir, "config.toml");
+    const toml = `
+[capabilities.search]
+providers = ["brave"]
+strategy = "all"
+
+[capabilities.extract]
+providers = ["jina"]
+strategy = "all"
+
+[capabilities.crawl]
+providers = ["exa"]
+strategy = "all"
+
+[providers.brave]
+[providers.brave.keyPool]
+keys = ["k"]
+[providers.brave.options]
+safesearch = "${safesearch}"
+
+[providers.jina]
+[providers.jina.keyPool]
+keys = []
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["k"]
+
+[cache]
+enabled = true
+search_ttl = "6h"
+path = ${JSON.stringify(cacheDir)}
+
+[history]
+path = ${JSON.stringify(join(dir, "history.jsonl"))}
+`;
+    writeFileSync(configPath, toml, "utf8");
+    return { dir, configPath };
+  };
+
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-filter-cache-"));
+  const seenSafesearch = [];
+  const restore = installFetchMock({
+    "*": async ({ url }) => {
+      const parsed = new URL(url);
+      seenSafesearch.push(parsed.searchParams.get("safesearch"));
+      return jsonResponse({
+        web: {
+          results: [
+            {
+              title: "Brave result",
+              url: "https://brave.example",
+              description: "result",
+              relevance_score: 0.9,
+            },
+          ],
+        },
+      });
+    },
+  });
+
+  try {
+    const strict = writeFilterConfig("strict");
+    const moderate = writeFilterConfig("moderate");
+    try {
+      const first = new LocalExecutionBackend(strict.configPath);
+      await first.search("filter query", { limit: 10, rerankStrategy: "rrf" });
+      const second = new LocalExecutionBackend(moderate.configPath);
+      await second.search("filter query", { limit: 10, rerankStrategy: "rrf" });
+    } finally {
+      rmSync(strict.dir, { recursive: true, force: true });
+      rmSync(moderate.dir, { recursive: true, force: true });
+    }
+
+    assert.deepEqual(
+      seenSafesearch,
+      ["strict", "moderate"],
+      "changing safesearch must invalidate the search cache entry"
+    );
+  } finally {
+    restore();
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("search cache distinguishes implicit and explicit equal limits", async () => {
   const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-cache-"));
   const { dir, configPath } = writeTempBraveCountConfig({ cacheDir });

@@ -89,6 +89,90 @@ function searchProviderLimitIdentity(
   };
 }
 
+/**
+ * Non-secret search filters that reach the provider wire and therefore shape
+ * the returned payload. Mirrors the read sites in each search adapter:
+ * serper (location), brave (safesearch), firecrawl (sources), tavily
+ * (search_depth/topic/time_range), searxng (categories/engines/language/pageno/
+ * time_range/safesearch/theme), exa (type/category/highlights/maxCharacters/
+ * maxAgeHours/includeDomains/excludeDomains), brightdata (zone/searchEngine/
+ * country). Values are normalized the way the adapters normalize them
+ * (trimmed, validated) so the key matches effective requests, not raw config.
+ */
+const SEARCH_FILTER_OPTIONS: Record<string, readonly string[]> = {
+  serper: ["location"],
+  brave: ["safesearch"],
+  firecrawl: ["sources"],
+  tavily: ["search_depth", "topic", "time_range"],
+  searxng: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "theme"],
+  exa: ["searchType", "category", "highlights", "maxCharacters", "maxAgeHours", "includeDomains", "excludeDomains"],
+  brightdata: ["zone", "serpZone", "searchEngine", "searchCountry", "country"],
+};
+
+function normalizeFilterValue(provider: string, key: string, value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (provider === "brave" && key === "safesearch") {
+      const v = trimmed.toLowerCase();
+      return ["off", "moderate", "strict"].includes(v) ? v : undefined;
+    }
+    if (provider === "firecrawl" && key === "sources") {
+      if (!Array.isArray(value)) return undefined;
+      const allowed = (value as unknown[]).filter(
+        (s): s is string => typeof s === "string" && ["web", "news", "images"].includes(s)
+      );
+      return allowed.length > 0 ? allowed : undefined;
+    }
+    if (provider === "tavily" && key === "search_depth") {
+      return ["basic", "advanced", "fast", "ultra-fast"].includes(trimmed) ? trimmed : undefined;
+    }
+    return trimmed;
+  }
+  if (typeof value === "number") {
+    if (key === "pageno" || key === "maxCharacters" || key === "maxAgeHours") return value;
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    if (key === "highlights") return value;
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    if (provider === "firecrawl" && key === "sources") {
+      const allowed = (value as unknown[]).filter(
+        (s): s is string => typeof s === "string" && ["web", "news", "images"].includes(s)
+      );
+      return allowed.length > 0 ? allowed : undefined;
+    }
+    if (
+      (provider === "exa" && (key === "includeDomains" || key === "excludeDomains")) ||
+      (provider === "searxng" && (key === "categories" || key === "engines"))
+    ) {
+      return value.length > 0 ? value : undefined;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Cache identity for effective provider search filters (Codex P2 on #83). */
+function searchFilterIdentity(config: Config): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const keys = SEARCH_FILTER_OPTIONS[provider] ?? [];
+      const options = config.providers[provider]?.options ?? {};
+      const filters = Object.fromEntries(
+        keys
+          .map((key) => [key, normalizeFilterValue(provider, key, options[key])] as const)
+          .filter(([, v]) => v !== undefined)
+      );
+      return [provider, filters];
+    })
+  );
+}
+
 /** Effective content format for each provider in the default extract pool. */
 function extractProviderFormatIdentity(
   config: Config,
@@ -314,6 +398,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             this.config,
             options.limitSet === false
           ),
+          searchFilterIdentity: searchFilterIdentity(this.config),
         })
       : null;
 
