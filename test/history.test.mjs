@@ -784,6 +784,24 @@ path = ${JSON.stringify(historyPath)}
   }
 });
 
+test("direct backend intent rejection is recorded for the correct capability", async () => {
+  const { dir, historyPath, configPath } = writeTempConfig();
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    await assert.rejects(
+      () => backend.extract("https://example.com", { intent: "structured-extraction" }),
+      /structured-extraction/
+    );
+    const [record] = readRecords(historyPath);
+    assert.equal(record.command, "extract");
+    assert.equal(record.outcome, "failed");
+    assert.equal(record.options.intent, "structured-extraction");
+    assert.deepEqual(record.attempts, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("--freshness does not persist into the stored cache entry", async () => {
   const { dir, cacheDir, configPath } = writeTempConfig();
   const counter = { calls: 0 };

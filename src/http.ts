@@ -382,6 +382,26 @@ export function classifyError(error: unknown): ClassifiedError {
       .map(() => SEARXNG_JSON_HINT);
     return { category, message: message + [...new Set(hints)].join("") };
   }
+  const declaredCategory =
+    error && typeof error === "object" && "category" in error
+      ? (error as { category?: unknown }).category
+      : undefined;
+  if (
+    typeof declaredCategory === "string" &&
+    [
+      "config",
+      "credentials",
+      "quota",
+      "rate_limit",
+      "network",
+      "validation",
+      "unsupported_capability",
+      "unsupported_tool",
+      "provider",
+    ].includes(declaredCategory)
+  ) {
+    return { category: declaredCategory as ErrorCategory, message };
+  }
   if (name === "AbortError") {
     return { category: "network", message };
   }
@@ -418,7 +438,7 @@ export function classifyError(error: unknown): ClassifiedError {
     return { category: "provider", message };
   }
   if (
-    /unknown option|unknown '.*' subcommand|invalid limit|invalid rerank|invalid freshness|invalid reasoning effort|invalid agent llm reasoning effort|--llm-key-ref requires|agent llm key_ref|\[agent\.llm\].*key_ref|\[agent\.llm\].*reasoning_effort|requires a .* argument|is only valid with|no configuration found for capability|not configured|config file|legacy config found|failed to parse config|invalid llm provider|unknown llm provider|unsupported llm provider|no execution found with id|no providers configured for/i.test(
+    /unknown option|unknown '.*' subcommand|invalid limit|invalid rerank|invalid freshness|invalid time range|invalid intent|--intent requires|--time-range requires|invalid reasoning effort|invalid agent llm reasoning effort|--llm-key-ref requires|agent llm key_ref|\[agent\.llm\].*key_ref|\[agent\.llm\].*reasoning_effort|requires a .* argument|is only valid with|no configuration found for capability|not configured|config file|legacy config found|failed to parse config|invalid llm provider|unknown llm provider|unsupported llm provider|no execution found with id|no providers configured for/i.test(
       message
     )
   ) {

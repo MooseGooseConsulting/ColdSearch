@@ -347,7 +347,14 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
           includeDomains: "include_domains",
           excludeDomains: "exclude_domains",
           freshness: "time_range / start_date+end_date",
+          // 1:1 scalar date filter (day|week|month|year) for the dispatch-layer
+          // `timeRange` common option; the `freshness` expression above mixes in
+          // start_date+end_date and is not forwarded verbatim.
+          timeRange: "time_range",
           includeContent: "include_raw_content or advanced chunks",
+        },
+        commonOptionValueMappings: {
+          timeRange: { day: "d", week: "w", month: "m", year: "y" },
         },
         unsupportedCommonOptions: [],
         nativeOptionsWithoutCommonEquivalent: ["topic", "search_depth", "auto_parameters"],
@@ -1086,7 +1093,10 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
       {
         category: "search",
         semanticFit: "direct",
-        mapsCommonOptions: { freshness: "time_range" },
+        mapsCommonOptions: { freshness: "time_range", timeRange: "time_range" },
+        commonOptionValueMappings: {
+          timeRange: { day: "day", month: "month", year: "year" },
+        },
         unsupportedCommonOptions: ["includeDomains", "excludeDomains"],
         nativeOptionsWithoutCommonEquivalent: ["engines", "categories"],
         notes:

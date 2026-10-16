@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { NormalizedResult, PendingCrawlJob } from "../types.js";
+import type { NormalizedResult, PendingCrawlJob, ToolExecutionMode } from "../types.js";
 
 /**
  * One top-level history execution is recorded per `coldsearch search`,
@@ -21,6 +21,10 @@ export type ExecutionOutcome = "success" | "partial" | "pending" | "failed";
 export interface ProviderAttempt {
   provider: string;
   tool?: string;
+  /** Provider-native endpoint backing this leg, e.g. "POST /search" (issue #79 provenance). */
+  toolNativeName?: string;
+  /** How the backing tool executes upstream (sync/async-job/streaming). */
+  executionMode?: ToolExecutionMode;
   success: boolean;
   /** Provider accepted an asynchronous job that has not completed yet. */
   pending?: boolean;
@@ -43,6 +47,8 @@ export interface ExecutionRouting {
   strategy?: string | null;
   requested_providers?: string[];
   providers_attempted?: string[];
+  /** Providers excluded before dispatch because they could not honor filters. */
+  providers_skipped?: Record<string, string>;
   reranker?: string;
 }
 
