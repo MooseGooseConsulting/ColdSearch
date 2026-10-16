@@ -11,6 +11,7 @@ export const SERPER_TOOLS = [
   "patents",
   "autocomplete",
   "reviews",
+  "lens",
 ] as const;
 
 export function serperToolUrl(tool: string): string {

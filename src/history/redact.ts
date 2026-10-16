@@ -62,7 +62,13 @@ const URL_PARAM_PATTERN = new RegExp(
   `([?&](?:${SENSITIVE_URL_PARAMS.join("|")})=)[^&\\s"'\\])}]*`,
   "gi"
 );
-const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^\/?#\s"<>]*)/gi;
+/**
+ * WHATWG URL accepts whitespace/quotes/brackets in userinfo (percent-encoded
+ * into username), so the authority class must not stop at them — otherwise
+ * credential userinfo containing those chars leaks (Codex on #86). The
+ * existing quote-boundary logic below trims field delimiters after capture.
+ */
+const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^/?#]*)/gi;
 
 /**
  * Secrets shorter than this are not substring-replaced inside larger strings:
@@ -93,8 +99,14 @@ export function redactUrlUserInfo(text: string, replacement = REDACTED): string 
       // itself is inside a single-quoted field; otherwise `';` may be literal
       // password data and the final `@` still marks the host boundary.
       const singleQuotedUrl = input[offset - 1] === "'";
-      const fieldQuoteBoundary = singleQuotedUrl
+      // Like the semicolon guard below: a quote-comma pair inside credentials
+      // is data when the eventual `@` has not arrived yet (CodeRabbit on #86).
+      const fieldQuoteCandidate = singleQuotedUrl
         ? /'\s*,\s*'/.exec(authority)?.index
+        : undefined;
+      const fieldQuoteBoundary = fieldQuoteCandidate !== undefined &&
+        authority.slice(0, fieldQuoteCandidate).includes("@")
+        ? fieldQuoteCandidate
         : undefined;
       const semicolonQuoteCandidate = singleQuotedUrl
         ? /'\s*;/.exec(authority)?.index

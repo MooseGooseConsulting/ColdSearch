@@ -198,7 +198,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Exa search" }
+      { label: "Exa search", secrets: apiKey ? [apiKey] : [] }
     );
 
     // Normalize Exa results to shared schema. Content-backed retrieval must
@@ -268,7 +268,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(extractBody),
       },
-      { label: "Exa extract" }
+      { label: "Exa extract", secrets: apiKey ? [apiKey] : [] }
     );
 
     const result = data.results?.[0];
@@ -331,7 +331,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Exa crawl discover" }
+      { label: "Exa crawl discover", secrets: apiKey ? [apiKey] : [] }
     );
 
     const candidateUrls = [
@@ -364,7 +364,7 @@ export class ExaAdapter implements SearchAdapter {
             : {}),
         }),
       },
-      { label: "Exa crawl contents" }
+      { label: "Exa crawl contents", secrets: apiKey ? [apiKey] : [] }
     );
 
     return (contents.results || []).map((result) => ({
@@ -414,7 +414,7 @@ export class ExaAdapter implements SearchAdapter {
           ...(opts.excludeDomains?.length ? { excludeDomains: opts.excludeDomains } : {}),
         }),
       },
-      { label: "Exa findSimilar" }
+      { label: "Exa findSimilar", secrets: apiKey ? [apiKey] : [] }
     );
 
     // Mirror search: content-backed similarity must not silently succeed

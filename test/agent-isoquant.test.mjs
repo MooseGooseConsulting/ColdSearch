@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createLLMClient, resolveLlmConfig } from "../dist/agent/llm.js";
 import { SearchAgent } from "../dist/agent/agent.js";
 import { loadConfig } from "../dist/config.js";
+import { flushCaptures } from "../dist/testing/capture.js";
 
 // Real HTTP transport to a local contract server; no fetch mocking or paid calls.
 async function withServer(run) {
@@ -69,6 +70,30 @@ test("Isoquant default sends GLM 5.3 Flash medium and uses Doppler-injected cred
       assert.equal(out.usage.totalTokens, 7);
     });
   });
+});
+
+test("LLM request capture redacts the resolved provider key", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coldsearch-llm-capture-"));
+  const secret = "local-llm-capture-secret";
+  try {
+    await withEnv("COLDSEARCH_CAPTURE_DIR", dir, async () => {
+      await withEnv("ISOQUANT_API_KEY", secret, async () => {
+        await withServer(async (baseUrl, requests) => {
+          const client = createLLMClient("isoquant", undefined, baseUrl);
+          await client.complete([{ role: "user", content: "Capture proof" }]);
+          await flushCaptures();
+          assert.equal(requests[0].auth, `Bearer ${secret}`);
+        });
+      });
+    });
+    const capture = fs.readdirSync(dir).map((file) =>
+      fs.readFileSync(path.join(dir, file), "utf8")
+    ).join("\n");
+    assert.ok(capture.includes('"authorization":"REDACTED"'));
+    assert.ok(!capture.includes(secret));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("renamed Doppler secret flows from TOML through endpoint resolution", async () => {

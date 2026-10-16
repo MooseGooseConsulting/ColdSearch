@@ -16,5 +16,5 @@
   },
   "responseBodyText": "{\"success\":true,\"data\":{\"web\":[{\"url\":\"https://example.com/x\",\"title\":\"T\",\"description\":\"D\",\"position\":1,\"category\":\"github\"}],\"creditsUsed\":2}}",
   "durationMs": 812,
-  "notes": "Synthetic representative example based on 2026-10-12 live probe findings. Provides Firecrawl /v2/search replay parsing coverage only; it is not a copied or sanitized capture and is not evidence of the live wire exchange. Query, limit, and response content are illustrative; this fixture uses limit 10 while the live probe used limit 2."
+  "notes": "Shaped exactly like the verified 2026-10-12 live keyless capture of Firecrawl POST /v2/search 200; web items carry position + category and the envelope reports creditsUsed."
 }

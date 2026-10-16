@@ -5,6 +5,7 @@ competitor-analysis/
 .env
 .env.local
 .DS_Store
+/captures/
 
 # AI coding assistant artifacts
 .omc/

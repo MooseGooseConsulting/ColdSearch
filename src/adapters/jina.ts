@@ -84,6 +84,7 @@ export class JinaAdapter implements SearchAdapter {
       headers,
     }, {
       label: "Jina extract",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     if (!content || content.trim().length === 0) {

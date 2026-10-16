@@ -1,4 +1,11 @@
 import type { ErrorCategory } from "./types.js";
+import {
+  captureEnabled,
+  readCaptureResponsePrefix,
+  recordCapture,
+  reserveCaptureRecord,
+  trackCaptureTask,
+} from "./testing/capture.js";
 
 export interface RequestPolicy {
   label?: string;
@@ -6,6 +13,12 @@ export interface RequestPolicy {
   retries?: number;
   retryDelayMs?: number;
   allowNonIdempotentRetries?: boolean;
+  /**
+   * Resolved secret values (API keys/tokens) for this call. Only consulted by
+   * the opt-in capture harness (COLDSEARCH_CAPTURE_DIR) to redact secrets
+   * from captured request/response values; never sent anywhere.
+   */
+  secrets?: string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -148,6 +161,15 @@ function shouldRetryError(error: unknown, externalAborted: boolean): boolean {
   return false;
 }
 
+function retryableTransportErrorName(
+  error: unknown
+): "TypeError" | "AbortError" | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return error.name === "TypeError" || error.name === "AbortError"
+    ? error.name
+    : undefined;
+}
+
 async function safeReadText(response: Response): Promise<string> {
   try {
     return await response.text();
@@ -168,9 +190,80 @@ export async function fetchWithPolicy(
   const retries = canRetry ? (policy.retries ?? DEFAULT_RETRIES) : 0;
   const retryDelayMs = policy.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   const requestUrl = input.toString();
+  // Capture harness (issue #79 PR-E): one env check per call; zero further
+  // overhead when COLDSEARCH_CAPTURE_DIR is unset.
+  const captureOn = captureEnabled();
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const attemptStart = captureOn ? Date.now() : 0;
+    // Set once the attempt's outcome has been recorded, so the catch block
+    // does not double-record the HTTPRequestError thrown below.
+    let attemptCaptured = false;
+    const recordAttempt = (outcome: {
+      status?: number;
+      responseHeaders?: Headers;
+      responseBodyText?: string;
+      error?: string;
+      errorName?: "TypeError" | "AbortError";
+    }, durationMs = Date.now() - attemptStart): void => {
+      if (!captureOn || attemptCaptured) return;
+      attemptCaptured = true;
+      void recordCapture({
+        label: policy.label,
+        method,
+        url: requestUrl,
+        requestHeaders: init.headers,
+        requestBody: init.body,
+        durationMs,
+        secrets: policy.secrets,
+        ...outcome,
+      });
+    };
+    const recordResponse = (response: Response, durationMs: number): void => {
+      if (!captureOn || attemptCaptured) return;
+      let captureResponse: Response;
+      try {
+        captureResponse = response.clone();
+      } catch {
+        recordAttempt(
+          { status: response.status, responseHeaders: response.headers },
+          durationMs
+        );
+        return;
+      }
+      attemptCaptured = true;
+      const commitCapture = reserveCaptureRecord();
+      // Snapshot request metadata now: the body read below is async, and a
+      // caller mutating init.headers/init.body/policy.secrets in the window
+      // would otherwise corrupt the record (Codex on #86).
+      const snapHeaders: Headers = new Headers(init.headers ?? {});
+      const snapSecrets = [...(policy.secrets ?? [])];
+      const snapBody = init.body;
+      const snapUrl = requestUrl;
+      const snapLabel = policy.label;
+      const snapMethod = method;
+      trackCaptureTask(
+        Promise.resolve()
+          .then(() => readCaptureResponsePrefix(captureResponse, snapSecrets))
+          .catch(() => undefined)
+          .then((responseBodyText) =>
+            commitCapture({
+              label: snapLabel,
+              method: snapMethod,
+              url: snapUrl,
+              requestHeaders: snapHeaders,
+              requestBody: snapBody,
+              durationMs,
+              secrets: snapSecrets,
+              status: response.status,
+              responseHeaders: response.headers,
+              responseBodyText,
+            })
+          )
+      );
+    };
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const externalSignal = init.signal ?? undefined;
@@ -191,11 +284,28 @@ export async function fetchWithPolicy(
       });
 
       if (response.ok) {
+        if (captureOn) {
+          // Read a bounded clone asynchronously. The request timeout is only
+          // for receiving the response headers; capture must not delay or
+          // abort the caller while it consumes the original body.
+          const captureDurationMs = Date.now() - attemptStart;
+          recordResponse(response, captureDurationMs);
+        }
         return response;
       }
 
       if (attempt < retries && shouldRetryStatus(response.status)) {
-        await response.body?.cancel();
+        // Record the complete transient exchange from a clone before the
+        // original response is discarded for retry.
+        recordResponse(response, Date.now() - attemptStart);
+        const cancelResponseBody = response.body?.cancel();
+        if (captureOn) {
+          // A cloned response tees the body, so awaiting cancellation of the
+          // original can wait for the asynchronous capture reader to finish.
+          void cancelResponseBody?.catch(() => undefined);
+        } else {
+          await cancelResponseBody;
+        }
         // Honor the server's Retry-After hint on 429/503 (capped); otherwise
         // fall back to linear backoff. Jitter spreads retries of parallel
         // callers sharing the same rate limiter.
@@ -212,6 +322,11 @@ export async function fetchWithPolicy(
       }
 
       const body = await safeReadText(response);
+      recordAttempt({
+        status: response.status,
+        responseHeaders: response.headers,
+        responseBodyText: body,
+      });
       throw new HTTPRequestError(
         `${policy.label || "Request"} failed with HTTP ${response.status}`,
         { url: requestUrl, status: response.status, body, label: policy.label }
@@ -221,18 +336,30 @@ export async function fetchWithPolicy(
       const externalAborted = externalSignal?.aborted === true;
 
       if (attempt < retries && shouldRetryError(error, externalAborted)) {
+        recordAttempt({
+          error: error instanceof Error ? error.message : String(error),
+          errorName: retryableTransportErrorName(error),
+        });
         await sleep(withJitter(retryDelayMs * (attempt + 1)), externalSignal);
         continue;
       }
 
       if (error instanceof Error && error.name === "AbortError") {
         if (externalAborted) {
-          throw createAbortError(`${policy.label || "Request"} was aborted by caller`);
+          const aborted = createAbortError(`${policy.label || "Request"} was aborted by caller`);
+          recordAttempt({ error: aborted.message });
+          throw aborted;
         }
 
-        throw new Error(`${policy.label || "Request"} timed out after ${timeoutMs}ms`);
+        const timedOut = new Error(`${policy.label || "Request"} timed out after ${timeoutMs}ms`);
+        recordAttempt({ error: timedOut.message });
+        throw timedOut;
       }
 
+      recordAttempt({
+        error: error instanceof Error ? error.message : String(error),
+        errorName: retryableTransportErrorName(error),
+      });
       throw error;
     } finally {
       clearTimeout(timeout);

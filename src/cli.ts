@@ -35,6 +35,7 @@ import {
 } from "./dispatch/translate.js";
 import { runBatch } from "./batch/runner.js";
 import { getKeyReference } from "./logging/usage.js";
+import { flushCaptures } from "./testing/capture.js";
 import { HistoryStore } from "./history/store.js";
 import { searchHistory } from "./history/search.js";
 import { newExecutionId, type ExecutionRecord } from "./history/types.js";
@@ -1425,6 +1426,7 @@ async function runToolCall(options: ExtendedCLIOptions): Promise<void> {
   console.log(formatOutput(result, options));
 
   if (!result.ok) {
+    await flushCaptures();
     process.exit(1);
   }
 }
@@ -1928,6 +1930,7 @@ async function main(): Promise<void> {
     // operators and scripts get a machine-readable category on stderr.
     const { category, message } = classifyError(error);
     console.error(`Error (${category}): ${message}`);
+    await flushCaptures();
     process.exit(1);
   }
 }

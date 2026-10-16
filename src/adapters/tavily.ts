@@ -126,7 +126,7 @@ export class TavilyAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Tavily search" }
+      { label: "Tavily search", secrets: apiKey ? [apiKey] : [] }
     );
 
     // Normalize Tavily results to the shared schema. Content-backed retrieval
@@ -188,7 +188,7 @@ export class TavilyAdapter implements SearchAdapter {
                 : "markdown",
         }),
       },
-      { label: "Tavily extract" }
+      { label: "Tavily extract", secrets: apiKey ? [apiKey] : [] }
     );
 
     const result = response.results?.[0];
@@ -243,7 +243,7 @@ export class TavilyAdapter implements SearchAdapter {
             : {}),
         }),
       },
-      { label: "Tavily crawl", timeoutMs: 120_000 }
+      { label: "Tavily crawl", timeoutMs: 120_000, secrets: apiKey ? [apiKey] : [] }
     );
 
     return (response.results || []).map((result) => ({

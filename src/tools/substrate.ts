@@ -495,6 +495,7 @@ async function dispatchToolCall(
     const requestPolicy: RequestPolicy = {
       label: `${provider}.${tool}`,
       ...(requestTimeoutMs ? { timeoutMs: requestTimeoutMs } : {}),
+      secrets: apiKey ? [apiKey] : [],
     };
     let rawResponse: any;
     if (useTextParser) {
