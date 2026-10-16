@@ -115,7 +115,7 @@ test("firecrawl crawl: transient 500 on a poll is retried through to completion"
   }
 });
 
-test("firecrawl crawl: timeout error includes the jobId (F-B13)", async () => {
+test("firecrawl crawl: returns a pending result with the jobId at the poll cap (F-B13)", async () => {
   let pollCount = 0;
   const restore = installFetchMock({
     "POST https://api.firecrawl.dev/v2/crawl": async () =>
@@ -128,11 +128,11 @@ test("firecrawl crawl: timeout error includes the jobId (F-B13)", async () => {
   try {
     await withFastTimers(async () => {
       const adapter = new FirecrawlAdapter();
-      await assert.rejects(
-        adapter.crawl("https://x.example", "k", { limit: 1 }),
-        /Firecrawl crawl timed out for job job-lc4/
-      );
-      assert.equal(pollCount, 30, "polls until the attempt cap, then times out");
+      const results = await adapter.crawl("https://x.example", "k", { limit: 1 });
+      assert.equal(pollCount, 30, "polls until the attempt cap, then preserves the pending job");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].status, "pending");
+      assert.equal(results[0].jobId, "job-lc4");
     });
   } finally {
     restore();

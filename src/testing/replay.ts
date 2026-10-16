@@ -83,16 +83,52 @@ export function fixtureResponse(fixture: ProviderEnvelopeFixture): Response {
 export function fixtureHandlers(
   fixtures: ProviderEnvelopeFixture[]
 ): Record<string, () => Promise<Response>> {
+  return createFixtureSequence(fixtures).handlers;
+}
+
+function createFixtureSequence(fixtures: ProviderEnvelopeFixture[]): {
+  handlers: Record<string, () => Promise<Response>>;
+  remaining: () => number;
+} {
   const queue = [...fixtures];
   return {
-    "*": async () => {
-      const fixture = queue.shift();
-      if (!fixture) {
-        throw new Error("replayAdapterTest: fixture queue exhausted — more HTTP calls than fixtures");
-      }
-      return fixtureResponse(fixture);
+    handlers: {
+      "*": async () => {
+        const fixture = queue.shift();
+        if (!fixture) {
+          throw new Error("replayAdapterTest: fixture queue exhausted — more HTTP calls than fixtures");
+        }
+        return fixtureResponse(fixture);
+      },
     },
+    remaining: () => queue.length,
   };
+}
+
+/**
+ * Replay an ordered sequence of captured exchanges through one adapter
+ * invocation (for example, a crawl start followed by its poll request).
+ * Every fixture must be consumed by exactly one fetch during that invocation.
+ */
+export async function replayAdapterInvocation<T>(
+  adapterMethod: () => Promise<T>,
+  fixtures: ProviderEnvelopeFixture[],
+  installMock: (handlers: Record<string, () => Promise<Response>>) => () => void
+): Promise<T> {
+  const sequence = createFixtureSequence(fixtures);
+  const restore = installMock(sequence.handlers);
+  try {
+    const result = await adapterMethod();
+    const consumed = fixtures.length - sequence.remaining();
+    if (sequence.remaining() > 0) {
+      throw new Error(
+        `replayAdapterInvocation: expected ${fixtures.length} HTTP exchanges, consumed ${consumed}`
+      );
+    }
+    return result;
+  } finally {
+    restore();
+  }
 }
 
 /**
