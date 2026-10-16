@@ -1484,6 +1484,8 @@ export function compareToolTarget(target, nativeResult, coldResult) {
   const notes = [];
   const detailLoss = [];
   const resultsVary = toolResultsVary(nativeResult.items, coldResult.items);
+  const configuredKeyEnv = KEY_ENV_BY_PROVIDER[target.provider];
+  const expectedSafeKeyRef = configuredKeyEnv ? `env:${configuredKeyEnv}` : null;
 
   checks.push(check(nativeResult.result_count > 0, "native returned non-empty results"));
   checks.push(check(coldResult.ok, "ColdSearch tool call succeeded"));
@@ -1498,7 +1500,7 @@ export function compareToolTarget(target, nativeResult, coldResult) {
   checks.push(check(
     coldResult.meta &&
       Number.isFinite(coldResult.meta.duration_ms) &&
-      (coldResult.meta.safe_key_ref === null || typeof coldResult.meta.safe_key_ref === "string") &&
+      coldResult.meta.safe_key_ref === expectedSafeKeyRef &&
       Array.isArray(coldResult.meta.warnings),
     "ColdSearch tool result includes its metadata envelope"
   ));
