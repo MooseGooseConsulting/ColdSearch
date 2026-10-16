@@ -16,7 +16,12 @@ executionMode — adding those fields is part of this proposal, not a current
 baseline (Codex on #87). Direct tool calls (substrate) build identity from
 tool ID, sanitized parameters, and endpoint material with no pool/strategy;
 a tool-specific identity variant (provider/tool, parameter digest, endpoint
-material) is required alongside the capability variant (Codex on #87). For
+material) is required alongside the capability variant (Codex on #87).
+Substrate's tool-path material excludes fixed hosts (options/env only, `{}`
+by default) while dispatch URLs are hardcoded — so the full-map rule below
+applies to `toolIdentity.endpointMaterial` too: for fixed-host providers it
+MUST be the effective dispatch host / `BUILTIN_ENDPOINTS[provider]` entries
+for that tool (Codex on #87). For
 fixed-host providers, endpoint-key material is the full
 `BUILTIN_ENDPOINTS[provider]` map, including entries unrelated to the
 current capability; SearXNG instead uses its selected configured base URL
@@ -38,15 +43,17 @@ or environment fallback. Two gaps remain:
   entries}}, providerOptionsDigest, providerEnvironmentDigest,
   fullKeyDigest}` to the cache entry envelope, plus a parallel
   `toolIdentity: {provider, tool, paramDigest, endpointMaterial}` variant
-  for direct tool calls.   `fullKeyDigest` is a one-way hash of the complete
-  normalized object passed to `cacheKey()` (not just the
-  `capabilityCacheIdentity()` components). It supports identity comparison
-  only: a digest match proves same-key, a mismatch proves different-key, but
-  neither explains which normalized field differs. Field-level explanations
-  require persisting the sanitized per-call dimensions (limit, limitSet,
-  rerankStrategy, filter identity, format, headers, country) alongside the
-  digest — `cache inspect` renders those dimensions, and falls back to
-  identity comparison when only the digest is present (CodeRabbit on #87).
+  for direct tool calls.   `fullKeyDigest = sha256(capability + '\n' + queryOrUrl + '\n' +
+  stableStringify(normalizedOptions))` — the exact 3-tuple `cacheKey()`
+  hashes (`src/cache/key.ts`), not the options object alone (Codex on #87:
+  same options with different queries/URLs must not collide). It supports
+  identity comparison only: a digest match proves same-key, a mismatch
+  proves different-key, but neither explains which normalized field differs.
+  Field-level explanations require persisting the sanitized per-call
+  dimensions (limit, limitSet, rerankStrategy, filter identity, format,
+  headers, country) alongside the digest — `cache inspect` renders those
+  dimensions, and falls back to identity comparison when only the digest is
+  present (CodeRabbit on #87).
   For each pooled provider, `endpoints` must represent the
   exact map returned by `endpointKeyMaterial(config, provider)`, because that
   map is what `capabilityCacheIdentity()` currently adds to the cache key.

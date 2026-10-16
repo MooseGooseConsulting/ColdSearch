@@ -4,10 +4,12 @@
 
 ## Problem
 
-The 9-intent taxonomy (PR-D) classifies what each provider tool *can* back,
-but nothing measures task outcomes per intent. `semanticFit` is a static
-declaration. The first report can provide coverage diagnostics; those signals
-alone cannot establish whether one provider gave better results.
+`CapabilityCategory` (6: search/extract/crawl/map/research/answer) plus each
+tool's `semanticFit`/`CommonViewMapping` declares what each provider tool
+*can* back; no nine-intent taxonomy or pre-call intent classifier exists
+in-tree (Codex on #87). Nothing measures task outcomes per category. The
+first report can provide coverage diagnostics; those signals alone cannot
+establish whether one provider gave better results.
 
 ## Proposal
 
@@ -33,7 +35,10 @@ alone cannot establish whether one provider gave better results.
 
 ## Done when
 
-- [ ] Coverage diagnostics defined per intent and recorded.
+- [ ] Prerequisite: define the intent taxonomy (or scope diagnostics to the
+      existing 6 `CapabilityCategory` values) — per-intent diagnostics are
+      blocked until intents exist as a classifier, not just a draft concept.
+- [ ] Coverage diagnostics defined per intent/category and recorded.
 - [ ] Any effectiveness report uses a comparable task outcome judgment;
       coverage metrics are labeled separately.
 - [ ] Docs explain what the report can and cannot support before changing
