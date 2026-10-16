@@ -17,7 +17,10 @@ import {
 } from "../dispatch/intents.js";
 import { UnsupportedCommonOptionsError } from "../dispatch/translate.js";
 import { HistoryStore } from "../history/store.js";
-import { redactForPersistence, redactSensitive } from "../history/redact.js";
+import {
+  redactForPersistence,
+  redactSensitiveForPersistence,
+} from "../history/redact.js";
 import {
   newExecutionId,
   type ExecutionRecord,
@@ -384,7 +387,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
       ...attempt,
       // Provider errors can echo credentials (adapters embed provider-supplied
       // error bodies); scrub them like the errors map before persistence.
-      error: attempt.error === undefined ? undefined : redactSensitive(attempt.error, secrets),
+      error:
+        attempt.error === undefined
+          ? undefined
+          : redactSensitiveForPersistence(attempt.error, secrets),
     }));
   }
 
@@ -425,52 +431,23 @@ export class LocalExecutionBackend implements ExecutionBackend {
       if (entry && this.isFresh(entry.meta, ttl)) {
         // Exact cache hit: a new execution with zero provider calls, linked
         // to the originating execution when provenance is known.
-        let secretCollection: { secrets: string[]; complete: boolean } = {
-          secrets: [],
-          complete: false,
-        };
-        try {
-          secretCollection = await this.engine.resolveAllSecretsForRedaction();
-        } catch {
-          // Treat unexpected resolver failures like unresolved configured refs.
-        }
-        this.reportSecretsUsed(
-          options,
-          secretCollection.secrets,
-          secretCollection.complete
-        );
-        const canPersistContent = secretCollection.complete;
+        // Avoid resolving unrelated credentials during a local cache replay.
+        // The origin record carries any safe content; this entry remains a
+        // content-free link. Agent free text fails closed because the replay
+        // does not reveal which provider credentials may appear in its data.
+        this.reportSecretsUsed(options, [], false);
         this.recordExecution(
           {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "search",
             ...(options.runId ? { run_id: options.runId } : {}),
-            input: canPersistContent
-              ? redactSensitive(query, secretCollection.secrets)
-              : "[REDACTED]",
-            ...(canPersistContent
-              ? {
-                  options: redactSensitive(
-                    this.requestOptions(options),
-                    secretCollection.secrets
-                  ),
-                }
-              : {}),
+            input: "[REDACTED]",
             routing: this.routingInfo("search", options, [], reranker),
             source: "cache",
             origin_execution_id: entry.meta.origin_execution_id,
             cache: this.cacheProvenance(entry.meta),
             attempts: [],
-            ...(canPersistContent
-              ? {
-                  result:
-                    redactForPersistence(
-                      entry.payload.results,
-                      secretCollection.secrets
-                    ) ?? undefined,
-                }
-              : {}),
             result_count: entry.payload.results.length,
             raw_available: false,
             duration_ms: 0,
@@ -494,8 +471,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
           timestamp: new Date().toISOString(),
           command: "search",
           ...(options.runId ? { run_id: options.runId } : {}),
-          input: redactSensitive(query, secrets),
-          options: redactSensitive(this.requestOptions(options), secrets),
+          input: redactSensitiveForPersistence(query, secrets),
+          options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
           routing: this.routingInfo(
             "search",
             options,
@@ -505,13 +482,13 @@ export class LocalExecutionBackend implements ExecutionBackend {
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
-          partitions: redactSensitive(result.partitions, secrets),
+          partitions: redactSensitiveForPersistence(result.partitions, secrets),
           result: redactForPersistence(result.results, secrets) ?? undefined,
           result_count: result.results.length,
           raw_available: false,
           errors:
             Object.keys(result.errors).length > 0
-              ? redactSensitive(result.errors, secrets)
+              ? redactSensitiveForPersistence(result.errors, secrets)
               : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome: Object.keys(result.errors).length > 0 ? "partial" : "success",
@@ -613,7 +590,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
             timestamp: new Date().toISOString(),
             command: "extract",
             ...(options.runId ? { run_id: options.runId } : {}),
-            input: redactSensitive(url),
+            input: redactSensitiveForPersistence(url),
             options: this.requestOptions(options),
             routing: this.routingInfo("extract", options, []),
             source: "cache",
@@ -644,8 +621,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
           timestamp: new Date().toISOString(),
           command: "extract",
           ...(options.runId ? { run_id: options.runId } : {}),
-          input: redactSensitive(url, secrets),
-          options: redactSensitive(this.requestOptions(options), secrets),
+          input: redactSensitiveForPersistence(url, secrets),
+          options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
           routing: this.routingInfo(
             "extract",
             options,
@@ -658,7 +635,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
           result: redactForPersistence(result.result, secrets) ?? undefined,
           result_count: result.result ? 1 : 0,
           raw_available: false,
-          errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
+          errors:
+            result.errors
+              ? redactSensitiveForPersistence(result.errors, secrets)
+              : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome:
             result.errors && Object.keys(result.errors).length > 0 ? "partial" : "success",
@@ -710,8 +690,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
           timestamp: new Date().toISOString(),
           command: "crawl",
           ...(options.runId ? { run_id: options.runId } : {}),
-          input: redactSensitive(url, secrets),
-          options: redactSensitive(this.requestOptions(options), secrets),
+          input: redactSensitiveForPersistence(url, secrets),
+          options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
           routing: this.routingInfo(
             "crawl",
             options,
@@ -723,9 +703,12 @@ export class LocalExecutionBackend implements ExecutionBackend {
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
           result: redactForPersistence(result.results, secrets) ?? undefined,
           result_count: result.results.length,
-          pending_jobs: redactSensitive(result.pendingJobs, secrets),
+          pending_jobs: redactSensitiveForPersistence(result.pendingJobs, secrets),
           raw_available: false,
-          errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
+          errors:
+            result.errors
+              ? redactSensitiveForPersistence(result.errors, secrets)
+              : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome:
             result.status === "pending"
@@ -778,8 +761,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
       timestamp: new Date().toISOString(),
       command,
       ...(options.runId ? { run_id: options.runId } : {}),
-      input: redactSensitive(input, secrets),
-      options: redactSensitive(this.requestOptions(options), secrets),
+      input: redactSensitiveForPersistence(input, secrets),
+      options: redactSensitiveForPersistence(this.requestOptions(options), secrets),
       routing: this.routingInfo(
         command,
         options,
@@ -790,7 +773,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       source: "live",
       attempts: allFailed ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets) : [],
       raw_available: false,
-      errors: redactSensitive(errors, secrets),
+      errors: redactSensitiveForPersistence(errors, secrets),
       duration_ms: Math.round(performance.now() - start),
       outcome: "failed",
     };

@@ -221,14 +221,6 @@ export class FanoutEngine {
     this.initializeKeyPools();
   }
 
-  /** Resolve configured credentials for redaction without consuming provider keys. */
-  resolveAllSecretsForRedaction(): Promise<{
-    secrets: string[];
-    complete: boolean;
-  }> {
-    return this.keyPool.resolveAllSecretsWithStatus();
-  }
-
   /**
    * Initialize key pools from config.
    */

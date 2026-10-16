@@ -183,8 +183,12 @@ export class KeyPoolManager {
 
     if (ttlMs > 0) {
       this.secretLookups.set(secretName, promise);
-      // Clear in finally so errors don't permanently block subsequent lookups.
-      promise.finally(() => this.secretLookups.delete(secretName));
+      // Clear on either outcome without leaving a rejecting `finally()` chain
+      // unobserved when the Doppler lookup itself fails.
+      void promise.then(
+        () => this.secretLookups.delete(secretName),
+        () => this.secretLookups.delete(secretName)
+      );
     }
 
     return promise;
@@ -234,17 +238,8 @@ export class KeyPoolManager {
    * Doppler) has no value to scrub and is skipped. In-memory only.
    */
   async resolveAllSecrets(): Promise<string[]> {
-    return (await this.resolveAllSecretsWithStatus()).secrets;
-  }
-
-  /** Resolve all configured values and report whether every ref was resolved. */
-  async resolveAllSecretsWithStatus(): Promise<{
-    secrets: string[];
-    complete: boolean;
-  }> {
     const secrets: string[] = [];
     const seen = new Set<string>();
-    let complete = true;
     for (const [provider, pool] of this.pools) {
       for (const ref of this.getEffectiveKeyRefs(provider, pool)) {
         try {
@@ -254,13 +249,11 @@ export class KeyPoolManager {
             secrets.push(value);
           }
         } catch {
-          // Keep resolving the remaining refs; callers persisting free text
-          // can fail closed when this collection is incomplete.
-          complete = false;
+          // No value to scrub from an unresolvable ref; keep going.
         }
       }
     }
-    return { secrets, complete };
+    return secrets;
   }
 
   getProviders(): string[] {

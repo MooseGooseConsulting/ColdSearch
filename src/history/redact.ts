@@ -168,13 +168,47 @@ export function redactSensitive<T>(value: T, secrets: string[] = []): T {
 }
 
 /**
+ * Persistence redaction also drops a whole text field when it contains a
+ * short resolved credential. Replacing short substrings can corrupt ordinary
+ * prose, so withholding the affected field keeps both secrecy and clarity.
+ */
+export function redactSensitiveForPersistence<T>(
+  value: T,
+  secrets: string[] = []
+): T {
+  const scrubbed = redactSensitive(value, secrets);
+  const shortSecrets = secrets.filter(
+    (secret) => secret.length > 0 && secret.length < MIN_SUBSTRING_SECRET_LENGTH
+  );
+  if (shortSecrets.length === 0) return scrubbed;
+
+  const withShortSecretsWithheld = (item: unknown): unknown => {
+    if (typeof item === "string") {
+      return shortSecrets.some((secret) => item.includes(secret)) ? REDACTED : item;
+    }
+    if (Array.isArray(item)) return item.map(withShortSecretsWithheld);
+    if (item && typeof item === "object") {
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>).map(([key, fieldValue]) => [
+          key,
+          withShortSecretsWithheld(fieldValue),
+        ])
+      );
+    }
+    return item;
+  };
+
+  return withShortSecretsWithheld(scrubbed) as T;
+}
+
+/**
  * Redact for persistence, fail-closed: returns the scrubbed value, or null
  * when the value cannot be scrubbed safely (not JSON-serializable). A null
  * result must be recorded as "unavailable", never persisted verbatim.
  */
 export function redactForPersistence(value: unknown, secrets: string[] = []): unknown | null {
   try {
-    const scrubbed = redactSensitive(value, secrets);
+    const scrubbed = redactSensitiveForPersistence(value, secrets);
     JSON.stringify(scrubbed);
     return scrubbed;
   } catch {
