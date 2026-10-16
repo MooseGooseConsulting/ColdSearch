@@ -156,8 +156,8 @@ test("domain filters are passed only to providers that honor them", async () => 
     assert.deepEqual(calls.length, 1);
     assert.deepEqual(tavilyBody.include_domains, ["allowed.example"]);
     assert.deepEqual(tavilyBody.exclude_domains, ["blocked.example"]);
-    assert.match(out.errors.brave, /cannot honor the requested filters/);
-    assert.equal(out.attempts.find((attempt) => attempt.provider === "brave").success, false);
+    assert.match(out.skippedProviders.brave, /cannot honor the requested filters/);
+    assert.equal(out.attempts.some((attempt) => attempt.provider === "brave"), false);
   } finally {
     restore();
   }
