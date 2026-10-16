@@ -100,6 +100,11 @@ export interface FanoutOptions {
    * merging.
    */
   commonOptions?: CommonOptions;
+  /**
+   * Providers excluded by intent routing with reasons. Merged into
+   * skippedProviders by getProvidersForCapability (Codex on #85).
+   */
+  intentExcludedProviders?: Record<string, string>;
 }
 
 /**
@@ -268,7 +273,11 @@ export class FanoutEngine {
     }
     return {
       ...plan,
-      skippedProviders: { ...filtered.skippedProviders, ...plan.skippedProviders },
+      skippedProviders: {
+        ...filtered.skippedProviders,
+        ...(options.intentExcludedProviders ?? {}),
+        ...plan.skippedProviders,
+      },
     };
   }
 

@@ -131,6 +131,9 @@ export function translateCommonOptions(
 
   for (const [key, value] of Object.entries(commonOptions)) {
     if (value === undefined || value === null) continue;
+    // An explicit empty list means "no filter specified", not "erase the
+    // configured filter": skip so config values survive the merge (Codex #85).
+    if (Array.isArray(value) && value.length === 0) continue;
     if (![
       "limit",
       "includeDomains",

@@ -4,9 +4,13 @@ import { loadConfig } from "../config.js";
 import { LocalExecutionBackend } from "../execution/backend.js";
 import { KeyPoolManager } from "../engine/keypool.js";
 import { AllProvidersFailedError, type FanoutOptions } from "../engine/fanout.js";
+import { IntentRejectionError } from "../dispatch/intents.js";
+import { NoEligibleProviderFeatureError } from "../providers.js";
+import { UnsupportedCommonOptionsError } from "../dispatch/translate.js";
 import { redactSensitive } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
 import type { CapabilityName, Config, CrawlResult, PendingCrawlJob } from "../types.js";
+import type { BatchError } from "./types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
 import {
   buildBatchPlan,
@@ -104,6 +108,33 @@ export async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
+/**
+ * Preserve structured routing failures in batch output instead of flattening
+ * to message-only (Codex on #85): intent rejections keep reason/intent, and
+ * skip-carrying errors keep skippedProviders.
+ */
+function batchErrorFor(error: unknown): BatchError {
+  if (error instanceof IntentRejectionError) {
+    return {
+      code: error.rejection.reason,
+      message: error.message,
+      ...(error.rejection.intent ? { intent: error.rejection.intent } : {}),
+    };
+  }
+  if (
+    error instanceof UnsupportedCommonOptionsError ||
+    error instanceof NoEligibleProviderFeatureError
+  ) {
+    return {
+      message: error.message,
+      ...(Object.keys(error.skippedProviders).length > 0
+        ? { skippedProviders: error.skippedProviders }
+        : {}),
+    };
+  }
+  return { message: error instanceof Error ? error.message : String(error) };
+}
+
 function interruptedCrawlResumeState(
   record: BatchInputRecord,
   resumePendingJobs: PendingCrawlJob[] | undefined,
@@ -174,6 +205,9 @@ export class LocalBatchExecutor implements BatchExecutor {
             results: result.results,
             providers_used: result.providersUsed,
             ...(Object.keys(result.errors).length > 0 ? { errors: result.errors } : {}),
+            ...(result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+              ? { skippedProviders: result.skippedProviders }
+              : {}),
           },
           error: null,
         };
@@ -189,6 +223,9 @@ export class LocalBatchExecutor implements BatchExecutor {
             provider: result.provider,
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
+              : {}),
+            ...(result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+              ? { skippedProviders: result.skippedProviders }
               : {}),
           },
           error: null,
@@ -214,6 +251,9 @@ export class LocalBatchExecutor implements BatchExecutor {
             ...(result.fallbackProvider ? { fallbackProvider: result.fallbackProvider } : {}),
             ...(result.errors && Object.keys(result.errors).length > 0
               ? { errors: result.errors }
+              : {}),
+            ...(result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+              ? { skippedProviders: result.skippedProviders }
               : {}),
           },
           error: null,
@@ -254,18 +294,22 @@ export class LocalBatchExecutor implements BatchExecutor {
         ...base,
         status: "error",
         result: null,
-        error: { message: error instanceof Error ? error.message : String(error) },
+        error: batchErrorFor(error),
         ...(resumeState ? { resumeState } : {}),
       };
     }
   }
 
   private fanoutOptions(record: BatchInputRecord): FanoutOptions {
+    // Promote commonOptions.limit so an explicit common limit is not
+    // silently capped at DEFAULT_BATCH_LIMIT (Devin on #85).
+    const commonLimit = record.commonOptions?.limit;
+    const limit = record.limit ?? commonLimit ?? DEFAULT_BATCH_LIMIT;
     return {
-      limit: record.limit ?? DEFAULT_BATCH_LIMIT,
+      limit,
       format: record.format,
       depth: record.depth,
-      limitSet: record.limit !== undefined,
+      limitSet: record.limit !== undefined || commonLimit !== undefined,
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,

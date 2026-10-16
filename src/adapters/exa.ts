@@ -417,17 +417,27 @@ export class ExaAdapter implements SearchAdapter {
       { label: "Exa findSimilar" }
     );
 
-    return (data.results || []).map((result, index) => {
+    // Mirror search: content-backed similarity must not silently succeed
+    // with link-only hits when page retrieval failed (Codex on #85).
+    const requirePageContent = options?.commonOptions?.includeContent === true;
+    const rawResults = data.results || [];
+    const normalized = rawResults.flatMap((result, index) => {
+      const pageText = result.text?.trim();
+      if (requirePageContent && !pageText) return [];
       const snippet = useHighlights && result.highlights?.length
         ? result.highlights.join(" ... ")
-        : (result.text || "");
-      return {
+        : (requirePageContent ? pageText! : result.text || "");
+      return [{
         title: result.title || "",
         url: result.url || "",
         snippet,
         score: result.score ?? Math.max(0, 1 - index * 0.1),
         source: this.name,
-      };
+      }];
     });
+    if (requirePageContent && rawResults.length > 0 && normalized.length === 0) {
+      throw new Error("Exa returned no page content for content-backed similarity");
+    }
+    return normalized;
   }
 }

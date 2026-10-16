@@ -2,6 +2,7 @@ import {
   listToolProfiles,
   toolSatisfiesRequirements,
 } from "../registry/tool-profiles.js";
+import { validateSelectedProviders } from "../providers.js";
 import type {
   CapabilityCategory,
   CapabilityName,
@@ -147,6 +148,11 @@ export interface IntentResolution {
   configuredProviders: string[];
   /** Eligible providers intersected with the configured pool (actual routing). */
   routedProviders: string[];
+  /**
+   * Configured providers excluded from routing with machine-readable reasons.
+   * Keyed by provider name; threads into FanoutOptions.skippedProviders.
+   */
+  excludedProviders: Record<string, string>;
 }
 
 const FIT_RANK: Record<SemanticFit, number> = {
@@ -217,6 +223,35 @@ export function resolveIntent(
   documentedOnly.sort((a, b) => a.id.localeCompare(b.id));
 
   const eligibleProviders = new Set(eligible.map((entry) => entry.provider));
+  const routedProviders = configuredProviders.filter((provider) =>
+    eligibleProviders.has(provider)
+  );
+  // Record why each configured provider was excluded (Codex on #85).
+  const eligibleToolsByProvider = new Map<string, IntentEligibility[]>();
+  for (const entry of eligible) {
+    const list = eligibleToolsByProvider.get(entry.provider) ?? [];
+    list.push(entry);
+    eligibleToolsByProvider.set(entry.provider, list);
+  }
+  const documentedProviders = new Set(documentedOnly.map((entry) => entry.provider));
+  const excludedProviders: Record<string, string> = {};
+  for (const provider of configuredProviders) {
+    if (eligibleProviders.has(provider)) continue;
+    if (def.nativeOnly && provider !== def.nativeOnly.provider) {
+      excludedProviders[provider] =
+        `native-only intent '${intent}' requires '${def.nativeOnly.provider}'`;
+    } else if (
+      def.requireFeatures?.length &&
+      !(eligibleToolsByProvider.get(provider) ?? []).length &&
+      documentedProviders.has(provider)
+    ) {
+      excludedProviders[provider] =
+        `missing required features '${def.requireFeatures.join(", ")}' for intent '${intent}'`;
+    } else if (!eligibleProviders.has(provider)) {
+      excludedProviders[provider] =
+        `no wired '${def.category}' tool for intent '${intent}'`;
+    }
+  }
   return {
     intent,
     category: def.category,
@@ -225,7 +260,8 @@ export function resolveIntent(
     eligible,
     documentedOnly,
     configuredProviders,
-    routedProviders: configuredProviders.filter((provider) => eligibleProviders.has(provider)),
+    routedProviders,
+    excludedProviders,
   };
 }
 
@@ -251,6 +287,11 @@ export interface IntentDispatchOptions {
   providers?: string[];
   requireFeatures?: string[];
   commonOptions?: CommonOptions;
+  /**
+   * Providers excluded by intent routing with reasons. Merged into
+   * skippedProviders by getProvidersForCapability (Codex on #85).
+   */
+  intentExcludedProviders?: Record<string, string>;
 }
 
 /**
@@ -353,6 +394,9 @@ export function resolveOptionsForIntent<T extends IntentDispatchOptions>(
   validateIntentCategory(capability, options.intent);
 
   const providerOverride = options.providers?.length ? options.providers : undefined;
+  // Validate direct-caller overrides same as the CLI does, so typos fail as
+  // "not configured" instead of a misleading not-in-pool rejection.
+  if (providerOverride) validateSelectedProviders(config, capability, providerOverride);
   const resolution = rejectIntent(resolveIntent(options.intent, config, providerOverride));
   const requireFeatures = [
     ...new Set([...(options.requireFeatures ?? []), ...(resolution.requireFeatures ?? [])]),
@@ -366,6 +410,11 @@ export function resolveOptionsForIntent<T extends IntentDispatchOptions>(
     ...(requireFeatures.length > 0 ? { requireFeatures } : {}),
     ...(options.intent === "content-backed-retrieval"
       ? { commonOptions: { ...options.commonOptions, includeContent: true } }
+      : {}),
+    ...(Object.keys(resolution.excludedProviders).length > 0
+      ? {
+          intentExcludedProviders: resolution.excludedProviders,
+        }
       : {}),
   };
 }

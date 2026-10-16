@@ -50,6 +50,10 @@ export interface BatchError {
   /** Stable machine code; `DUPLICATE_ID_CONFLICT` marks non-retriable conflicts. */
   code?: string;
   message: string;
+  /** Intent that failed routing, when the error is an intent rejection. */
+  intent?: string;
+  /** Providers excluded with reasons, when the error carries skip detail. */
+  skippedProviders?: Record<string, string>;
 }
 
 /** Crawl state retained when an error interrupts a resumed batch item. */
