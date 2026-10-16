@@ -45,6 +45,7 @@ export interface LLMResponse {
  */
 export interface LLMClient {
   complete(messages: LLMMessage[], options?: LLMOptions): Promise<LLMResponse>;
+  setSecretsUsedCallback?(callback: (secrets: string[]) => void): void;
 }
 
 /**
@@ -139,9 +140,17 @@ export class OpenAIClient implements LLMClient {
   private baseUrl: string;
   private keyPool?: KeyPoolManager;
   private settings: LLMEndpointConfig;
+  private onSecretsUsed?: (secrets: string[]) => void;
 
-  constructor(apiKey: string, model = "gpt-4o", baseUrl = "https://api.openai.com/v1", settings: LLMEndpointConfig = {}) {
+  constructor(
+    apiKey: string,
+    model = "gpt-4o",
+    baseUrl = "https://api.openai.com/v1",
+    settings: LLMEndpointConfig = {},
+    onSecretsUsed?: (secrets: string[]) => void
+  ) {
     this.settings = settings;
+    this.onSecretsUsed = onSecretsUsed;
     if (settings.keyRef !== undefined) {
       if (!parseAgentKeyRef(settings.keyRef)) {
         throw new Error("Agent LLM key_ref must be an env: or doppler: secret name");
@@ -155,6 +164,10 @@ export class OpenAIClient implements LLMClient {
     this.apiKey = apiKey;
     this.defaultModel = model;
     this.baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  setSecretsUsedCallback(callback: (secrets: string[]) => void): void {
+    this.onSecretsUsed = callback;
   }
 
   private chatCompletionsUrl(): string {
@@ -173,6 +186,7 @@ export class OpenAIClient implements LLMClient {
     const ref = this.settings.keyRef;
     const injectedKey = ref?.startsWith("doppler:") ? process.env[ref.slice(8)] : undefined;
     const apiKey = this.keyPool ? (injectedKey || await this.keyPool.getNextKey("agent-llm")) : this.apiKey;
+    if (apiKey) this.onSecretsUsed?.([apiKey]);
     const effort = options.reasoningEffort ?? this.settings.reasoningEffort;
     if (effort !== undefined && !isValidReasoningEffort(this.settings.provider, effort)) {
       throw new Error("Invalid agent LLM reasoning effort");
@@ -239,14 +253,21 @@ export function createLLMClient(
   provider: LLMProvider = "isoquant",
   model?: string,
   baseUrl?: string,
-  settings: LLMEndpointConfig = {}
+  settings: LLMEndpointConfig = {},
+  onSecretsUsed?: (secrets: string[]) => void
 ): LLMClient {
   if (provider === "openai") {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey && !settings.keyRef) {
       throw new Error("OPENAI_API_KEY environment variable not set");
     }
-    return new OpenAIClient(apiKey || "", model, resolveOpenAiBaseUrl(baseUrl), { ...settings, provider });
+    return new OpenAIClient(
+      apiKey || "",
+      model,
+      resolveOpenAiBaseUrl(baseUrl),
+      { ...settings, provider },
+      onSecretsUsed
+    );
   }
 
   const alias = PROVIDER_ALIASES[provider as Exclude<LLMProvider, "openai">];
@@ -265,6 +286,7 @@ export function createLLMClient(
     apiKey || "",
     model || alias.defaultModel,
     baseUrl || alias.baseUrl,
-    { ...settings, provider, keyRef, reasoningEffort: settings.reasoningEffort ?? (provider === "isoquant" ? "medium" : undefined) }
+    { ...settings, provider, keyRef, reasoningEffort: settings.reasoningEffort ?? (provider === "isoquant" ? "medium" : undefined) },
+    onSecretsUsed
   );
 }

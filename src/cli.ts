@@ -457,12 +457,12 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         // flag-looking token means the value was omitted (like --config).
         if (
           runId === undefined ||
-          runId.startsWith("--") ||
+          runId.startsWith("-") ||
           runId.trim() === "" ||
           /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(runId)
         ) {
           throw new Error(
-            "Invalid --run-id. Provide a non-empty single-line ID without control characters."
+            "Invalid --run-id. Provide a non-empty single-line ID that does not look like an option or contain control characters."
           );
         }
         // Trim so the canonical ID never carries caller whitespace, which

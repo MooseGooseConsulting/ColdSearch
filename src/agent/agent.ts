@@ -203,7 +203,8 @@ export class SearchAgent {
         options.llmProvider ?? "isoquant",
         options.model,
         options.llmBaseUrl,
-        options.llmSettings
+        options.llmSettings,
+        options.onSecretsUsed
       );
     this.backend =
       options.executionBackend ?? new LocalExecutionBackend(options.configPath);
@@ -232,6 +233,7 @@ export class SearchAgent {
     // correlation; a padded value would mismatch across logs and output.
     const runId = explicitRunId?.trim() ?? createRunId();
     const onSecretsUsed = options.onSecretsUsed ?? this.onSecretsUsed;
+    if (onSecretsUsed) this.llm.setSecretsUsedCallback?.(onSecretsUsed);
 
     const context = new ResearchContext(goal, maxSources, runId);
     context.currentQuery = goal;
