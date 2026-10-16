@@ -550,13 +550,9 @@ export class FanoutEngine {
           selectedProviders[0] ??
           "unknown",
         status: pending ? "pending" : "completed",
-        ...(pending
-          ? {
-              fallbackCompleted: true,
-              ...(options.resumeFallbackProvider
-                ? { fallbackProvider: options.resumeFallbackProvider }
-                : {}),
-            }
+        ...(pending ? { fallbackCompleted: true } : {}),
+        ...(options.resumeFallbackProvider
+          ? { fallbackProvider: options.resumeFallbackProvider }
           : {}),
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         attempts,
