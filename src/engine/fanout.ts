@@ -106,6 +106,8 @@ export interface FanoutOptions {
   runId?: string;
   /** In-memory callback for agent history redaction; never persisted. */
   onSecretsUsed?: (secrets: string[]) => void;
+  /** Marks agent free-text history unavailable when secret collection is incomplete. */
+  onSecretCollectionIncomplete?: () => void;
 }
 
 /**
@@ -217,6 +219,14 @@ export class FanoutEngine {
     this.usageLogger = new UsageLogger({ path: config.logging?.usage?.path });
     this.keyPool = createKeyPoolManager();
     this.initializeKeyPools();
+  }
+
+  /** Resolve configured credentials for redaction without consuming provider keys. */
+  resolveAllSecretsForRedaction(): Promise<{
+    secrets: string[];
+    complete: boolean;
+  }> {
+    return this.keyPool.resolveAllSecretsWithStatus();
   }
 
   /**

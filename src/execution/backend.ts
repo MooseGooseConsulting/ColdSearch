@@ -319,12 +319,27 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   /** Keep resolved credentials available to in-memory agent history redaction. */
-  private reportSecretsUsed(options: FanoutOptions, secrets: string[]): void {
-    if (!options.onSecretsUsed || secrets.length === 0) return;
-    try {
-      options.onSecretsUsed(secrets);
-    } catch {
-      // A redaction observer must never change provider execution behavior.
+  private reportSecretsUsed(
+    options: FanoutOptions,
+    secrets: string[],
+    collectionComplete = true
+  ): void {
+    let complete = collectionComplete;
+    if (options.onSecretsUsed && secrets.length > 0) {
+      try {
+        options.onSecretsUsed(secrets);
+      } catch {
+        // A redaction observer must never change provider execution behavior,
+        // but persisted agent text must fail closed when it missed a secret.
+        complete = false;
+      }
+    }
+    if (!complete) {
+      try {
+        options.onSecretCollectionIncomplete?.();
+      } catch {
+        // A redaction observer must never change provider execution behavior.
+      }
     }
   }
 
@@ -410,20 +425,52 @@ export class LocalExecutionBackend implements ExecutionBackend {
       if (entry && this.isFresh(entry.meta, ttl)) {
         // Exact cache hit: a new execution with zero provider calls, linked
         // to the originating execution when provenance is known.
+        let secretCollection: { secrets: string[]; complete: boolean } = {
+          secrets: [],
+          complete: false,
+        };
+        try {
+          secretCollection = await this.engine.resolveAllSecretsForRedaction();
+        } catch {
+          // Treat unexpected resolver failures like unresolved configured refs.
+        }
+        this.reportSecretsUsed(
+          options,
+          secretCollection.secrets,
+          secretCollection.complete
+        );
+        const canPersistContent = secretCollection.complete;
         this.recordExecution(
           {
             id: newExecutionId(),
             timestamp: new Date().toISOString(),
             command: "search",
             ...(options.runId ? { run_id: options.runId } : {}),
-            input: redactSensitive(query),
-            options: this.requestOptions(options),
+            input: canPersistContent
+              ? redactSensitive(query, secretCollection.secrets)
+              : "[REDACTED]",
+            ...(canPersistContent
+              ? {
+                  options: redactSensitive(
+                    this.requestOptions(options),
+                    secretCollection.secrets
+                  ),
+                }
+              : {}),
             routing: this.routingInfo("search", options, [], reranker),
             source: "cache",
             origin_execution_id: entry.meta.origin_execution_id,
             cache: this.cacheProvenance(entry.meta),
             attempts: [],
-            result: redactForPersistence(entry.payload.results) ?? undefined,
+            ...(canPersistContent
+              ? {
+                  result:
+                    redactForPersistence(
+                      entry.payload.results,
+                      secretCollection.secrets
+                    ) ?? undefined,
+                }
+              : {}),
             result_count: entry.payload.results.length,
             raw_available: false,
             duration_ms: 0,

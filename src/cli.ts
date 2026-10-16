@@ -1009,6 +1009,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
       secretCollectionFailed = true;
     }
   };
+  const onSecretCollectionIncomplete = () => {
+    secretCollectionFailed = true;
+  };
   const redactAgentText = (value: string): string => {
     if (secretCollectionFailed) return "[REDACTED]";
     const secrets = [...resolvedSecrets];
@@ -1084,6 +1087,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     noCache: options.noCache,
     runId,
     onSecretsUsed,
+    onSecretCollectionIncomplete,
   });
 
   let result: Awaited<ReturnType<SearchAgent["research"]>>;

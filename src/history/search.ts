@@ -63,7 +63,11 @@ function collectResults(record: ExecutionRecord): ScannedResult[] {
     });
   };
 
-  if (Array.isArray(record.result)) {
+  if (record.command === "agent" && typeof record.result === "string") {
+    // Agent answers are persisted as redacted text, so index them as content
+    // without treating step payloads or arbitrary string results as documents.
+    out.push({ text: record.result });
+  } else if (Array.isArray(record.result)) {
     for (const item of record.result) push(item);
   } else {
     push(record.result);
