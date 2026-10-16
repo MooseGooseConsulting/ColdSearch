@@ -376,6 +376,16 @@ function normalizedUrl(value) {
   }
 }
 
+function isUsableHttpUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function normalizedTitle(value) {
   return String(value || "")
     .toLowerCase()
@@ -1580,11 +1590,11 @@ function check(pass, label) {
 function hasMinimumToolIdentity(target, item) {
   switch (targetId(target)) {
     case "brave.webSearch":
-      return Boolean(normalizedUrl(item?.url) || normalizedTitle(item?.title));
+      return Boolean(isUsableHttpUrl(item?.url) || normalizedTitle(item?.title));
     case "exa.contents":
     case "firecrawl.map":
     case "tavily.map":
-      return Boolean(normalizedUrl(item?.url));
+      return isUsableHttpUrl(item?.url);
     default:
       return true;
   }
