@@ -97,27 +97,21 @@ test("tavily errors on invalid JSON", async () => {
   }
 });
 
-test("tavily crawl validates the supported depth range", async () => {
-  let fetchCalled = false;
+test("tavily crawl clamps depth to the provider range", async () => {
+  const depths = [];
   const restore = installFetchMock({
     "POST https://api.tavily.com/crawl": async ({ init }) => {
-      fetchCalled = true;
-      assert.equal(JSON.parse(init.body).max_depth, 5);
+      depths.push(JSON.parse(init.body).max_depth);
       return jsonResponse({ results: [] });
     },
   });
   try {
     const adapter = new TavilyAdapter();
     await adapter.crawl("https://example.com", "k", { depth: 5 });
-    await assert.rejects(
-      () => adapter.crawl("https://example.com", "k", { depth: 6 }),
-      /integer from 1 to 5/
-    );
-    await assert.rejects(
-      () => adapter.crawl("https://example.com", "k", { depth: 1.5 }),
-      /integer from 1 to 5/
-    );
-    assert.equal(fetchCalled, true, "only valid depths reach the provider");
+    await adapter.crawl("https://example.com", "k", { depth: 6 });
+    await adapter.crawl("https://example.com", "k", { depth: 1.5 });
+    await adapter.crawl("https://example.com", "k", { depth: 0 });
+    assert.deepEqual(depths, [5, 5, 1, 1]);
   } finally {
     restore();
   }

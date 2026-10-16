@@ -200,13 +200,7 @@ export class TavilyAdapter implements SearchAdapter {
     }
 
     const limit = this.sanitizeCrawlLimit(options?.limit);
-    let depth: number | undefined;
-    if (options?.depth !== undefined) {
-      depth = options.depth;
-      if (!Number.isInteger(depth) || depth < 1 || depth > 5) {
-        throw new Error("Tavily crawl depth must be an integer from 1 to 5");
-      }
-    }
+    const depth = options?.depth;
     const normalizedUrl = url.trim();
 
     const response = await fetchJson<TavilyCrawlResponse>(
@@ -223,7 +217,9 @@ export class TavilyAdapter implements SearchAdapter {
           // `max_results` name is silently ignored upstream.
           limit,
           extract_depth: "basic",
-          ...(depth !== undefined ? { max_depth: depth } : {}),
+          ...(depth !== undefined
+            ? { max_depth: this.clampIntegerOption(depth, 1, 5, 1) }
+            : {}),
         }),
       },
       { label: "Tavily crawl", timeoutMs: 120_000 }
