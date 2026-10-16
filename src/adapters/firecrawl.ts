@@ -8,12 +8,16 @@ import type {
   CrawlCallOptions,
 } from "../types.js";
 
-/** The provider explicitly reported that an accepted crawl job has failed. */
+/** The provider explicitly reported that an accepted crawl job is terminal. */
 export class FirecrawlCrawlTerminalError extends Error {
   readonly jobId: string;
 
-  constructor(jobId: string, detail: string) {
-    super(`Firecrawl crawl job '${jobId}' failed: ${detail}`);
+  constructor(jobId: string, detail: string, status: "failed" | "cancelled" = "failed") {
+    super(
+      status === "cancelled"
+        ? `Firecrawl crawl job '${jobId}' was cancelled: ${detail}`
+        : `Firecrawl crawl job '${jobId}' failed: ${detail}`
+    );
     this.name = "FirecrawlCrawlTerminalError";
     this.jobId = jobId;
   }
@@ -215,7 +219,7 @@ export class FirecrawlAdapter implements SearchAdapter {
 
       let statusData: {
         success?: boolean;
-        status?: "scraping" | "completed" | "failed";
+        status?: "scraping" | "completed" | "failed" | "cancelled";
         data?: Array<{
           markdown?: string;
           metadata?: {
@@ -263,8 +267,14 @@ export class FirecrawlAdapter implements SearchAdapter {
         );
       }
 
-      if (statusData.status === "failed") {
-        throw new FirecrawlCrawlTerminalError(jobId, statusData.error || "Provider reported terminal failure");
+      if (statusData.status === "failed" || statusData.status === "cancelled") {
+        const terminalStatus = statusData.status;
+        const detail =
+          statusData.error ||
+          (terminalStatus === "cancelled"
+            ? "Provider reported that the crawl was cancelled"
+            : "Provider reported terminal failure");
+        throw new FirecrawlCrawlTerminalError(jobId, detail, terminalStatus);
       }
 
       if (statusData.success === false || statusData.error) {
