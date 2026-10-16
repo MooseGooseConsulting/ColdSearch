@@ -185,6 +185,7 @@ export class ExaAdapter implements SearchAdapter {
     const searchOptions = options?.commonOptions?.includeContent
       ? { ...opts, highlights: false }
       : opts;
+    const requirePageContent = options?.commonOptions?.includeContent === true;
     const body = this.buildSearchBody(query, searchOptions, options?.limit);
 
     const data = await fetchJson<ExaSearchResponse>(
@@ -200,22 +201,30 @@ export class ExaAdapter implements SearchAdapter {
       { label: "Exa search" }
     );
 
-    // Normalize Exa results to shared schema
-    return (data.results || []).map((result, index) => {
+    // Normalize Exa results to shared schema. Content-backed retrieval must
+    // not silently succeed with link-only hits when page retrieval failed.
+    const rawResults = data.results || [];
+    const normalized = rawResults.flatMap((result, index) => {
+      const pageText = result.text?.trim();
+      if (requirePageContent && !pageText) return [];
       // If highlights mode, join highlights into snippet; otherwise use text
       const snippet = searchOptions.highlights && result.highlights?.length
         ? result.highlights.join(" ... ")
-        : (result.text || "");
+        : (requirePageContent ? pageText! : result.text || "");
 
-      return {
+      return [{
         title: result.title || "",
         url: result.url || "",
         snippet,
         // Exa scores are 0-1, higher is better; clamp fallback to [0, 1]
         score: result.score ?? Math.max(0, 1 - index * 0.1),
         source: this.name,
-      };
+      }];
     });
+    if (requirePageContent && rawResults.length > 0 && normalized.length === 0) {
+      throw new Error("Exa returned no page content for content-backed retrieval");
+    }
+    return normalized;
   }
 
   async extract(
