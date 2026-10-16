@@ -1,4 +1,4 @@
-import type { CapabilityName } from "../types.js";
+import type { CapabilityName, CrawlResult, PendingCrawlJob } from "../types.js";
 
 /**
  * One batch input record (one JSON object per line of the input JSONL).
@@ -42,6 +42,14 @@ export interface BatchError {
   message: string;
 }
 
+/** Crawl state retained when an error interrupts a resumed batch item. */
+export interface BatchResumeState {
+  pendingJobs?: PendingCrawlJob[];
+  completedResults?: CrawlResult[];
+  fallbackCompleted?: boolean;
+  requestedUrlFingerprint?: string;
+}
+
 /**
  * One batch output record (one JSON object per line of the output JSONL).
  *
@@ -60,6 +68,8 @@ export interface BatchOutputRecord {
   result: unknown;
   /** `null` on success; `{ message }` (or conflict details) on error. */
   error: BatchError | null;
+  /** Resume data retained on errors that interrupt an existing crawl. */
+  resumeState?: BatchResumeState;
 }
 
 /**

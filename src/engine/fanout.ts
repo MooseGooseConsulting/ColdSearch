@@ -93,22 +93,26 @@ export class AllProvidersFailedError extends Error {
   readonly attempts: FanoutAttempt[];
   readonly providerErrors: Record<string, string>;
   readonly secretsUsed: string[];
+  readonly terminalResumeJobs: Array<Pick<PendingCrawlJob, "provider" | "jobId">>;
 
   constructor(
     errors: Record<string, string>,
     attempts: FanoutAttempt[],
-    secretsUsed: string[]
+    secretsUsed: string[],
+    terminalResumeJobs: PendingCrawlJob[] = []
   ) {
     super(`All providers failed: ${JSON.stringify(errors)}`);
     this.name = "AllProvidersFailedError";
     this.providerErrors = errors;
     this.attempts = attempts;
     this.secretsUsed = secretsUsed;
+    this.terminalResumeJobs = terminalResumeJobs.map(({ provider, jobId }) => ({ provider, jobId }));
     // In-memory redaction context only: keep resolved credentials off the
     // serialized surface. JSON.stringify on a caught error picks up
     // enumerable own properties, so an enumerable secretsUsed would leak
     // every resolved key to any wrapper/structured logger that serializes it.
     Object.defineProperty(this, "secretsUsed", { enumerable: false });
+    Object.defineProperty(this, "terminalResumeJobs", { enumerable: false });
   }
 }
 
@@ -364,6 +368,7 @@ export class FanoutEngine {
     const requestedUrl = url.trim();
     const resumePendingJobs: PendingCrawlJob[] = [];
     const pendingJobs: PendingCrawlJob[] = [];
+    const terminalResumeJobs: PendingCrawlJob[] = [];
     const resumeProviders = new Set<string>();
 
     // A batch resume is tied to its saved provider job, even if the current
@@ -496,6 +501,8 @@ export class FanoutEngine {
           // A failed poll does not prove that an accepted async job stopped.
           if (resumeHandleIsUsable && !(error instanceof FirecrawlCrawlTerminalError)) {
             pendingJobs.push(resumeJob);
+          } else if (error instanceof FirecrawlCrawlTerminalError) {
+            terminalResumeJobs.push(resumeJob);
           }
           const durationMs = Math.round(performance.now() - start);
           errors[provider] = (error as Error).message;
@@ -691,7 +698,7 @@ export class FanoutEngine {
       };
     }
 
-    throw new AllProvidersFailedError(errors, attempts, secretsUsed);
+    throw new AllProvidersFailedError(errors, attempts, secretsUsed, terminalResumeJobs);
   }
 
   /**

@@ -85,6 +85,57 @@ export async function loadResumeIndex(outputPath: string): Promise<ResumeIndex> 
   return index;
 }
 
+function parseCrawlResumeState(raw: unknown): Pick<
+  ResumeOutcome,
+  "pendingJobs" | "completedResults" | "fallbackCompleted" | "requestedUrlFingerprint"
+> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const resultRecord = raw as Record<string, unknown>;
+  const rawJobs = resultRecord.pendingJobs;
+  const pendingJobs = Array.isArray(rawJobs)
+    ? rawJobs.filter((job): job is PendingCrawlJob => {
+        if (!job || typeof job !== "object" || Array.isArray(job)) return false;
+        const candidate = job as Record<string, unknown>;
+        return (
+          typeof candidate.provider === "string" &&
+          typeof candidate.jobId === "string" &&
+          candidate.jobId.length > 0 &&
+          typeof candidate.url === "string" &&
+          candidate.url.length > 0
+        );
+      })
+    : [];
+  const rawResults = resultRecord.completedResults ?? resultRecord.results;
+  const completedResults = Array.isArray(rawResults)
+    ? rawResults.filter((page): page is CrawlResult => {
+        if (!page || typeof page !== "object" || Array.isArray(page)) return false;
+        const candidate = page as Record<string, unknown>;
+        return (
+          typeof candidate.url === "string" &&
+          typeof candidate.title === "string" &&
+          typeof candidate.content === "string" &&
+          (candidate.status === undefined || candidate.status === "completed")
+        );
+      })
+    : [];
+  const storedFingerprint = resultRecord.requestedUrlFingerprint;
+  const fallbackCompleted = resultRecord.fallbackCompleted === true;
+  const requestedUrlFingerprint =
+    typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
+      ? storedFingerprint
+      : (() => {
+          const pendingUrls = [...new Set(pendingJobs.map((job) => job.url.trim()))];
+          return pendingUrls.length === 1 ? crawlUrlFingerprint(pendingUrls[0]!) : undefined;
+        })();
+
+  return {
+    ...(pendingJobs.length > 0 ? { pendingJobs } : {}),
+    ...(completedResults.length > 0 ? { completedResults } : {}),
+    ...(fallbackCompleted ? { fallbackCompleted: true } : {}),
+    ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
+  };
+}
+
 /**
  * Validate one parsed output line against the batch output contract and reduce
  * it to the compact resume outcome. A success must have `error: null` and a
@@ -117,51 +168,11 @@ function toResumeOutcome(
     if (record.error !== null) return null;
     const result = record.result;
     if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
-    const resultRecord = result as Record<string, unknown>;
-    const rawJobs = resultRecord.pendingJobs;
-    const pendingJobs = Array.isArray(rawJobs)
-      ? rawJobs.filter((job): job is PendingCrawlJob => {
-          if (!job || typeof job !== "object" || Array.isArray(job)) return false;
-          const candidate = job as Record<string, unknown>;
-          return (
-            typeof candidate.provider === "string" &&
-            typeof candidate.jobId === "string" &&
-            candidate.jobId.length > 0 &&
-            typeof candidate.url === "string" &&
-            candidate.url.length > 0
-          );
-        })
-      : [];
-    const rawResults = resultRecord.results;
-    const completedResults = Array.isArray(rawResults)
-      ? rawResults.filter((page): page is CrawlResult => {
-          if (!page || typeof page !== "object" || Array.isArray(page)) return false;
-          const candidate = page as Record<string, unknown>;
-          return (
-            typeof candidate.url === "string" &&
-            typeof candidate.title === "string" &&
-            typeof candidate.content === "string" &&
-            (candidate.status === undefined || candidate.status === "completed")
-          );
-        })
-      : [];
-    const storedFingerprint = resultRecord.requestedUrlFingerprint;
-    const fallbackCompleted = resultRecord.fallbackCompleted === true;
-    const requestedUrlFingerprint =
-      typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
-        ? storedFingerprint
-        : (() => {
-            const pendingUrls = [...new Set(pendingJobs.map((job) => job.url.trim()))];
-            return pendingUrls.length === 1 ? crawlUrlFingerprint(pendingUrls[0]!) : undefined;
-          })();
     return {
       id: record.id,
       status: "pending",
       conflict: false,
-      pendingJobs,
-      ...(completedResults.length > 0 ? { completedResults } : {}),
-      ...(fallbackCompleted ? { fallbackCompleted: true } : {}),
-      ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
+      ...parseCrawlResumeState(result),
     };
   }
 
@@ -170,7 +181,12 @@ function toResumeOutcome(
     const error = record.error;
     if (error === null || typeof error !== "object" || Array.isArray(error)) return null;
     if (typeof (error as Record<string, unknown>).message !== "string") return null;
-    return { id: record.id, status: "error", conflict: isConflictError(error as BatchError) };
+    return {
+      id: record.id,
+      status: "error",
+      conflict: isConflictError(error as BatchError),
+      ...parseCrawlResumeState(record.resumeState),
+    };
   }
 
   return null;
@@ -240,19 +256,20 @@ export function buildBatchPlan(
     const hasRetriableError = existing.some((r) => r.status === "error" && !r.conflict);
     const hasConflict = existing.some((r) => r.status === "error" && r.conflict);
     const latest = existing[existing.length - 1];
+    const latestResumeState =
+      latest?.status === "pending" || latest?.status === "error" ? latest : undefined;
     const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
     const pendingRecordMatchesRequest =
       requestedUrl !== undefined &&
-      latest?.status === "pending" &&
-      latest.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
+      latestResumeState?.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
     let pendingJobsForRequest: PendingCrawlJob[] | undefined;
-    if (requestedUrl !== undefined && latest?.status === "pending") {
+    if (requestedUrl !== undefined && latestResumeState) {
       // The persisted job URL may have been redacted. The fingerprint
       // binds this record to the request, so rebind its jobs to the
       // current input URL before FanoutEngine validates them.
       pendingJobsForRequest = pendingRecordMatchesRequest
-        ? latest.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
-        : latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
+        ? latestResumeState.pendingJobs?.map((job) => ({ ...job, url: requestedUrl }))
+        : latestResumeState.pendingJobs?.filter((job) => job.url.trim() === requestedUrl);
     }
     const canResumePendingJob = Boolean(
       requestedUrl &&
@@ -280,15 +297,15 @@ export function buildBatchPlan(
         plan.push({
           record,
           action: "execute",
-          ...(latest?.status === "pending"
+          ...(latestResumeState
             ? {
                 ...(pendingJobsForRequest?.length
                   ? { resumePendingJobs: pendingJobsForRequest }
                   : {}),
-                ...(pendingRecordMatchesRequest && latest.completedResults?.length
-                  ? { resumeCompletedResults: latest.completedResults }
+                ...(pendingRecordMatchesRequest && latestResumeState.completedResults?.length
+                  ? { resumeCompletedResults: latestResumeState.completedResults }
                   : {}),
-                ...(pendingRecordMatchesRequest && latest.fallbackCompleted
+                ...(pendingRecordMatchesRequest && latestResumeState.fallbackCompleted
                   ? { resumeFallbackCompleted: true }
                   : {}),
               }
