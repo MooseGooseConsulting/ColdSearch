@@ -8,7 +8,12 @@ import { redactSensitive } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
 import type { CapabilityName, Config, CrawlResult, PendingCrawlJob } from "../types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
-import { buildBatchPlan, loadResumeIndex, type BatchPlanEntry } from "./resume.js";
+import {
+  buildBatchPlan,
+  crawlUrlFingerprint,
+  loadResumeIndex,
+  type BatchPlanEntry,
+} from "./resume.js";
 import { DEFAULT_BATCH_LIMIT, type BatchInputRecord, type BatchOutputRecord } from "./types.js";
 
 /** Executes one validated batch input record into an output record. */
@@ -426,7 +431,6 @@ function mergeResumedCrawlResults(
 ): BatchOutputRecord {
   if (
     record.capability !== "crawl" ||
-    !priorResults?.length ||
     outputRecord.result === null ||
     typeof outputRecord.result !== "object" ||
     Array.isArray(outputRecord.result)
@@ -436,13 +440,48 @@ function mergeResumedCrawlResults(
 
   const result = outputRecord.result as Record<string, unknown>;
   const currentResults = Array.isArray(result.results) ? result.results : [];
-  // Keep the current resume's pages first, followed by prior fallback pages.
-  // Different providers can return useful, non-identical content for the same
-  // URL, so URL-based deduplication would lose data.
+  let updatedResult: Record<string, unknown> = result;
+  if (priorResults?.length) {
+    const seen = new Set<string>();
+    const mergedResults: unknown[] = [];
+    // Keep the current resume's pages first, followed by prior fallback pages.
+    // Drop only exact result duplicates; distinct provider content for the same
+    // URL remains available to the caller.
+    for (const page of [...currentResults, ...priorResults]) {
+      const signature = stableResultSerialization(page);
+      if (seen.has(signature)) continue;
+      seen.add(signature);
+      mergedResults.push(page);
+    }
+    updatedResult = { ...updatedResult, results: mergedResults };
+  }
+
+  if (outputRecord.status === "pending" && typeof record.url === "string" && record.url.trim()) {
+    updatedResult = {
+      ...updatedResult,
+      requestedUrlFingerprint: crawlUrlFingerprint(record.url),
+    };
+  }
+
+  if (updatedResult === result) return outputRecord;
   return {
     ...outputRecord,
-    result: { ...result, results: [...currentResults, ...priorResults] },
+    result: updatedResult,
   };
+}
+
+/** Stable JSON key used only to remove exact duplicate crawl result objects. */
+function stableResultSerialization(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableResultSerialization).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableResultSerialization(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 /** Belt-and-braces: an unexpected executor throw becomes an error record. */

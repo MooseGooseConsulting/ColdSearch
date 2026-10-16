@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import {
   DUPLICATE_ID_CONFLICT,
   isConflictError,
@@ -16,6 +17,13 @@ export interface ResumeOutcome {
   pendingJobs?: PendingCrawlJob[];
   /** Completed pages already returned alongside pending crawl handles. */
   completedResults?: CrawlResult[];
+  /** Hash of the original trimmed crawl URL, when available. */
+  requestedUrlFingerprint?: string;
+}
+
+/** Persist a stable URL fingerprint without storing the URL itself. */
+export function crawlUrlFingerprint(url: string): string {
+  return createHash("sha256").update(url.trim()).digest("hex");
 }
 
 /** Maps batch `id` -> compact outcomes already present in the output file. */
@@ -88,6 +96,7 @@ function toResumeOutcome(
   conflict: boolean;
   pendingJobs?: PendingCrawlJob[];
   completedResults?: CrawlResult[];
+  requestedUrlFingerprint?: string;
 } | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
@@ -131,12 +140,21 @@ function toResumeOutcome(
           );
         })
       : [];
+    const storedFingerprint = resultRecord.requestedUrlFingerprint;
+    const requestedUrlFingerprint =
+      typeof storedFingerprint === "string" && /^[a-f0-9]{64}$/i.test(storedFingerprint)
+        ? storedFingerprint
+        : (() => {
+            const pendingUrls = [...new Set(pendingJobs.map((job) => job.url.trim()))];
+            return pendingUrls.length === 1 ? crawlUrlFingerprint(pendingUrls[0]!) : undefined;
+          })();
     return {
       id: record.id,
       status: "pending",
       conflict: false,
       pendingJobs,
       ...(completedResults.length > 0 ? { completedResults } : {}),
+      ...(requestedUrlFingerprint ? { requestedUrlFingerprint } : {}),
     };
   }
 
@@ -228,13 +246,24 @@ export function buildBatchPlan(
         // (the primary never produced its own outcome) and retriable-error
         // retries when --retry-errors is set.
         const latest = existing[existing.length - 1];
+        const requestedUrl = record.capability === "crawl" ? record.url?.trim() : undefined;
+        const pendingJobsForRequest =
+          requestedUrl !== undefined && latest?.status === "pending"
+            ? latest.pendingJobs?.filter((job) => job.url.trim() === requestedUrl)
+            : undefined;
+        const pendingPagesMatchRequest =
+          requestedUrl !== undefined &&
+          latest?.status === "pending" &&
+          latest.requestedUrlFingerprint === crawlUrlFingerprint(requestedUrl);
         plan.push({
           record,
           action: "execute",
           ...(latest?.status === "pending"
             ? {
-                ...(latest.pendingJobs?.length ? { resumePendingJobs: latest.pendingJobs } : {}),
-                ...(latest.completedResults?.length
+                ...(pendingJobsForRequest?.length
+                  ? { resumePendingJobs: pendingJobsForRequest }
+                  : {}),
+                ...(pendingPagesMatchRequest && latest.completedResults?.length
                   ? { resumeCompletedResults: latest.completedResults }
                   : {}),
               }
