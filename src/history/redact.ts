@@ -87,14 +87,28 @@ function redactString(text: string, secrets: string[]): string {
 export function redactUrlUserInfo(text: string, replacement = REDACTED): string {
   return text.replace(
     URL_AUTHORITY_PATTERN,
-    (_match, scheme: string, authority: string) => {
+    (_match, scheme: string, authority: string, offset: number, input: string) => {
       // Keep apostrophes available inside user-info (passwords commonly
-      // contain them), but stop at explicit single-quote boundaries that
-      // close a quoted URL field. The URL syntax delimiters above already
-      // stop at whitespace, path, query, and fragment boundaries.
-      const fieldQuoteBoundary = /'\s*,\s*'/.exec(authority)?.index;
-      const semicolonQuoteBoundary = /'\s*;/.exec(authority)?.index;
-      const terminalQuoteBoundary = /'(?=\s*(?:[\]}]|$))/.exec(authority)?.index;
+      // contain them). Treat quote punctuation as a boundary only when the URL
+      // itself is inside a single-quoted field; otherwise `';` may be literal
+      // password data and the final `@` still marks the host boundary.
+      const singleQuotedUrl = input[offset - 1] === "'";
+      const fieldQuoteBoundary = singleQuotedUrl
+        ? /'\s*,\s*'/.exec(authority)?.index
+        : undefined;
+      const semicolonQuoteCandidate = singleQuotedUrl
+        ? /'\s*;/.exec(authority)?.index
+        : undefined;
+      // A quote-semicolon pair inside credentials is data when the eventual
+      // `@` has not arrived yet. A real quoted URL boundary follows its host,
+      // so retain the boundary only after the URL's user-info separator.
+      const semicolonQuoteBoundary = semicolonQuoteCandidate !== undefined &&
+        authority.slice(0, semicolonQuoteCandidate).includes("@")
+        ? semicolonQuoteCandidate
+        : undefined;
+      const terminalQuoteBoundary = singleQuotedUrl
+        ? /'(?=\s*(?:[\]}]|$))/.exec(authority)?.index
+        : undefined;
       const explicitQuoteBoundaries = [fieldQuoteBoundary, semicolonQuoteBoundary]
         .filter((boundary): boundary is number => boundary !== undefined)
         .sort((left, right) => left - right);

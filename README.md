@@ -104,13 +104,16 @@ record; `id` is the stable resume key.
 
 ```jsonl
 {"id":"node-lts","capability":"search","query":"current node lts version","limit":5}
+{"id":"recent-content","capability":"search","intent":"content-backed-retrieval","query":"current node lts version","commonOptions":{"timeRange":"day"}}
 {"id":"example-extract","capability":"extract","url":"https://example.com"}
 {"id":"example-crawl","capability":"crawl","url":"https://example.com","limit":10}
 {"id":"tavily-answer","tool":"tavily.answer","input":{"query":"current node lts version"}}
 ```
 
-Optional knobs mirror the CLI flags: `limit`, `providers`, `singleProvider`,
-`noCache`.
+Optional capability-record fields include `intent`, `commonOptions`, `limit`,
+`providers`, `singleProvider`, and `noCache`. `commonOptions` accepts `limit`,
+`includeDomains`, `excludeDomains`, `timeRange`, and `includeContent`; intents
+must match the record's capability.
 
 Resume is keyed on `id` only: if you change an item's input, give it a new
 `id` or it will be skipped as already-succeeded. Batch items are configured

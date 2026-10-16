@@ -348,6 +348,10 @@ Behavior:
 - Every item executes through the same backend / tool substrate as the
   standalone command, so routing, cache, and execution-history behavior are
   identical; batch does not create a second history model.
+- Capability records may set a matching `intent` and a `commonOptions` object
+  (`limit`, `includeDomains`, `excludeDomains`, `timeRange`, `includeContent`).
+  These options are validated and passed through the same intent-aware routing
+  and per-provider translation used by standalone execution.
 - The output file is append-only. Reruns resume by stable `id`: existing
   success records are skipped, existing error records are retried only with
   `--retry-errors`.
