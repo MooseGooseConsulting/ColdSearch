@@ -354,7 +354,10 @@ export class FirecrawlAdapter implements SearchAdapter {
             error.status === 429;
 
           if (!isTransientStatus) {
-            throw new Error(`Firecrawl crawl poll failed for job ${jobId}: ${error.message}`);
+            throw new Error(
+              `Firecrawl crawl poll failed for job ${jobId}: ${error.message}`,
+              { cause: error }
+            );
           }
 
           continue;

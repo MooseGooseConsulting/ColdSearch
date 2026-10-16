@@ -133,6 +133,16 @@ export class AllProvidersFailedError extends Error {
   }
 }
 
+function findHttpRequestError(error: unknown): HTTPRequestError | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth++) {
+    if (current instanceof HTTPRequestError) return current;
+    if (!(current instanceof Error)) return undefined;
+    current = current.cause;
+  }
+  return undefined;
+}
+
 /**
  * Fanout search engine.
  * Executes search across multiple providers in parallel,
@@ -537,6 +547,8 @@ export class FanoutEngine {
           }
           const durationMs = Math.round(performance.now() - start);
           errors[provider] = (error as Error).message;
+          const httpError = findHttpRequestError(error);
+          if (httpError) providerHttpErrors[provider] = httpError;
           this.usageLogger.write({
             timestamp: new Date().toISOString(),
             provider,
@@ -705,7 +717,8 @@ export class FanoutEngine {
       } catch (error) {
         const durationMs = Math.round(performance.now() - start);
         errors[provider] = (error as Error).message;
-        if (error instanceof HTTPRequestError) providerHttpErrors[provider] = error;
+        const httpError = findHttpRequestError(error);
+        if (httpError) providerHttpErrors[provider] = httpError;
         this.usageLogger.write({
           timestamp: new Date().toISOString(),
           provider,
