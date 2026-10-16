@@ -5,6 +5,7 @@ import type { ExecutionRecord } from "./types.js";
  * Ordered strongest-weakest; the first tier that matches also ranks the hit.
  */
 export type HistoryMatchReason =
+  | "run_id"
   | "request"
   | "result_title"
   | "result_url"
@@ -25,6 +26,7 @@ export interface HistorySearchMatch {
 }
 
 const REASON_ORDER: HistoryMatchReason[] = [
+  "run_id",
   "request",
   "result_title",
   "result_url",
@@ -61,7 +63,11 @@ function collectResults(record: ExecutionRecord): ScannedResult[] {
     });
   };
 
-  if (Array.isArray(record.result)) {
+  if (record.command === "agent" && typeof record.result === "string") {
+    // Agent answers are persisted as redacted text, so index them as content
+    // without treating step payloads or arbitrary string results as documents.
+    out.push({ text: record.result });
+  } else if (Array.isArray(record.result)) {
     for (const item of record.result) push(item);
   } else {
     push(record.result);
@@ -101,6 +107,7 @@ export function searchHistory(
     const haystack = text.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   };
+  const exactRunIdQuery = query.trim().toLowerCase();
 
   const matches: { match: HistorySearchMatch; rank: number }[] = [];
 
@@ -108,7 +115,15 @@ export function searchHistory(
     const reasons = new Set<HistoryMatchReason>();
     const matchingResults: MatchingResultItem[] = [];
 
-    // 1. original request/query or URL (plus request parameters) — strongest
+    // Run IDs are exact correlation keys and rank ahead of broader text matches.
+    if (
+      exactRunIdQuery.length > 0 &&
+      record.run_id?.trim().toLowerCase() === exactRunIdQuery
+    ) {
+      reasons.add("run_id");
+    }
+
+    // Original request/query or URL (plus request parameters).
     if (
       matchesAll(record.input) ||
       (record.options !== undefined && matchesAll(JSON.stringify(record.options)))

@@ -183,8 +183,12 @@ export class KeyPoolManager {
 
     if (ttlMs > 0) {
       this.secretLookups.set(secretName, promise);
-      // Clear in finally so errors don't permanently block subsequent lookups.
-      promise.finally(() => this.secretLookups.delete(secretName));
+      // Clear on either outcome without leaving a rejecting `finally()` chain
+      // unobserved when the Doppler lookup itself fails.
+      void promise.then(
+        () => this.secretLookups.delete(secretName),
+        () => this.secretLookups.delete(secretName)
+      );
     }
 
     return promise;
@@ -230,26 +234,46 @@ export class KeyPoolManager {
    * Resolve every configured credential value, deduplicated, for persistence
    * redaction. Mirrors how a real invocation resolves keys (env:/doppler:/
    * literal refs), so anything a provider response could echo back is known.
-   * Best-effort: an unresolvable ref (missing env var, unauthenticated
-   * Doppler) has no value to scrub and is skipped. In-memory only.
+   * Returns `complete: false` if any configured ref could not be resolved;
+   * callers persisting free text must then fail closed. Values stay in memory.
    */
-  async resolveAllSecrets(): Promise<string[]> {
+  async resolveAllSecretsWithStatus(): Promise<{ secrets: string[]; complete: boolean }> {
     const secrets: string[] = [];
     const seen = new Set<string>();
+    let complete = true;
+    const refs = new Set<string>();
     for (const [provider, pool] of this.pools) {
-      for (const ref of this.getEffectiveKeyRefs(provider, pool)) {
+      for (const ref of this.getEffectiveKeyRefs(provider, pool)) refs.add(ref);
+    }
+
+    // Check the whole configured set concurrently so unrelated unavailable
+    // Doppler refs don't add their ten-second timeouts one after another. Each
+    // failed lookup still marks the set incomplete, which makes history callers
+    // withhold free text instead of persisting with partial coverage.
+    const resolvedRefs = await Promise.all(
+      [...refs].map(async (ref) => {
         try {
-          const value = await this.resolveKeyRef(ref);
-          if (value && !seen.has(value)) {
-            seen.add(value);
-            secrets.push(value);
-          }
+          return { value: await this.resolveKeyRef(ref), complete: true };
         } catch {
-          // No value to scrub from an unresolvable ref; keep going.
+          return { value: "", complete: false };
         }
+      })
+    );
+    for (const resolved of resolvedRefs) {
+      if (!resolved.complete) {
+        complete = false;
+        continue;
+      }
+      if (resolved.value && !seen.has(resolved.value)) {
+        seen.add(resolved.value);
+        secrets.push(resolved.value);
       }
     }
-    return secrets;
+    return { secrets, complete };
+  }
+
+  async resolveAllSecrets(): Promise<string[]> {
+    return (await this.resolveAllSecretsWithStatus()).secrets;
   }
 
   getProviders(): string[] {

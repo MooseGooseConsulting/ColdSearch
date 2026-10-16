@@ -206,6 +206,7 @@ function fakeRecord(overrides) {
     id: overrides.id,
     timestamp: overrides.timestamp ?? "2026-08-10T00:00:00.000Z",
     command: overrides.command ?? "search",
+    run_id: overrides.run_id,
     input: overrides.input ?? "unrelated query",
     options: overrides.options,
     routing: overrides.routing ?? { providers_attempted: ["brave"] },
@@ -220,8 +221,9 @@ function fakeRecord(overrides) {
   };
 }
 
-test("history search matches request, titles, urls, content, provider — with reasons", () => {
+test("history search matches run IDs, request, titles, urls, content, provider — with reasons", () => {
   const records = [
+    fakeRecord({ id: "e-run-id", run_id: "run_trace_123", input: "unrelated query" }),
     fakeRecord({ id: "e-request", input: "strix halo inference benchmarks" }),
     fakeRecord({
       id: "e-title",
@@ -246,17 +248,33 @@ test("history search matches request, titles, urls, content, provider — with r
 
   const matches = searchHistory(records, "strix halo");
   const byId = Object.fromEntries(matches.map((m) => [m.execution.id, m]));
+  const runIdMatch = searchHistory(records, "run_trace_123")[0];
 
   assert.equal(byId["e-nomatch"], undefined);
+  assert.deepEqual(runIdMatch.matched_on, ["run_id"]);
+  assert.equal(runIdMatch.execution.id, "e-run-id");
   assert.deepEqual(byId["e-request"].matched_on, ["request"]);
   assert.deepEqual(byId["e-title"].matched_on, ["result_title"]);
   assert.deepEqual(byId["e-url"].matched_on, ["result_url"]);
   assert.deepEqual(byId["e-content"].matched_on, ["content"]);
   assert.deepEqual(byId["e-provider"].matched_on, ["provider"]);
-  // Request matches rank strongest.
+  // Request matches rank strongest within the request-text results.
   assert.equal(matches[0].execution.id, "e-request");
   // Matching results are exposed beneath the execution.
   assert.equal(byId["e-title"].matching_results[0].url, "https://a.example");
+});
+
+test("history run ID matching is exact and case-normalized", () => {
+  const records = [
+    fakeRecord({ id: "exact-run", run_id: "run_abc", input: "unrelated exact query" }),
+    fakeRecord({ id: "longer-run", run_id: "run_abc_extra", input: "unrelated longer query" }),
+  ];
+
+  const matches = searchHistory(records, " RUN_ABC ", 1);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].execution.id, "exact-run");
+  assert.deepEqual(matches[0].matched_on, ["run_id"]);
+  assert.equal(searchHistory(records, "run_abc_extra", 1)[0].execution.id, "longer-run");
 });
 
 test("history search bounds output by default (20) and honors an explicit limit", () => {

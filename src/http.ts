@@ -440,7 +440,7 @@ export function classifyError(error: unknown): ClassifiedError {
     return { category: "provider", message };
   }
   if (
-    /unknown option|unknown '.*' subcommand|invalid limit|invalid rerank|invalid freshness|invalid time range|invalid intent|--intent requires|--time-range requires|invalid reasoning effort|invalid agent llm reasoning effort|--llm-key-ref requires|agent llm key_ref|\[agent\.llm\].*key_ref|\[agent\.llm\].*reasoning_effort|requires a .* argument|is only valid with|no configuration found for capability|not configured|config file|legacy config found|failed to parse config|invalid llm provider|unknown llm provider|unsupported llm provider|no execution found with id|no providers configured for/i.test(
+    /unknown option|unknown '.*' subcommand|invalid limit|invalid rerank|invalid freshness|invalid time range|invalid intent|invalid --run-id|--run-id requires agent mode|--intent requires|--time-range requires|invalid reasoning effort|invalid agent llm reasoning effort|--llm-key-ref requires|agent llm key_ref|\[agent\.llm\].*key_ref|\[agent\.llm\].*reasoning_effort|requires a .* argument|is only valid with|no configuration found for capability|not configured|config file|legacy config found|failed to parse config|invalid llm provider|unknown llm provider|unsupported llm provider|no execution found with id|no providers configured for/i.test(
       message
     )
   ) {

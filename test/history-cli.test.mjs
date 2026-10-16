@@ -30,6 +30,7 @@ const SEED = [
     id: "exec-1",
     timestamp: "2026-08-10T12:00:00.000Z",
     command: "search",
+    run_id: "run_seed_123",
     input: "strix halo inference benchmarks",
     options: { limit: 10, rerankStrategy: "rrf" },
     routing: {
@@ -198,6 +199,7 @@ test("history recent lists newest first including live, cache, and failed record
     assert.equal(out.executions[0].id, "exec-6", "newest execution first");
     assert.equal(out.executions[0].pending_jobs[0].jobId, "firecrawl-job-1");
     assert.equal(out.executions[out.executions.length - 1].id, "exec-1");
+    assert.equal(out.executions[out.executions.length - 1].run_id, "run_seed_123");
 
     const human = runCli(["history", "recent", "--config", configPath]);
     assert.equal(human.status, 0, human.stderr);
@@ -279,6 +281,15 @@ path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
       out.matches.some((m) => m.matched_on.includes("content")),
       "extracted content is searchable"
     );
+
+    const runIdResult = runCli([
+      "history", "search", "--config", configPath, "--json", "run_seed_123",
+    ]);
+    assert.equal(runIdResult.status, 0, runIdResult.stderr);
+    const runIdMatches = JSON.parse(runIdResult.stdout).matches;
+    assert.ok(runIdMatches.some((match) =>
+      match.execution.run_id === "run_seed_123" && match.matched_on.includes("run_id")
+    ));
     assert.equal(requests, 0, "history search must never call a provider");
   } finally {
     server.close();

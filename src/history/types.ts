@@ -3,11 +3,23 @@ import type { NormalizedResult, PendingCrawlJob, ToolExecutionMode } from "../ty
 
 /**
  * One top-level history execution is recorded per `coldsearch search`,
- * `extract`, `crawl`, or `tool call` invocation. A multi-provider fanout is a
- * single execution with provider attempts/partitions beneath it — never one
- * history item per provider leg.
+ * `extract`, `crawl`, or `tool call` invocation, plus one summary record per
+ * completed or failed agent run. A multi-provider fanout is a single execution
+ * with provider attempts/partitions beneath it — never one history item per
+ * provider leg.
  */
-export type ExecutionCommand = "search" | "extract" | "crawl" | "tool";
+export type ExecutionCommand = "search" | "extract" | "crawl" | "tool" | "agent";
+
+/** Safe, durable record of an agent action; provider executions stay separate. */
+export interface AgentRunStep {
+  type: "search" | "fetch" | "refine" | "synthesize" | "rejected_action";
+  description: string;
+  timestamp: string;
+  run_id: string;
+  outcome: "success" | "failed";
+  duration_ms: number;
+  error?: string;
+}
 
 /** `live`: providers were called. `cache`: exact replay, zero provider calls. */
 export type ExecutionSource = "live" | "cache";
@@ -58,6 +70,15 @@ export interface ExecutionRecord {
   /** ISO 8601 timestamp of the invocation. */
   timestamp: string;
   command: ExecutionCommand;
+  /**
+   * Agent run ID this execution belongs to, when the invocation was triggered
+   * by an agent run. Present only then; non-agent executions stay valid
+   * without it. `run_id` never replaces `id` — every execution keeps its own
+   * PR 2 execution ID.
+   */
+  run_id?: string;
+  /** Ordered agent actions for command: "agent" history records. */
+  agent_steps?: AgentRunStep[];
   /**
    * Original query or URL (`provider.tool` for tool calls), already redacted
    * of signed-URL tokens and credential values before persistence.
