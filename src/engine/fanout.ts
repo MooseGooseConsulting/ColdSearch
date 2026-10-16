@@ -434,6 +434,10 @@ export class FanoutEngine {
           const pendingResults = results.filter((result) => result.status === "pending");
           const pageResults = results.filter((result) => result.status !== "pending");
           if (pendingResults.length > 0) {
+            if (pageResults.length > 0) {
+              completedResumeProvider ??= provider;
+              completedResumeResults.push(...pageResults);
+            }
             const providerPendingJobs = pendingResults.map((result) => {
               if (!result.jobId) {
                 throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
@@ -527,6 +531,7 @@ export class FanoutEngine {
     }
 
     const providers = selectedProviders.filter((provider) => !resumeProviders.has(provider));
+    const fallbackPartialResults: CrawlResult[] = [];
 
     // Try providers in order (or single random provider)
     for (const provider of providers) {
@@ -560,6 +565,7 @@ export class FanoutEngine {
         const pendingResults = results.filter((result) => result.status === "pending");
         const pageResults = results.filter((result) => result.status !== "pending");
         if (pendingResults.length > 0) {
+          fallbackPartialResults.push(...pageResults);
           const providerPendingJobs = pendingResults.map((result) => {
             if (!result.jobId) {
               throw new Error(`Provider ${provider} returned a pending crawl without a job ID`);
@@ -612,7 +618,7 @@ export class FanoutEngine {
           result_count: pageResults.length,
         });
         return {
-          results: pageResults,
+          results: [...fallbackPartialResults, ...pageResults],
           pendingJobs: [...pendingJobs, ...resumePendingJobs],
           provider,
           status: pendingJobs.length + resumePendingJobs.length > 0 ? "pending" : "completed",
@@ -645,7 +651,7 @@ export class FanoutEngine {
     const remainingPendingJobs = [...pendingJobs, ...resumePendingJobs];
     if (remainingPendingJobs.length > 0) {
       return {
-        results: [],
+        results: fallbackPartialResults,
         pendingJobs: remainingPendingJobs,
         provider: remainingPendingJobs[0]!.provider,
         status: "pending",

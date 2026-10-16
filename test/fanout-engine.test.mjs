@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { FanoutEngine } from "../dist/engine/fanout.js";
+import { providerRegistry } from "../dist/providers.js";
 import { installFetchMock, jsonResponse, textResponse, rawResponse } from "./adapters/_fetch-mock.mjs";
 
 function makeConfig(overrides) {
@@ -319,6 +320,102 @@ test("all saved Firecrawl jobs for one provider are polled before returning", as
   } finally {
     restore();
     globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("a resumed handle preserves completed pages returned alongside pending pages", async () => {
+  const originalCreateAdapter = providerRegistry.firecrawl.createAdapter;
+  let resumedJobId;
+  providerRegistry.firecrawl.createAdapter = () => ({
+    name: "firecrawl",
+    capabilities: ["crawl"],
+    search: async () => [],
+    crawl: async (_url, _apiKey, options) => {
+      resumedJobId = options.resumeJobId;
+      return [
+        {
+          url: "https://x.example/completed",
+          title: "Completed page",
+          content: "page body",
+          status: "completed",
+          jobId: options.resumeJobId,
+        },
+        {
+          url: "https://x.example",
+          title: "",
+          content: "",
+          status: "pending",
+          jobId: options.resumeJobId,
+        },
+      ];
+    },
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl", "exa"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", {
+      limit: 1,
+      resumePendingJobs: [
+        { provider: "firecrawl", jobId: "mixed-result-job", url: "https://x.example" },
+      ],
+    });
+
+    assert.equal(resumedJobId, "mixed-result-job");
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.results.map((result) => result.url), ["https://x.example/completed"]);
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "mixed-result-job", url: "https://x.example" },
+    ]);
+  } finally {
+    providerRegistry.firecrawl.createAdapter = originalCreateAdapter;
+  }
+});
+
+test("a new crawl preserves completed pages returned alongside a pending handle", async () => {
+  const originalCreateAdapter = providerRegistry.firecrawl.createAdapter;
+  providerRegistry.firecrawl.createAdapter = () => ({
+    name: "firecrawl",
+    capabilities: ["crawl"],
+    search: async () => [],
+    crawl: async () => [
+      {
+        url: "https://x.example/completed",
+        title: "Completed page",
+        content: "page body",
+        status: "completed",
+        jobId: "new-mixed-job",
+      },
+      {
+        url: "https://x.example",
+        title: "",
+        content: "",
+        status: "pending",
+        jobId: "new-mixed-job",
+      },
+    ],
+  });
+
+  try {
+    const engine = new FanoutEngine(
+      makeConfig({
+        capabilities: { crawl: { providers: ["firecrawl"], strategy: "all" } },
+        providers: { firecrawl: { keyPool: { keys: ["k"] } } },
+      })
+    );
+    const out = await engine.crawl("https://x.example", { limit: 1 });
+
+    assert.equal(out.status, "pending");
+    assert.deepEqual(out.results.map((result) => result.url), ["https://x.example/completed"]);
+    assert.deepEqual(out.pendingJobs, [
+      { provider: "firecrawl", jobId: "new-mixed-job", url: "https://x.example" },
+    ]);
+  } finally {
+    providerRegistry.firecrawl.createAdapter = originalCreateAdapter;
   }
 });
 
