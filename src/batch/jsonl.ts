@@ -200,6 +200,17 @@ export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecor
       if (commonOptions.timeRange !== undefined && typeof commonOptions.timeRange !== "string") {
         errors.push("'commonOptions.timeRange' must be a string when present");
       }
+      // Search-only filters are silently ignored on extract/crawl records;
+      // reject them so batch authors learn the record is misdeclared.
+      if (hasCapability && record.capability !== "search") {
+        for (const field of ["includeDomains", "excludeDomains", "timeRange"] as const) {
+          if (commonOptions[field] !== undefined) {
+            errors.push(
+              `'commonOptions.${field}' is only valid for search records (capability '${String(record.capability)}')`
+            );
+          }
+        }
+      }
       if (
         commonOptions.includeContent !== undefined &&
         typeof commonOptions.includeContent !== "boolean"
