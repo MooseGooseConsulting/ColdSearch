@@ -67,7 +67,8 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         nativeOptionsWithoutCommonEquivalent: ["zone", "country"],
         notes:
           "unlockerTimeoutMs (milliseconds) raises the extract fetch timeout for JS-rendered pages. " +
-          "The adapter also accepts the legacy option keys unlockerZone (for zone) and searchCountry (for country).",
+          "unlockerZone is the canonical configured Web Unlocker zone; BRIGHTDATA_UNLOCKER_ZONE is the environment fallback. " +
+          "The shared zone option is the SERP zone and is not used for unlocker. searchCountry remains a legacy alias for country.",
       },
     ],
     features: {
