@@ -93,7 +93,7 @@ export class TavilyAdapter implements SearchAdapter {
       query,
       max_results: this.clampIntegerOption(
         options?.limit ?? providerOptions.max_results,
-        0,
+        1,
         20,
         10
       ),
