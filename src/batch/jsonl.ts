@@ -175,6 +175,13 @@ export function validateBatchInput(raw: unknown): asserts raw is BatchInputRecor
       errors.push("'commonOptions' must be an object when present");
     } else {
       const commonOptions = record.commonOptions as Record<string, unknown>;
+      if (hasCapability && record.capability !== "search") {
+        for (const field of ["includeDomains", "excludeDomains", "timeRange"] as const) {
+          if (commonOptions[field] !== undefined) {
+            errors.push(`'commonOptions.${field}' is only valid for 'search' capability records`);
+          }
+        }
+      }
       for (const field of Object.keys(commonOptions)) {
         if (!COMMON_OPTION_FIELDS.has(field)) {
           errors.push(`'commonOptions.${field}' is not a supported common option`);
