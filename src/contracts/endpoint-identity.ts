@@ -134,7 +134,7 @@ function providerEnvironmentKeyMaterial(
     capability === "search"
       ? { keys: ["zone", "serpZone"], envName: "BRIGHTDATA_SERP_ZONE" }
       : capability === "extract"
-        ? { keys: ["unlockerZone", "zone"], envName: "BRIGHTDATA_UNLOCKER_ZONE" }
+        ? { keys: ["unlockerZone"], envName: "BRIGHTDATA_UNLOCKER_ZONE" }
         : undefined;
 
   if (!fallback || hasConfiguredValue(fallback.keys)) return {};
