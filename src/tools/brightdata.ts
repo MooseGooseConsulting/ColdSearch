@@ -66,7 +66,7 @@ function requireZone(
   if (explicit) return explicit;
 
   const optionKeys =
-    optionKey === "serpZone" ? ["zone", "serpZone"] : ["unlockerZone", "zone"];
+    optionKey === "serpZone" ? ["zone", "serpZone"] : ["unlockerZone"];
   for (const key of optionKeys) {
     const configured = configuredString(config, key);
     if (configured) return configured;
@@ -77,7 +77,7 @@ function requireZone(
   const configOption =
     optionKey === "serpZone"
       ? "providers.brightdata.options.zone (legacy alias: serpZone)"
-      : "providers.brightdata.options.unlockerZone (legacy alias: zone)";
+      : "providers.brightdata.options.unlockerZone";
   throw new Error(
     `Bright Data requires params.zone, ${configOption}, or ${envName}`
   );
