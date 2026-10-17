@@ -4,7 +4,7 @@ import { loadConfig } from "../config.js";
 import { LocalExecutionBackend } from "../execution/backend.js";
 import { KeyPoolManager } from "../engine/keypool.js";
 import { AllProvidersFailedError, type FanoutOptions } from "../engine/fanout.js";
-import { redactSensitive } from "../history/redact.js";
+import { redactSensitiveForPersistence } from "../history/redact.js";
 import { executeToolCall } from "../tools/substrate.js";
 import type { CapabilityName, Config, CrawlResult, PendingCrawlJob } from "../types.js";
 import { appendBatchOutput, readBatchInput } from "./jsonl.js";
@@ -120,9 +120,15 @@ function interruptedCrawlResumeState(
         )
       : []
   );
-  const pendingJobs = resumePendingJobs?.filter(
-    (job) => !nonResumableJobKeys.has(JSON.stringify([job.provider, job.jobId]))
-  );
+  const acceptedJobs = error instanceof AllProvidersFailedError ? error.acceptedCrawlJobs : [];
+  const pendingJobs = [
+    ...(resumePendingJobs?.filter(
+      (job) => !nonResumableJobKeys.has(JSON.stringify([job.provider, job.jobId]))
+    ) ?? []),
+    ...acceptedJobs.filter(
+      (job) => !nonResumableJobKeys.has(JSON.stringify([job.provider, job.jobId]))
+    ),
+  ];
   const state: BatchResumeState = {
     ...(pendingJobs?.length ? { pendingJobs } : {}),
     ...(resumeCompletedResults?.length ? { completedResults: resumeCompletedResults } : {}),
@@ -261,11 +267,20 @@ export class LocalBatchExecutor implements BatchExecutor {
   }
 
   private fanoutOptions(record: BatchInputRecord): FanoutOptions {
+    const commonLimit = record.commonOptions?.limit;
+    const hasCommonLimit = typeof commonLimit === "number" && Number.isFinite(commonLimit);
+    const hasRecordLimit = record.limit !== undefined;
     return {
-      limit: record.limit ?? DEFAULT_BATCH_LIMIT,
+      limit: hasRecordLimit
+        ? record.limit!
+        : hasCommonLimit
+          ? commonLimit
+          : DEFAULT_BATCH_LIMIT,
       format: record.format,
       depth: record.depth,
-      limitSet: record.limit !== undefined,
+      // A common limit is an explicit caller choice, same as a top-level limit.
+      // Only the implicit default stays unset so crawl can keep a provider default.
+      limitSet: hasRecordLimit || hasCommonLimit,
       providers: record.providers,
       singleProvider: record.singleProvider,
       noCache: record.noCache,
@@ -436,7 +451,7 @@ export async function runBatch(options: BatchRunOptions): Promise<BatchRunSummar
   const persist = (record: BatchOutputRecord): Promise<void> => {
     const enqueued = appendQueue.then(async () => {
       const known = await secrets.knownSecrets();
-      const redactedRecord = redactSensitive(record, known);
+      const redactedRecord = redactSensitiveForPersistence(record, known);
       await appendBatchOutput(options.output, dedupeRedactedCrawlResults(redactedRecord));
     });
     appendQueue = enqueued;
