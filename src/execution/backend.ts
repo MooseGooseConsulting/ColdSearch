@@ -10,7 +10,11 @@ import {
 import { CacheStore, type CacheEntryMeta } from "../cache/cache.js";
 import { cacheKey, parseDuration } from "../cache/key.js";
 import { capabilityCacheIdentity } from "../contracts/endpoint-identity.js";
-import { NoEligibleProviderFeatureError, resolveCapabilityProviders } from "../providers.js";
+import {
+  NoEligibleProviderFeatureError,
+  resolveCapabilityProviders,
+  validateSelectedProviders,
+} from "../providers.js";
 import {
   IntentRejectionError,
   resolveOptionsForIntent,
@@ -45,6 +49,8 @@ export type SearchResult = {
   skippedProviders?: Record<string, string>;
   /** Non-secret warnings (e.g. the execution could not be recorded in history). */
   warnings?: string[];
+  /** Present when the caller supplied a run id for this invocation. */
+  run_id?: string;
 };
 
 export type ExtractOutcome = {
@@ -53,6 +59,8 @@ export type ExtractOutcome = {
   errors?: Record<string, string>;
   skippedProviders?: Record<string, string>;
   warnings?: string[];
+  /** Present when the caller supplied a run id for this invocation. */
+  run_id?: string;
 };
 
 export type CrawlOutcome = {
@@ -65,6 +73,8 @@ export type CrawlOutcome = {
   errors?: Record<string, string>;
   skippedProviders?: Record<string, string>;
   warnings?: string[];
+  /** Present when the caller supplied a run id for this invocation. */
+  run_id?: string;
 };
 
 const SEARCH_PROVIDER_LIMIT_OPTIONS = [
@@ -252,17 +262,17 @@ export class LocalExecutionBackend implements ExecutionBackend {
    * invocation is recorded as a failed execution (mirroring the tool path's
    * preflight records) instead of exiting without a history trace.
    */
-  private validateAndRecord(
+  private async validateAndRecord(
     capability: CapabilityName,
     input: string,
     options: FanoutOptions
-  ): void {
+  ): Promise<void> {
     try {
       this.validateCapability(capability, options);
     } catch (error) {
       const warnings: string[] = [];
       this.recordExecution(
-        this.failedRecord(capability, input, options, error, performance.now()),
+        await this.failedRecord(capability, input, options, error, performance.now()),
         warnings
       );
       this.flushWarnings(warnings);
@@ -336,20 +346,34 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   /** Resolve intent options for non-CLI callers and audit preflight rejection. */
-  private resolveIntentOptions(
+  private async resolveIntentOptions(
     capability: CapabilityName,
     input: string,
     options: FanoutOptions
-  ): FanoutOptions {
+  ): Promise<FanoutOptions> {
     const requestedOptions: FanoutOptions = {
       ...options,
       requestedProviders: [...(options.requestedProviders ?? options.providers ?? [])],
     };
+    // Native-only intents narrow the override before capability validation.
+    // Reject unknown or incapable providers against the original selection.
+    if (requestedOptions.providers?.length) {
+      try {
+        validateSelectedProviders(this.config, capability, requestedOptions.providers);
+      } catch (error) {
+        this.flushWarnings(
+          await this.recordIntentRejection(capability, input, requestedOptions, error)
+        );
+        throw error;
+      }
+    }
     try {
       return resolveOptionsForIntent(capability, this.config, requestedOptions);
     } catch (error) {
       if (error instanceof IntentRejectionError) {
-        this.flushWarnings(this.recordIntentRejection(capability, input, requestedOptions, error));
+        this.flushWarnings(
+          await this.recordIntentRejection(capability, input, requestedOptions, error)
+        );
       }
       throw error;
     }
@@ -414,15 +438,15 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   /** Record an intent rejected by CLI preflight before normal backend dispatch. */
-  recordIntentRejection(
+  async recordIntentRejection(
     capability: CapabilityName,
     input: string,
     options: FanoutOptions,
     error: unknown
-  ): string[] {
+  ): Promise<string[]> {
     const warnings: string[] = [];
     this.recordExecution(
-      this.failedRecord(capability, input, options, error, performance.now()),
+      await this.failedRecord(capability, input, options, error, performance.now()),
       warnings
     );
     return warnings;
@@ -470,8 +494,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   async search(query: string, options: FanoutOptions): Promise<SearchResult> {
-    options = this.resolveIntentOptions("search", query, options);
-    this.validateAndRecord("search", query, options);
+    options = await this.resolveIntentOptions("search", query, options);
+    await this.validateAndRecord("search", query, options);
     const useCache = this.shouldUseCache("search", options);
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.searchTtl, options);
@@ -564,7 +588,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
           },
           warnings
         );
-        return { ...entry.payload, warnings };
+        return {
+          ...entry.payload,
+          warnings,
+          ...(options.runId ? { run_id: options.runId } : {}),
+        };
       }
     }
 
@@ -668,6 +696,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
           ? { skippedProviders: result.skippedProviders }
           : {}),
         warnings,
+        ...(options.runId ? { run_id: options.runId } : {}),
       };
     } catch (error) {
       const configuredSecrets = await configuredSecretsPromise;
@@ -680,7 +709,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
         this.reportSecretsUsed(options, errorSecrets);
       }
       this.recordExecution(
-        this.failedRecord("search", query, options, error, start, {
+        await this.failedRecord("search", query, options, error, start, {
           secrets: [...secrets],
           complete: configuredSecrets.complete,
         }),
@@ -692,8 +721,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   async extract(url: string, options: FanoutOptions): Promise<ExtractOutcome> {
-    options = this.resolveIntentOptions("extract", url, options);
-    this.validateAndRecord("extract", url, options);
+    options = await this.resolveIntentOptions("extract", url, options);
+    await this.validateAndRecord("extract", url, options);
     const jinaOptions = this.config.providers.jina?.options ?? {};
     const jinaIsInDefaultExtractPool =
       this.config.capabilities.extract?.providers?.includes("jina") ?? false;
@@ -767,16 +796,23 @@ export class LocalExecutionBackend implements ExecutionBackend {
           },
           warnings
         );
-        return { ...entry.payload, warnings };
+        return {
+          ...entry.payload,
+          warnings,
+          ...(options.runId ? { run_id: options.runId } : {}),
+        };
       }
     }
 
     const id = newExecutionId();
     const start = performance.now();
+    const configuredSecretsPromise = this.resolveConfiguredSecretsForHistory(options);
     try {
       // extract throws when all providers fail, so a returned value is a success.
       const result = await this.engine.extract(url, options);
+      const configuredSecrets = await configuredSecretsPromise;
       const secrets = result.secretsUsed;
+      this.reportSecretsUsed(options, secrets);
       this.recordExecution(
         {
           id,
@@ -790,7 +826,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
             options,
             result.attempts.map((a) => a.provider),
             undefined,
-            this.redactSkippedProviders(result.skippedProviders, secrets, false)
+            this.redactSkippedProviders(
+              result.skippedProviders,
+              [...new Set([...configuredSecrets.secrets, ...secrets])],
+              configuredSecrets.complete
+            )
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -827,25 +867,41 @@ export class LocalExecutionBackend implements ExecutionBackend {
           ? { skippedProviders: result.skippedProviders }
           : {}),
         warnings,
+        ...(options.runId ? { run_id: options.runId } : {}),
       };
     } catch (error) {
-      this.recordExecution(this.failedRecord("extract", url, options, error, start), warnings);
+      const configuredSecrets = await configuredSecretsPromise;
+      this.recordExecution(
+        await this.failedRecord("extract", url, options, error, start, {
+          secrets: [
+            ...new Set([
+              ...configuredSecrets.secrets,
+              ...(error instanceof AllProvidersFailedError ? error.secretsUsed : []),
+            ]),
+          ],
+          complete: configuredSecrets.complete,
+        }),
+        warnings
+      );
       this.flushWarnings(warnings);
       throw error;
     }
   }
 
   async crawl(url: string, options: FanoutOptions): Promise<CrawlOutcome> {
-    options = this.resolveIntentOptions("crawl", url, options);
+    options = await this.resolveIntentOptions("crawl", url, options);
     // Exact crawl replay stays disabled in PR 2 (broad site snapshots are
     // sensitive to site state/depth/limit) — but every crawl is recorded.
-    this.validateAndRecord("crawl", url, options);
+    await this.validateAndRecord("crawl", url, options);
     const warnings: string[] = [];
     const start = performance.now();
+    const configuredSecretsPromise = this.resolveConfiguredSecretsForHistory(options);
 
     try {
       const result = await this.engine.crawl(url, options);
+      const configuredSecrets = await configuredSecretsPromise;
       const secrets = result.secretsUsed;
+      this.reportSecretsUsed(options, secrets);
       this.recordExecution(
         {
           id: newExecutionId(),
@@ -859,7 +915,11 @@ export class LocalExecutionBackend implements ExecutionBackend {
             options,
             result.attempts.map((a) => a.provider),
             undefined,
-            this.redactSkippedProviders(result.skippedProviders, secrets, false)
+            this.redactSkippedProviders(
+              result.skippedProviders,
+              [...new Set([...configuredSecrets.secrets, ...secrets])],
+              configuredSecrets.complete
+            )
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -893,37 +953,62 @@ export class LocalExecutionBackend implements ExecutionBackend {
           ? { skippedProviders: result.skippedProviders }
           : {}),
         warnings,
+        ...(options.runId ? { run_id: options.runId } : {}),
       };
     } catch (error) {
-      this.recordExecution(this.failedRecord("crawl", url, options, error, start), warnings);
+      const configuredSecrets = await configuredSecretsPromise;
+      this.recordExecution(
+        await this.failedRecord("crawl", url, options, error, start, {
+          secrets: [
+            ...new Set([
+              ...configuredSecrets.secrets,
+              ...(error instanceof AllProvidersFailedError ? error.secretsUsed : []),
+            ]),
+          ],
+          complete: configuredSecrets.complete,
+        }),
+        warnings
+      );
       this.flushWarnings(warnings);
       throw error;
     }
   }
 
   /** History record for an execution where every provider failed. */
-  private failedRecord(
+  private async failedRecord(
     command: CapabilityName,
     input: string,
     options: FanoutOptions,
     error: unknown,
     start: number,
     redaction?: { secrets: string[]; complete: boolean }
-  ): ExecutionRecord {
+  ): Promise<ExecutionRecord> {
     const allFailed = error instanceof AllProvidersFailedError ? error : null;
     const skippedProviders = allFailed?.skippedProviders ??
       (error instanceof UnsupportedCommonOptionsError || error instanceof NoEligibleProviderFeatureError
         ? error.skippedProviders
         : undefined);
-    const secrets = redaction?.secrets ?? allFailed?.secretsUsed ?? [];
+    let secrets = [...(redaction?.secrets ?? allFailed?.secretsUsed ?? [])];
+    let complete = redaction?.complete;
+    if (complete === undefined) {
+      try {
+        const resolved = await this.engine.resolveConfiguredSecrets();
+        complete = resolved.complete;
+        secrets = [...new Set([...resolved.secrets, ...secrets])];
+      } catch {
+        complete = false;
+      }
+    }
     // Feature-rejection diagnostics can echo caller-supplied feature names.
     // Without a complete key set, do not persist the request or error text.
-    const historySafe = redaction?.complete ??
+    // Other preflight failures still need the resolved key set: a pasted
+    // credential must not land in history when resolution is incomplete.
+    const historySafe = complete === true &&
       !(error instanceof NoEligibleProviderFeatureError);
     const safeSkippedProviders = this.redactSkippedProviders(
       skippedProviders,
       secrets,
-      redaction?.complete === true
+      complete === true
     );
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
