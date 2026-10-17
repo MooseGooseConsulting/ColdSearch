@@ -73,6 +73,7 @@ test("jina passes through X-* providerOptions as headers, skipping undefined/nul
       providerOptions: {
         "X-Return-Format": "markdown",
         "X-Timeout": 30,
+        "X-Api-Key": "operator-secret",
         "X-No-Cache": undefined,
         "X-Null": null,
         ignored: "not-an-x-header",
@@ -83,6 +84,7 @@ test("jina passes through X-* providerOptions as headers, skipping undefined/nul
   }
   assert.equal(captured["X-Return-Format"], "markdown");
   assert.equal(captured["X-Timeout"], "30");
+  assert.equal("X-Api-Key" in captured, false);
   assert.equal("X-No-Cache" in captured, false);
   assert.equal("X-Null" in captured, false);
   assert.equal("ignored" in captured, false);
