@@ -327,31 +327,22 @@ test("firecrawl search honors providerOptions limit (clamped 1..100) and sources
   assert.deepEqual(bodies[1].sources, ["web", "news"]);
 });
 
-test("firecrawl crawl keeps the 30-poll budget and returns a resumable pending job", async () => {
-  const originalSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, _ms, ...args) => originalSetTimeout(fn, 0, ...args);
-
-  let pollCount = 0;
+test("firecrawl rejects a blank resume job id instead of polling it", async () => {
+  let fetches = 0;
   const restore = installFetchMock({
-    "POST https://api.firecrawl.dev/v2/crawl": async () =>
-      jsonResponse({ success: true, id: "job-pending" }),
-    "GET https://api.firecrawl.dev/v2/crawl/job-pending": async () => {
-      pollCount++;
-      return jsonResponse({ success: true, status: "scraping" });
+    "*": async () => {
+      fetches++;
+      return jsonResponse({ success: true, id: "unused" });
     },
   });
   try {
-    const results = await new FirecrawlAdapter().crawl("https://example.com", "k", { limit: 1 });
-    assert.deepEqual(results, [{
-      url: "https://example.com",
-      title: "",
-      content: "",
-      status: "pending",
-      jobId: "job-pending",
-    }]);
-    assert.equal(pollCount, 30);
+    const adapter = new FirecrawlAdapter();
+    await assert.rejects(
+      adapter.crawl("https://x.example", "k", { resumeJobId: "   " }),
+      /resume job ID must be a non-empty string/
+    );
+    assert.equal(fetches, 0);
   } finally {
     restore();
-    globalThis.setTimeout = originalSetTimeout;
   }
 });
