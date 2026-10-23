@@ -69,7 +69,7 @@ def main():
             seen.add(key)
             w.writerow([name, m["source"], m["session"] or "", m["ts"] or "", m["cwd"] or "", m["kind"],
                         m["tool"] or "", m["snippet"]])
-    print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
+    print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-2]), "categorized": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
     sql = open(os.path.join(HERE, "load.sql")).read().replace("{DIR}", os.path.abspath(out))
     subprocess.run(["psql", "-q", "-f", "-"], input=sql, text=True, check=True, env={**os.environ, **pg_env(url)})
 

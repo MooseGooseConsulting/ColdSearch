@@ -5,7 +5,8 @@ Usage: python3 -I enrich.py OUT_DIR [BATCH_SIZE] [--all]
 Reads OUT_DIR/candidates.json and OUT_DIR/out/*.json. Caches repo content in OUT_DIR/repo_content.json
 and writes OUT_DIR/batches/summary-<run>-NNN.json. Without --all, only research finds and adopted
 repos are summarized; incidental repos (lockfile hits, unengaged search results) keep their GitHub
-description. A summary is redone only when the README changed since it was last summarized.
+description. Cached READMEs are refetched after REFRESH_DAYS, and a summary is redone only when the
+README changed since it was last summarized. Repos whose fetch fails are skipped until a later run.
 """
 import hashlib
 import json
@@ -16,10 +17,11 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python3 -I leaves the script dir off sys.path
-from candidates import merged_classifications  # noqa: E402
+from candidates import CATEGORIES, merged_classifications  # noqa: E402
 
 README_NAMES = ["README.md", "readme.md", "Readme.md", "README.rst", "README.txt", "README", "README.markdown"]
 README_CHARS = 3500
+REFRESH_DAYS = 30  # cached READMEs older than this are refetched, so upstream edits trigger re-summarizing
 
 
 def fetch(batch):
@@ -40,19 +42,21 @@ def fetch(batch):
     if not data:
         sys.exit(f"GraphQL batch failed (exit {p.returncode}): {(p.stderr or p.stdout)[:500]}")
     retry = {e["path"][0] for e in body.get("errors", []) if e.get("type") != "NOT_FOUND" and e.get("path")}
-    out = {}
+    out, failed = {}, []
+    now = time.time()
     for i, r in enumerate(batch):
         if f"r{i}" in retry:
+            failed.append(r)
             continue
         d = data.get(f"r{i}")
         if not d:
-            out[r.lower()] = None
+            out[r.lower()] = {"readme": "", "files": [], "missing": True, "fetched_at": now}
             continue
         text = next((d[f"f{j}"]["text"] for j in range(len(README_NAMES)) if (d.get(f"f{j}") or {}).get("text")), "")
         entries = ((d.get("root") or {}).get("entries")) or []
-        out[r.lower()] = {"readme": clean(text),
+        out[r.lower()] = {"readme": clean(text), "fetched_at": now,
                           "files": [e["name"] + ("/" if e["type"] == "tree" else "") for e in entries][:60]}
-    return out
+    return out, failed
 
 
 def clean(md):
@@ -74,17 +78,23 @@ def main():
                  or cls.get(c["repo"].lower(), {}).get("verdict") == "adopted"]
     cache_path = os.path.join(out, "repo_content.json")
     cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
-    todo = [c["repo"] for c in cands if c["gh"] and c["repo"].lower() not in cache]
+    stale = time.time() - REFRESH_DAYS * 86400
+    todo = [c["repo"] for c in cands if c["gh"] and ((cache.get(c["repo"].lower()) or {}).get("fetched_at") or 0) < stale]
+    failed = set()
     for i in range(0, len(todo), 20):
-        cache.update(fetch(todo[i:i + 20]))
+        got, bad = fetch(todo[i:i + 20])
+        cache.update(got)
+        failed.update(r.lower() for r in bad)
         json.dump(cache, open(cache_path, "w"))
         print(f"fetched {min(i + 20, len(todo))}/{len(todo)}", file=sys.stderr)
     batch_rows = []
     for c in cands:
         key = c["repo"].lower()
+        if key in failed or (c["gh"] and key not in cache):
+            continue  # fetch failed this run: retry next run instead of summarizing an empty README
         content = cache.get(key) or {}
         rhash = hashlib.sha1(content.get("readme", "").encode()).hexdigest()[:12]
-        if cls.get(key, {}).get("readme_hash") == rhash and cls[key].get("category"):
+        if cls.get(key, {}).get("readme_hash") == rhash and cls[key].get("category") in CATEGORIES:
             continue  # already summarized from this README
         g = c["gh"] or {}
         batch_rows.append({
@@ -107,7 +117,8 @@ def main():
     os.makedirs(os.path.join(out, "out"), exist_ok=True)
     for i in range(0, len(batch_rows), size):
         json.dump(batch_rows[i:i + size], open(os.path.join(bdir, f"summary-{run}-{i // size:03d}.json"), "w"), indent=0)
-    print(json.dumps({"in_scope": len(cands), "fetched_now": len(todo), "to_summarize": len(batch_rows),
+    print(json.dumps({"in_scope": len(cands), "fetched_now": len(todo), "fetch_failed": len(failed),
+                      "to_summarize": len(batch_rows),
                       "no_readme": sum(1 for c in cands if not (cache.get(c["repo"].lower()) or {}).get("readme")),
                       "batches": (len(batch_rows) + size - 1) // size}))
 

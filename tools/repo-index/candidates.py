@@ -10,6 +10,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -26,13 +27,22 @@ def fingerprint(c):
 
 
 SUMMARY_FIELDS = ("summary", "category", "topics", "readme_hash")
+CATEGORIES = {"llm-inference", "llm-gateway", "ai-agents", "agent-tooling", "llm-evals-observability", "ml-models-data",
+              "kubernetes", "infrastructure", "ci-cd", "observability", "databases-storage", "networking-security",
+              "developer-tools", "search-scraping", "frontend-ui", "hardware-embedded", "docs-reference", "other"}
+
+
+def run_order(path):
+    """Sort out/ files by the run timestamp in their name (batch-NNN from the first run sorts first)."""
+    m = re.search(r"-(\d{12})-", os.path.basename(path))
+    return (m.group(1) if m else "0", os.path.basename(path))
 
 
 def merged_classifications(out):
     """Per-repo rows from out/: triage (batch-*) owns is_research_find/verdict, the README-based
     summarize pass (summary-*) owns summary/category/topics, and a non-empty our_take from either wins."""
     rows = {}
-    for f in sorted(glob.glob(os.path.join(out, "out", "*.json"))):
+    for f in sorted(glob.glob(os.path.join(out, "out", "*.json")), key=run_order):  # oldest run first
         try:
             data = json.load(open(f))
         except (OSError, ValueError) as e:
@@ -45,6 +55,8 @@ def merged_classifications(out):
             cur = rows.setdefault(r["repo"].lower(), {})
             if is_summary:
                 cur.update({k: r[k] for k in SUMMARY_FIELDS if k in r})
+                if cur.get("category") not in CATEGORIES:  # off-list value: treat as not summarized
+                    cur["category"] = None
                 cur.setdefault("repo", r["repo"])
                 for k in ("is_research_find", "verdict"):  # only fills gaps when no triage row exists
                     cur.setdefault(k, r.get(k))
