@@ -2,8 +2,8 @@
 """Build CSVs from candidates + Haiku outputs + mentions, then upsert into Neon via psql.
 
 Usage: python3 -I load.py OUT_DIR
-Reads OUT_DIR/candidates.json, OUT_DIR/out/*.json (later files win, so summary-* overrides batch-*),
-OUT_DIR/mentions.jsonl.
+Reads OUT_DIR/candidates.json, OUT_DIR/out/*.json (merged: triage owns verdicts, summaries own
+summary/category/topics), OUT_DIR/mentions.jsonl.
 Needs REPO_INDEX_DATABASE_URL. Re-runnable: rows upsert on full_name; mentions dedupe on (full_name, session, snippet).
 """
 import csv
@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # python3 -I leaves the script dir off sys.path
-from candidates import complete  # noqa: E402
+from candidates import complete, merged_classifications  # noqa: E402
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 
@@ -30,16 +30,8 @@ def main():
     if not url:
         sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
     cands = json.load(open(os.path.join(out, "candidates.json")))
-    cls = {}
-    for f in sorted(glob.glob(os.path.join(out, "out", "*.json"))):
-        try:
-            rows = json.load(open(f))
-        except (OSError, ValueError) as e:
-            print(f"skip {f}: {e}", file=sys.stderr)
-            continue
-        for row in rows if isinstance(rows, list) else []:
-            if complete(row):  # partial rows never overwrite a stored classification
-                cls[row["repo"].lower()] = row
+    # partial rows never overwrite a stored classification
+    cls = {k: r for k, r in merged_classifications(out).items() if complete(r)}
     alias_to_name = {}
     rows = []
     for c in cands:

@@ -22,9 +22,7 @@ For EVERY input entry output one object, in the same order:
   "summary": "<2-3 sentences: what it is, what it does, how it is used or deployed (CLI, library, server, operator, MCP server, GitHub Action...). Concrete, from the README and file listing. No marketing words.>",
   "category": "<exactly one value from the category list below>",
   "topics": ["<3-6 tags from the tag rules below>"],
-  "our_take": "<one short sentence on why it came up for us or what we concluded, grounded only in our_snippets; empty string if nothing concrete>",
-  "is_research_find": true|false,
-  "verdict": "adopted"|"rejected"|"reference"|"considered"|"unknown"
+  "our_take": "<one short sentence on why it came up for us or what we concluded, grounded only in our_snippets; empty string if nothing concrete>"
 }
 ```
 
@@ -39,11 +37,6 @@ For EVERY input entry output one object, in the same order:
 - Include the language or runtime only when it matters to a user, e.g. `rocm` or `cuda`.
 - Use the canonical form: `llm-serving`, not `inference-server`. `kubernetes`, not `k8s`. `mcp-server`, not `mcp`. `self-hosted`, `cli`, `github-actions`.
 
-## Verdict and is_research_find (from our_snippets only)
-
-- **is_research_find:** true if we looked the repo up, searched for it, or discussed it as an option or reference. False if it is incidental, e.g. a lockfile dependency or an unengaged search hit.
-- **verdict:** adopted (we installed, used or deployed it), rejected (snippets explicitly say we ruled it out), reference (consulted for docs, code or issues), considered (evaluated, outcome not stated), unknown (cannot tell).
-- Use `unknown` unless a snippet supports the verdict. Do not guess.
-- If the README is empty, summarize from the description and file listing, and say the README was unavailable.
+If the README is empty, summarize from the description and file listing, and say the README was unavailable. Whether we adopted or rejected the repo is decided by the triage step (`CLASSIFIER.md`), not here.
 
 Output must be valid JSON: an array with exactly as many objects as input entries. When all assigned batches are written, reply with only one line per batch: `<batch file name>: <count written>`.

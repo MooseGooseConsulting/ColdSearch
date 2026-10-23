@@ -7,7 +7,6 @@ and writes OUT_DIR/batches/summary-<run>-NNN.json. Without --all, only research 
 repos are summarized; incidental repos (lockfile hits, unengaged search results) keep their GitHub
 description. A summary is redone only when the README changed since it was last summarized.
 """
-import glob
 import hashlib
 import json
 import os
@@ -15,6 +14,9 @@ import re
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python3 -I leaves the script dir off sys.path
+from candidates import merged_classifications  # noqa: E402
 
 README_NAMES = ["README.md", "readme.md", "Readme.md", "README.rst", "README.txt", "README", "README.markdown"]
 README_CHARS = 3500
@@ -62,24 +64,11 @@ def clean(md):
     return md.strip()[:README_CHARS]
 
 
-def latest_classifications(out):
-    rows = {}
-    for f in sorted(glob.glob(os.path.join(out, "out", "*.json"))):  # later files win
-        try:
-            data = json.load(open(f))
-        except (OSError, ValueError):
-            continue
-        for r in data if isinstance(data, list) else []:
-            if isinstance(r, dict) and isinstance(r.get("repo"), str):
-                rows[r["repo"].lower()] = {**rows.get(r["repo"].lower(), {}), **r}
-    return rows
-
-
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     out, size = args[0], int(args[1]) if len(args) > 1 else 25
     cands = json.load(open(os.path.join(out, "candidates.json")))
-    cls = latest_classifications(out)
+    cls = merged_classifications(out)
     if "--all" not in sys.argv:
         cands = [c for c in cands if cls.get(c["repo"].lower(), {}).get("is_research_find") is True
                  or cls.get(c["repo"].lower(), {}).get("verdict") == "adopted"]
