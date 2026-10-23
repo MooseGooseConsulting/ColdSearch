@@ -4,7 +4,7 @@
 Usage: python3 -I load.py OUT_DIR
 Reads OUT_DIR/candidates.json, OUT_DIR/out/*.json (merged: triage owns verdicts, summaries own
 summary/category/topics), OUT_DIR/mentions.jsonl.
-Needs REPO_INDEX_DATABASE_URL. Re-runnable: rows upsert on full_name; mentions dedupe on (full_name, session, snippet).
+Takes REPO_INDEX_DATABASE_URL from the environment, else from Doppler apps-data/dev. Re-runnable: rows upsert on full_name; mentions dedupe on (full_name, session, snippet).
 """
 import csv
 import glob
@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # python3 -I leaves the script dir off sys.path
 from candidates import complete, merged_classifications  # noqa: E402
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
+DOPPLER_PROJECT, DOPPLER_CONFIG = "apps-data", "dev"  # where REPO_INDEX_DATABASE_URL lives
 
 
 def pgarr(xs):
@@ -26,9 +27,7 @@ def pgarr(xs):
 
 def main():
     out = sys.argv[1]
-    url = os.environ.get("REPO_INDEX_DATABASE_URL")
-    if not url:
-        sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
+    url = os.environ.get("REPO_INDEX_DATABASE_URL") or doppler_url()
     cands = json.load(open(os.path.join(out, "candidates.json")))
     # partial rows never overwrite a stored classification
     cls = {k: r for k, r in merged_classifications(out).items() if complete(r)}
@@ -72,6 +71,16 @@ def main():
     print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-2]), "categorized": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
     sql = open(os.path.join(HERE, "load.sql")).read().replace("{DIR}", os.path.abspath(out))
     subprocess.run(["psql", "-q", "-f", "-"], input=sql, text=True, check=True, env={**os.environ, **pg_env(url)})
+
+
+def doppler_url():
+    p = subprocess.run(["doppler", "secrets", "get", "REPO_INDEX_DATABASE_URL", "--project", DOPPLER_PROJECT,
+                        "--config", DOPPLER_CONFIG, "--plain"],
+                       capture_output=True, text=True, env={**os.environ, "MISE_QUIET": "1"})
+    if p.returncode or not p.stdout.strip():
+        sys.exit(f"REPO_INDEX_DATABASE_URL is not set and Doppler {DOPPLER_PROJECT}/{DOPPLER_CONFIG} "
+                 f"did not return it: {p.stderr.strip()[:300]}")
+    return p.stdout.strip()
 
 
 def pg_env(url):
