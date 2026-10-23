@@ -25,6 +25,8 @@ NAME = r"[A-Za-z0-9_.-]{1,100}"
 URL_RE = re.compile(
     rf"(?<![A-Za-z0-9_.-])(?:https?://)?(?:www\.)?(?:github\.com|api\.github\.com/repos|raw\.githubusercontent\.com|codeload\.github\.com)/({SEG})/({NAME})"
 )
+# scp-style clone URLs: git@github.com:owner/repo.git
+SCP_RE = re.compile(rf"git@github\.com:({SEG})/({NAME})")
 # bare owner/repo where gh names it explicitly
 GH_ARG_RE = re.compile(rf"(?:gh\s+repo\s+(?:view|clone|fork)\s+|--repo[ =]|-R\s+|gh\s+api\s+/?repos/)({SEG})/({NAME})")
 GH_SEARCH_LINE_RE = re.compile(rf"^({SEG})/({NAME})\s", re.M)
@@ -62,7 +64,7 @@ def norm(owner, name):
 
 def find_repos(text, gh_search_output=False):
     out = []
-    for rx in (URL_RE, GH_ARG_RE, GH_JSON_RE):
+    for rx in (URL_RE, SCP_RE, GH_ARG_RE, GH_JSON_RE):
         for m in rx.finditer(text):
             r = norm(m.group(1), m.group(2))
             if r:
@@ -302,6 +304,7 @@ def main():
             "owned": key.split("/")[0] in OWN_OWNERS,
             "mentions": len(ms),
             "sessions": len(sessions),
+            "session_ids": sorted(s for s in sessions if s),
             "kinds": dict(kinds),
             "first_seen": ts[0] if ts else None,
             "last_seen": ts[-1] if ts else None,

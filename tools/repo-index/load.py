@@ -14,6 +14,8 @@ import sys
 from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # python3 -I leaves the script dir off sys.path
+from candidates import complete  # noqa: E402
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 
@@ -30,10 +32,13 @@ def main():
     cls = {}
     for f in sorted(glob.glob(os.path.join(out, "out", "batch-*.json"))):
         try:
-            for row in json.load(open(f)):
-                cls[row["repo"].lower()] = row
-        except (ValueError, KeyError, TypeError) as e:
+            rows = json.load(open(f))
+        except (OSError, ValueError) as e:
             print(f"skip {f}: {e}", file=sys.stderr)
+            continue
+        for row in rows if isinstance(rows, list) else []:
+            if complete(row):  # partial rows never overwrite a stored classification
+                cls[row["repo"].lower()] = row
     alias_to_name = {}
     rows = []
     for c in cands:

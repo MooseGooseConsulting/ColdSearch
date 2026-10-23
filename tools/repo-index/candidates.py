@@ -42,7 +42,7 @@ def main():
             stats["owned_fork_to_parent"] += 1
             name, m = pname, meta.get(pname.lower())  # parent metadata may be absent; keep name
         key = name.lower()
-        c = merged.setdefault(key, {"repo": name, "gh": m, "aliases": set(), "mentions": 0, "session_n": 0,
+        c = merged.setdefault(key, {"repo": name, "gh": m, "aliases": set(), "mentions": 0, "session_n": 0, "session_ids": set(),
                                     "kinds": defaultdict(int), "first_seen": None, "last_seen": None,
                                     "cwds": set(), "snippets": [], "forked_by_us": False})
         if m and not c["gh"]:
@@ -52,7 +52,8 @@ def main():
         if r["owned"]:
             c["forked_by_us"] = True
         c["mentions"] += r["mentions"]
-        c["session_n"] += r["sessions"]
+        c["session_ids"].update(r.get("session_ids", []))
+        c["session_n"] = max(len(c["session_ids"]), c["session_n"], r["sessions"])  # distinct across aliases
         for k, v in r["kinds"].items():
             c["kinds"][k] += v
         for f, op in (("first_seen", min), ("last_seen", max)):
@@ -66,6 +67,7 @@ def main():
             stats["local_only_dropped"] += 1
             continue
         c["aliases"] = sorted(c["aliases"])
+        del c["session_ids"]
         c["cwds"] = sorted(c["cwds"])[:4]
         c["kinds"] = dict(c["kinds"])
         c["snippets"] = c["snippets"][:3]

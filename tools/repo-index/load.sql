@@ -31,6 +31,12 @@ on conflict (full_name) do update set
 create temp table s_mentions (full_name text, source text, session text, ts timestamptz, cwd text, kind text,
                               tool text, snippet text) on commit drop;
 \copy s_mentions from '{DIR}/mentions.csv' with (format csv, null '')
+-- a (repo, session) pair re-extracted this run is replaced wholesale, so snippets from older
+-- extraction/redaction rules don't linger; sessions whose transcripts are gone keep their rows
+delete from repo_mentions m using (select distinct full_name, session from s_mentions) s
+ where m.full_name = s.full_name and m.session is not distinct from s.session
+   and not exists (select 1 from s_mentions x where x.full_name = m.full_name
+                   and x.session is not distinct from m.session and x.snippet = m.snippet);
 insert into repo_mentions (full_name, source, session, ts, cwd, kind, tool, snippet)
 select full_name, source, session, ts, cwd, kind, tool, snippet from s_mentions
 on conflict (full_name, session, snippet) do nothing;
