@@ -3,9 +3,11 @@
 
 Usage: python3 -I candidates.py OUT_DIR [BATCH_SIZE]
 Writes OUT_DIR/candidates.json and OUT_DIR/batches/batch-<run>-NNN.json for repos that
-no OUT_DIR/out/batch-*.json has classified yet, so re-runs only classify new repos.
+no OUT_DIR/out/batch-*.json has classified yet, or whose evidence changed since they were
+batched (OUT_DIR/fingerprints.json), so re-runs only classify new or changed repos.
 """
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -15,6 +17,12 @@ from collections import defaultdict
 OWN = {"coldaine", "moosegooseconsulting"}
 RESEARCH_KINDS = ("search", "prose_assistant", "prose_user")
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
+
+
+def fingerprint(c):
+    """Hash of the classifier's evidence; when it changes, the repo is re-batched."""
+    ev = json.dumps([sorted(c["kinds"]), [s["snippet"] for s in c["snippets"]]], sort_keys=True)
+    return hashlib.sha1(ev.encode()).hexdigest()
 
 
 def complete(r):
@@ -86,7 +94,15 @@ def main():
             continue
         # only fully classified rows count as done; anything partial gets re-batched
         done.update(r["repo"].lower() for r in rows if complete(r))
-    todo = [c for c in cands if c["repo"].lower() not in done]
+    fp_path = os.path.join(out, "fingerprints.json")
+    fps = json.load(open(fp_path)) if os.path.exists(fp_path) else {}
+    todo = []
+    for c in cands:
+        key, fp = c["repo"].lower(), fingerprint(c)
+        if key in done and fps.setdefault(key, fp) == fp:  # first sighting of a classified repo sets the baseline
+            continue
+        todo.append(c)
+        fps[key] = fp
     run = time.strftime("%Y%m%d%H%M")
     bdir = os.path.join(out, "batches")
     os.makedirs(bdir, exist_ok=True)
@@ -109,6 +125,7 @@ def main():
                              for s in c["snippets"]],
             })
         json.dump(batch, open(os.path.join(bdir, f"batch-{run}-{i // size:03d}.json"), "w"), indent=0)
+    json.dump(fps, open(fp_path, "w"))
     stats.update(candidates=len(cands), already_classified=len(cands) - len(todo),
                  batches=(len(todo) + size - 1) // size,
                  unresolved=sum(1 for c in cands if not c["gh"]))
