@@ -2,7 +2,7 @@
 
 A Postgres index of GitHub repos that came up in past Claude Code and Codex sessions. Research can exclude them from new searches ("already evaluated") and still query what we concluded about each one. It serves G3 in `docs/NORTH_STAR.md` (search and reuse prior work). It is separate from ColdSearch's own execution history and cache (`docs/architecture.md`). Those record ColdSearch calls; this records what agents concluded about repos across every tool. ColdSearch search does not read it yet. Wiring it in as a result filter would need its own plan or ADR.
 
-**Database:** Neon project `coldsearch` (`lively-wildflower-09919715`, personal org), database `repo_index`. The scripts read `REPO_INDEX_DATABASE_URL`. It is not in Doppler yet. Locally it is at `~/.config/coldsearch/repo-index.dburl` (mode 600), or get it from the Neon console.
+**Database:** Neon project `coldsearch` (`lively-wildflower-09919715`, personal org), database `repo_index`. The connection string is the Doppler secret `REPO_INDEX_DATABASE_URL` in project `apps-data`, config `dev`. `load.py` fetches it with the Doppler CLI unless the variable is already set. Agents can also query the database through the Neon MCP server without it.
 
 ## Tables
 
