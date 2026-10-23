@@ -20,6 +20,7 @@ import {
 import { executeToolCall } from "./tools/substrate.js";
 import {
   INTENT_DEFS,
+  intentProviderOptions,
   IntentRejectionError,
   isSearchIntent,
   listSearchIntents,
@@ -49,7 +50,7 @@ import {
 } from "./status.js";
 import fs from "node:fs";
 import path from "node:path";
-import type { CapabilityCategory, CapabilityName, CLIOptions, Config } from "./types.js";
+import type { CapabilityCategory, CapabilityName, CLIOptions, Config, NormalizedResult } from "./types.js";
 
 /**
  * Extended CLI options including mode-specific options.
@@ -82,6 +83,8 @@ interface ExtendedCLIOptions extends CLIOptions {
   intent?: SearchIntent;
   /** Provider date filter for search (distinct from --freshness cache TTL) */
   timeRange?: string;
+  /** code-context only: co-request page text and report the token reduction per result */
+  measureTokens?: boolean;
   /** Bypass the read-through result cache */
   noCache?: boolean;
   /** Per-invocation cache TTL override (e.g. "30m"); wins for this invocation only */
@@ -336,6 +339,10 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.freshness = args[i];
         break;
 
+      case "--measure-tokens":
+        options.measureTokens = true;
+        break;
+
       case "--all":
         if (!options.historyCommand || options.historyCommand.sub !== "clear") {
           throw new Error("--all is only valid with 'history clear'");
@@ -525,6 +532,19 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
       throw new Error("--time-range is only valid with search");
     }
   }
+  if (options.measureTokens) {
+    // The token report compares highlights against page text; only the
+    // code-context intent requests highlights, so the flag means nothing elsewhere.
+    if (nonCapabilitySurface || options.command !== "search" || options.intent !== "code-context") {
+      throw new Error("--measure-tokens is only valid with search --intent code-context");
+    }
+  }
+  // code-context is the Exa "Code Search Tool" shape: five results unless the
+  // caller asks for a different count.
+  if (options.intent === "code-context" && !options.limitSet) {
+    options.limit = INTENT_DEFS["code-context"].defaultLimit ?? 5;
+    options.limitSet = true;
+  }
 
   return options;
 }
@@ -568,11 +588,13 @@ Options:
     --rerank STRATEGY    Reranker: rrf|score|none (default: rrf)
     --intent ID          Intent behind the command; unroutable intents are
                          rejected before any provider call.
-                         search: web-link-search|content-backed-retrieval|url-similarity
+                         search: web-link-search|content-backed-retrieval|code-context|url-similarity
                          extract: known-url-extraction|structured-extraction
                          crawl: crawl
     --time-range VALUE   Provider date filter for search, e.g. day|week|month|year
                          (honored by tavily/searxng; distinct from --freshness)
+    --measure-tokens     With --intent code-context: also fetch page text and
+                         report highlights-vs-text token counts per result
     
   Agent Options (requires --agent):
     --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai|isoquant (default: isoquant)
@@ -619,6 +641,11 @@ Examples:
   
   # Use single random provider
   ${APP_NAME} --single-provider "query"
+
+  # Token-efficient programming-docs context for a coding agent (exa lite +
+  # highlights; snippet = first two highlight lines; 5 results by default)
+  ${APP_NAME} search --intent code-context "React 19 migration guide useActionState ref as prop breaking changes"
+  ${APP_NAME} search --intent code-context --measure-tokens "zod v4 discriminatedUnion breaking changes"
   
   # Inspect the provider-tool registry (no network)
   ${APP_NAME} tool list --json
@@ -645,6 +672,28 @@ Examples:
   ${APP_NAME} --agent "explain quantum computing"
   ${APP_NAME} --agent --max-steps 10 "latest fusion energy developments"
 `);
+}
+
+/**
+ * Roll per-result token reports into one summary so the reduction the
+ * highlights bought is visible without reading every result.
+ */
+function summarizeTokenReport(results: NormalizedResult[]): Record<string, unknown> {
+  const reported = results.filter((r) => r.tokens);
+  const highlights = reported.reduce((n, r) => n + (r.tokens?.highlights ?? 0), 0);
+  const measured = reported.filter((r) => r.tokens?.text !== null && r.tokens?.text !== undefined);
+  const text = measured.reduce((n, r) => n + (r.tokens?.text ?? 0), 0);
+  return {
+    tokenizer: reported[0]?.tokens?.tokenizer ?? null,
+    results_measured: measured.length,
+    results_unmeasured: reported.length - measured.length,
+    highlight_tokens: highlights,
+    text_tokens: measured.length > 0 ? text : null,
+    reduction_pct:
+      measured.length > 0 && text > 0
+        ? Math.round(((text - highlights) / text) * 1000) / 10
+        : null,
+  };
 }
 
 /** Default intent behind each capability command when --intent is absent. */
@@ -767,6 +816,7 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
     freshness: options.freshness,
     intent: intentResolution.intent,
     requireFeatures: intentResolution.requireFeatures,
+    ...(options.measureTokens ? { measureTokens: true } : {}),
     ...(options.timeRange || intentResolution.intent === "content-backed-retrieval"
       ? {
           commonOptions: {
@@ -796,6 +846,7 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
     results: result.results,
     providers_used: result.providersUsed,
     total: result.results.length,
+    ...(options.measureTokens ? { token_report: summarizeTokenReport(result.results) } : {}),
     errors: Object.keys(result.errors).length > 0 ? result.errors : undefined,
     skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
       ? result.skippedProviders
@@ -1075,10 +1126,14 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
       }
     }
 
+    // Options the intent fixes for this provider (e.g. code-context = exa
+    // lite + highlights), so a dry run shows the request shape that will go out.
+    const fixedOptions = intentProviderOptions(intentResolution.intent, provider);
     return {
       provider,
       capability,
       key_pool: { count: keyCount, strategy: keyStrategy, preview: keyPreview },
+      ...(fixedOptions ? { intent_provider_options: fixedOptions } : {}),
       warnings: warnings.length ? warnings : undefined,
     };
   });
@@ -1099,6 +1154,8 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
         }
       : {}),
     query_or_url: options.query,
+    ...(capability === "search" && options.limitSet ? { limit: options.limit } : {}),
+    ...(options.measureTokens ? { measure_tokens: true } : {}),
     providers: plannedProviders,
     ...(Object.keys(skippedProviders).length > 0
       ? { skipped_providers: skippedProviders }

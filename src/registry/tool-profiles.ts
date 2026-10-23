@@ -106,9 +106,12 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     categories: ["search", "research"],
     description:
       "Unified web search behind one endpoint. The `type` knob spans " +
-      "instant/fast/auto/deep-lite/deep/deep-reasoning, so the same tool covers " +
-      "fast retrieval and research-grade reasoning. Content can be attached " +
-      "directly via `contents`. Category enum current as of 2026-10: company, " +
+      "lite/auto/deep (recommended tiers as of Exa 3.0, 2026-10; " +
+      "fast/instant/deep-lite/deep-reasoning accepted as legacy), so the same " +
+      "tool covers cheap retrieval and research-grade reasoning. `lite` uses " +
+      "the auto index with less compute on candidates, highlights and ranking " +
+      "and backs the `code-context` intent. Content can be attached directly " +
+      "via `contents`; highlights carry no extra charge. Category enum current as of 2026-10: company, " +
       "people, publication (replaced research paper), news, personal site, " +
       "financial report; pdf/github/tweet deprecated. `livecrawl` is deprecated " +
       "upstream. On `/search`, freshness uses `contents.maxAgeHours` " +
@@ -162,7 +165,9 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
         ],
         notes:
           "`type` is not a portable knob: deep-lite/deep/deep-reasoning are not " +
-          "equivalent to a normal SERP search and should not be flattened into one.",
+          "equivalent to a normal SERP search and should not be flattened into one. " +
+          "The `code-context` intent fixes type=lite + contents.highlights and " +
+          "renders the first two highlight lines per result as the snippet.",
       },
       {
         category: "research",
@@ -187,7 +192,7 @@ export const providerToolProfiles: Record<string, ProviderToolProfile> = {
     execution: { mode: "sync", supportsWait: true },
     output: { rawPreserved: true, summarySupported: true, resultEnvelope: "search" },
     schemaSource: "official-docs",
-    schemaLastVerified: "2026-10-11",
+    schemaLastVerified: "2026-10-23",
     status: "wired",
     adapterMethod: "search",
   },

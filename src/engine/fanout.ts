@@ -22,6 +22,7 @@ import {
   UnsupportedCommonOptionsError,
 } from "../dispatch/translate.js";
 import {
+  intentProviderOptions,
   resolveOptionsForIntent,
   type SearchIntent,
 } from "../dispatch/intents.js";
@@ -105,6 +106,12 @@ export interface FanoutOptions {
    * skippedProviders by getProvidersForCapability (Codex on #85).
    */
   intentExcludedProviders?: Record<string, string>;
+  /**
+   * code-context only: co-request full page text so the token reduction of
+   * highlights versus text can be measured per result. Costs a text fetch per
+   * result upstream; the text itself is never returned.
+   */
+  measureTokens?: boolean;
 }
 
 /**
@@ -1089,10 +1096,26 @@ export class FanoutEngine {
         ...options.commonOptions,
         ...(providerLimit !== undefined ? { limit: providerLimit } : {}),
       };
+      // Intent-fixed provider options win over config so the tool keeps the
+      // shape the intent defines (e.g. code-context = exa lite + highlights).
+      const fixedProviderOptions = intentProviderOptions(options.intent, provider);
+      const configuredProviderOptions = this.adapterProviderOptions(
+        provider,
+        "search",
+        translatedCommonOptions
+      );
+      const providerOptions =
+        fixedProviderOptions || options.measureTokens
+          ? {
+              ...(configuredProviderOptions ?? {}),
+              ...(fixedProviderOptions ?? {}),
+              ...(options.measureTokens ? { measureText: true } : {}),
+            }
+          : configuredProviderOptions;
       const callOptions = {
         ...(providerLimit !== undefined ? { limit: providerLimit } : {}),
         commonOptions: options.commonOptions,
-        providerOptions: this.adapterProviderOptions(provider, "search", translatedCommonOptions),
+        providerOptions,
       };
       let results: NormalizedResult[];
       if (options.intent === "url-similarity") {

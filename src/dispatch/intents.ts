@@ -26,6 +26,7 @@ import type {
 export type SearchIntent =
   | "web-link-search"
   | "content-backed-retrieval"
+  | "code-context"
   | "url-similarity"
   | "known-url-extraction"
   | "structured-extraction"
@@ -50,6 +51,14 @@ export interface IntentDef {
   /** Surfaced on every eligibility entry and rendered by the CLI. */
   deprecation?: string;
   notes?: string;
+  /**
+   * Provider options the intent fixes per provider, applied over config
+   * options at dispatch time. The intent defines the tool's shape; config
+   * cannot loosen it, so the result is comparable across runs.
+   */
+  providerOptions?: Record<string, Record<string, unknown>>;
+  /** Result count the intent uses when the caller gave no explicit limit. */
+  defaultLimit?: number;
 }
 
 export const INTENT_DEFS: Record<SearchIntent, IntentDef> = {
@@ -65,6 +74,23 @@ export const INTENT_DEFS: Record<SearchIntent, IntentDef> = {
     notes:
       "Results must carry page content, not just links (common option " +
       "`includeContent`, profile feature predicate `integratedContent`).",
+  },
+  "code-context": {
+    category: "search",
+    requireFeatures: ["highlights"],
+    nativeOnly: { provider: "exa", adapterMethod: "search" },
+    // Exa "Code Search Tool" agent-tool template: one lite search, five
+    // results, highlights on, first two highlight lines rendered as the tool
+    // output, no LLM in the preview loop. `measureText` is added by
+    // `--measure-tokens` to co-request page text for the reduction report.
+    providerOptions: {
+      exa: { searchType: "lite", highlights: true, snippetHighlightLines: 2 },
+    },
+    defaultLimit: 5,
+    notes:
+      "Token-efficient programming-docs lookup for coding agents: exa /search " +
+      "type=lite with highlights; snippet = first two highlight lines per " +
+      "result; `--measure-tokens` adds the per-result token reduction.",
   },
   "url-similarity": {
     category: "search",
@@ -106,6 +132,18 @@ export const INTENT_DEFS: Record<SearchIntent, IntentDef> = {
 };
 
 const SEARCH_INTENT_IDS = Object.keys(INTENT_DEFS) as SearchIntent[];
+
+/**
+ * Provider options an intent fixes for `provider`, or undefined when the
+ * intent leaves provider options to config. Pure; no config access.
+ */
+export function intentProviderOptions(
+  intent: SearchIntent | undefined,
+  provider: string
+): Record<string, unknown> | undefined {
+  if (!intent) return undefined;
+  return INTENT_DEFS[intent].providerOptions?.[provider];
+}
 
 export function listSearchIntents(): SearchIntent[] {
   return SEARCH_INTENT_IDS;

@@ -26,6 +26,7 @@ function makeConfig(capabilities = {}) {
 const EXPECTED_CATEGORIES = {
   "web-link-search": "search",
   "content-backed-retrieval": "search",
+  "code-context": "search",
   "url-similarity": "search",
   "known-url-extraction": "extract",
   "structured-extraction": "extract",
@@ -35,7 +36,7 @@ const EXPECTED_CATEGORIES = {
   research: "research",
 };
 
-test("INTENT_DEFS declares the nine intents with their categories", () => {
+test("INTENT_DEFS declares the ten intents with their categories", () => {
   assert.deepEqual(
     [...listSearchIntents()].sort(),
     Object.keys(EXPECTED_CATEGORIES).sort()
@@ -206,4 +207,34 @@ test("crawl intent resolves wired crawl tools with fit ordering", () => {
     "direct crawlers first; exa's derived contents-synthesis last"
   );
   assert.equal(resolution.eligible[0].executionMode, "async-job");
+});
+
+test("code-context is native-only (exa search) and fixes lite + highlights", async () => {
+  const { intentProviderOptions } = await import("../dist/dispatch/intents.js");
+  const resolution = resolveIntent("code-context", makeConfig());
+  assert.equal(resolution.eligible.length, 1);
+  assert.equal(resolution.eligible[0].id, "exa.search");
+  assert.equal(resolution.eligible[0].status, "wired");
+  assert.deepEqual(resolution.routedProviders, ["exa"]);
+  assert.deepEqual(resolution.requireFeatures, ["highlights"]);
+  // Template shape: type=lite, contents.highlights=true, two highlight lines
+  // rendered as the snippet, five results unless the caller says otherwise.
+  assert.deepEqual(intentProviderOptions("code-context", "exa"), {
+    searchType: "lite",
+    highlights: true,
+    snippetHighlightLines: 2,
+  });
+  assert.equal(INTENT_DEFS["code-context"].defaultLimit, 5);
+  assert.equal(intentProviderOptions("code-context", "tavily"), undefined);
+  assert.equal(intentProviderOptions("web-link-search", "exa"), undefined);
+});
+
+test("code-context rejects when exa is not in the configured search pool", () => {
+  assert.throws(
+    () =>
+      rejectIntent(
+        resolveIntent("code-context", makeConfig({ search: { providers: ["tavily", "brave"] } }))
+      ),
+    IntentRejectionError
+  );
 });

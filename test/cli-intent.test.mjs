@@ -176,3 +176,48 @@ test("--time-range is only valid with search", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Error \(config\): --time-range is only valid with search/);
 });
+
+test("code-context dry-run routes to exa only and defaults to five results", () => {
+  withTempDir((dir) => {
+    const configPath = writeConfig(dir, SEARCH_CONFIG);
+    const result = runCli([
+      "search",
+      "--intent",
+      "code-context",
+      "--dry-run",
+      "--json",
+      "--config",
+      configPath,
+      "React 19 migration guide useActionState ref as prop breaking changes",
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.intent, "code-context");
+    assert.equal(out.limit, 5);
+    assert.deepEqual(out.require_features, ["highlights"]);
+    assert.deepEqual(out.providers.map((p) => p.provider), ["exa"]);
+    assert.deepEqual(out.providers[0].intent_provider_options, {
+      searchType: "lite",
+      highlights: true,
+      snippetHighlightLines: 2,
+    });
+    assert.equal(out.estimated_provider_attempts, 1, "tavily is narrowed out by the native-only intent");
+  });
+});
+
+test("--measure-tokens is rejected outside search --intent code-context", () => {
+  withTempDir((dir) => {
+    const configPath = writeConfig(dir, SEARCH_CONFIG);
+    const result = runCli([
+      "search",
+      "--measure-tokens",
+      "--dry-run",
+      "--json",
+      "--config",
+      configPath,
+      "hello",
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--measure-tokens is only valid with search --intent code-context/);
+  });
+});

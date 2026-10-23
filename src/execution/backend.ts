@@ -411,6 +411,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
       ...(options.intent ? { intent: options.intent } : {}),
       ...(options.requireFeatures?.length ? { requireFeatures: options.requireFeatures } : {}),
       ...(options.commonOptions ? { commonOptions: options.commonOptions } : {}),
+      ...(options.measureTokens ? { measureTokens: true } : {}),
     };
   }
 

@@ -202,12 +202,15 @@ they go stale fast and are intentionally not mirrored here.
   - **Config-driven options** (set in `config.toml` under `[providers.exa.options]`):
     - `highlights` — token-efficient excerpts (~10x reduction for agents)
     - `category` — specialized indexes: `company`, `people`, `publication` (replaced `research paper`), `news`, `personal site`, `financial report`; `pdf`/`github`/`tweet` deprecated
-    - `searchType` — `auto`, `fast`, `instant`, `deep-lite`, `deep`, `deep-reasoning`
+    - `searchType` — `lite`, `auto`, `deep` (recommended tiers, Exa 3.0 / 2026-10); `fast`, `instant`, `deep-lite`, `deep-reasoning` accepted as legacy
+    - `measureText` — with `highlights`, also request page text in the same call so the token reduction can be measured (the text is counted, never returned)
+    - `snippetHighlightLines` — with `highlights`, build `snippet` from the first N highlight lines (newline-joined) and keep every highlight on `highlights`
     - `maxAgeHours` — `0` = always livecrawl, `-1` = never livecrawl
     - `includeDomains` / `excludeDomains` — domain filters
     - `numResults` — result count (default: 10)
     - `maxCharacters` — text length cap (default: 15000)
 - `POST /contents` → **extract** ✅ and backs synthesized **crawl** ✅ (`livecrawl` is deprecated upstream — `maxAgeHours` + `livecrawlTimeout` are the migration path)
+- `POST /search` with `type=lite` + `contents.highlights` → **`search --intent code-context`** ✅ — the Exa "Code Search Tool" agent-tool shape (one request, 5 results, first two highlight lines per result as the snippet, no LLM in the loop); `--measure-tokens` co-requests page text and reports highlights-vs-text token counts per result with one tokenizer (`o200k_base`, js-tiktoken), plus a `token_report` summary
 - `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method and `search --intent url-similarity`; **deprecated upstream** as of 2026 — still callable)
 - `POST /answer` ❌
 - Keyless access (no `x-api-key`) returns **HTTP 402** with an x402 payment

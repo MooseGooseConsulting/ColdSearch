@@ -1,4 +1,5 @@
 import { fetchJson } from "../http.js";
+import { buildTokenReport } from "../tokens/count.js";
 import type {
   SearchAdapter,
   NormalizedResult,
@@ -14,6 +15,18 @@ import type {
 interface ExaProviderOptions {
   /** Use highlights (token-efficient excerpts) instead of full text. Default: false */
   highlights?: boolean;
+  /**
+   * With `highlights`, also request full page text in the same call so the
+   * token reduction can be measured (code-context `--measure-tokens`). Text is
+   * never echoed in the normalized result; only its token count is.
+   */
+  measureText?: boolean;
+  /**
+   * With `highlights`, build `snippet` from the first N highlight lines joined
+   * by newlines (the code-context tool output) instead of joining all of them
+   * with " ... ". The full array is always preserved on `highlights`.
+   */
+  snippetHighlightLines?: number;
   /** Max characters for text content. Default: 15000 */
   maxCharacters?: number;
   /**
@@ -24,11 +37,12 @@ interface ExaProviderOptions {
    */
   category?: string;
   /**
-   * Search type. Current upstream enum is
-   * auto (default) | fast | instant | deep-lite | deep | deep-reasoning;
-   * the retired keyword/neural modes were removed from the API.
+   * Search type. Current upstream enum (Exa 3.0, 2026-10): recommended tiers
+   * are lite | auto (default) | deep; fast, instant, deep-lite and
+   * deep-reasoning remain accepted as legacy values. The retired
+   * keyword/neural modes were removed from the API.
    */
-  searchType?: "auto" | "fast" | "instant" | "deep-lite" | "deep" | "deep-reasoning";
+  searchType?: "lite" | "auto" | "fast" | "instant" | "deep-lite" | "deep" | "deep-reasoning";
   /** Max age of indexed content in hours. 0 = always livecrawl, -1 = never livecrawl */
   maxAgeHours?: number;
   /** Domains to include in search results */
@@ -97,6 +111,7 @@ interface ExaFindSimilarResponse {
  * ```
  */
 const EXA_SEARCH_TYPES: readonly string[] = [
+  "lite",
   "auto",
   "fast",
   "instant",
@@ -152,9 +167,14 @@ export class ExaAdapter implements SearchAdapter {
       body.category = opts.category;
     }
 
-    // Content mode: highlights (token-efficient) vs full text
+    // Content mode: highlights (token-efficient) vs full text. With
+    // measureText, highlights and text travel in the same request so the
+    // token reduction can be measured without a second call.
     const contents: Record<string, unknown> = opts.highlights
-      ? { highlights: true }
+      ? {
+          highlights: true,
+          ...(opts.measureText ? { text: { maxCharacters: opts.maxCharacters ?? 15000 } } : {}),
+        }
       : { text: { maxCharacters: opts.maxCharacters ?? 15000 } };
 
     // Freshness control. Exa expects maxAgeHours nested under `contents`, not at
@@ -204,23 +224,46 @@ export class ExaAdapter implements SearchAdapter {
     // Normalize Exa results to shared schema. Content-backed retrieval must
     // not silently succeed with link-only hits when page retrieval failed.
     const rawResults = data.results || [];
-    const normalized = rawResults.flatMap((result, index) => {
-      const pageText = result.text?.trim();
-      if (requirePageContent && !pageText) return [];
-      // If highlights mode, join highlights into snippet; otherwise use text
-      const snippet = searchOptions.highlights && result.highlights?.length
-        ? result.highlights.join(" ... ")
-        : (requirePageContent ? pageText! : result.text || "");
+    const highlightMode = searchOptions.highlights === true;
+    const snippetLines = searchOptions.snippetHighlightLines;
+    const normalized = await Promise.all(
+      rawResults.flatMap((result, index) => {
+        const pageText = result.text?.trim();
+        if (requirePageContent && !pageText) return [];
+        const highlights = highlightMode ? result.highlights ?? [] : undefined;
+        // Highlight mode: snippet is either the first N highlight lines (the
+        // code-context tool output) or every highlight joined with " ... ".
+        // Otherwise snippet is the page text.
+        let snippet: string;
+        if (highlights && highlights.length > 0) {
+          snippet =
+            snippetLines !== undefined
+              ? highlights.slice(0, Math.max(1, Math.floor(snippetLines))).join("\n")
+              : highlights.join(" ... ");
+        } else {
+          snippet = requirePageContent ? pageText! : result.text || "";
+        }
 
-      return [{
-        title: result.title || "",
-        url: result.url || "",
-        snippet,
-        // Exa scores are 0-1, higher is better; clamp fallback to [0, 1]
-        score: result.score ?? Math.max(0, 1 - index * 0.1),
-        source: this.name,
-      }];
-    });
+        const base: NormalizedResult = {
+          title: result.title || "",
+          url: result.url || "",
+          snippet,
+          // Exa scores are 0-1, higher is better; clamp fallback to [0, 1]
+          score: result.score ?? Math.max(0, 1 - index * 0.1),
+          source: this.name,
+          ...(highlights ? { highlights } : {}),
+        };
+        if (!highlights || !searchOptions.measureText) return [Promise.resolve(base)];
+        // Token report: same tokenizer over the highlights and the full text.
+        // The text itself stays out of the normalized result on purpose.
+        return [
+          buildTokenReport(highlights, result.text ?? undefined).then((tokens) => ({
+            ...base,
+            tokens,
+          })),
+        ];
+      })
+    );
     if (requirePageContent && rawResults.length > 0 && normalized.length === 0) {
       throw new Error("Exa returned no page content for content-backed retrieval");
     }

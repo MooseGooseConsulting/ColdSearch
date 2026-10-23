@@ -8,6 +8,18 @@ export interface NormalizedResult {
   snippet: string;
   score: number;
   source: string;
+  /**
+   * Provider highlight excerpts, preserved in full when the backing tool
+   * returned them (NORTH_STAR G4). `snippet` may carry only a prefix of these.
+   */
+  highlights?: string[];
+  /** Token-efficiency report for highlight-mode results (see src/tokens/count.ts). */
+  tokens?: {
+    tokenizer: string;
+    highlights: number;
+    text: number | null;
+    reductionPct: number | null;
+  };
 }
 
 export interface ExtractResult {
