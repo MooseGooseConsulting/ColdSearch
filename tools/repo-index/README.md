@@ -6,7 +6,7 @@ A Postgres index of GitHub repos that came up in past Claude Code and Codex sess
 
 ## Tables
 
-- `repos`: one row per canonical repo (GitHub `nameWithOwner`, so renames merge). Holds GitHub metadata, `is_research_find`, `verdict` (`adopted | rejected | reference | considered | unknown`), `summary`, `our_take`, `topics`, session counts and dates. `search_tsv` is a weighted full-text index over name, description, summary and take.
+- `repos`: one row per canonical repo (GitHub `nameWithOwner`, so renames merge). Holds GitHub metadata, `category`, `is_research_find`, `verdict` (`adopted | rejected | reference | considered | unknown`), `summary`, `our_take`, `topics`, session counts and dates. `search_tsv` is a weighted full-text index over name, description, summary and take.
 - `repo_mentions`: transcript snippets for each repo, with source, session, timestamp, cwd, kind and tool. Mentions from local file reads are not stored.
 - `search_exclusions` (view): research finds plus anything adopted (even if it only surfaced as a CI pin), limited to `exclude_from_search`. This is the list a search step filters against.
 
@@ -25,10 +25,13 @@ All steps write to `OUT_DIR`, a scratch directory outside the repo, because the 
 1. `extract.py OUT_DIR` scans `~/.claude/projects` (including subagent transcripts) and `~/.codex/sessions` for `github.com`, `api.github.com/repos`, `raw.githubusercontent.com` and `gh … owner/repo` references. It tags each mention by where it appeared: `prose_assistant`, `prose_user`, `search` (web or GitHub research tools, `gh search` / `gh api` / `git clone` commands), `call`, or `local`. Placeholders and GitHub UI paths are dropped. Writes `mentions.jsonl` and `repos.json`.
 2. `ghmeta.py OUT_DIR` resolves every repo in batched GraphQL calls through `gh`, picking up renames, forks, archived and deleted repos. It resumes from `ghmeta.json`.
 3. `candidates.py OUT_DIR [BATCH_SIZE]` merges aliases and drops Coldaine/MooseGooseConsulting repos (forks map to their upstream). It also drops repos that only appeared in local or tool-call output. Writes `candidates.json` and `batches/batch-<run>-NNN.json` for repos not yet fully classified in `out/`, or whose snippets changed since they were classified (tracked in `fingerprints.json`). The newest `out/` file wins.
-4. Classify: a small model (we used Haiku subagents, 4–5 batches each) follows `CLASSIFIER.md`, reading `batches/batch-<run>-NNN.json` and writing `out/` files with the same name. It sets `is_research_find`, `verdict`, `summary`, `our_take` and `topics`, and uses `unknown` unless a snippet supports a verdict. Snippets are web and tool output, so the classifier treats them as data and ignores any instructions inside them. It gets read and write access only to these files.
-5. `load.py OUT_DIR` builds CSVs and upserts them with `psql \copy` (`load.sql`). Rows key on `full_name`. A re-run without new classifications keeps earlier verdicts. Apply `schema.sql` once first.
+4. **Triage.** A small model (we used Haiku subagents) follows `CLASSIFIER.md`, reading `batches/batch-<run>-NNN.json` and writing `out/` files with the same name. It looks only at our transcript snippets and the GitHub description, and sets `is_research_find` and `verdict` (with a provisional one-line summary). This step only decides which repos deserve a real summary.
+5. **Summarize, categorize, tag from the repo itself.** `enrich.py OUT_DIR [BATCH_SIZE]` fetches each research find's README (cleaned, truncated to 3,500 chars) and top-level file listing through GraphQL, caches them in `repo_content.json`, and writes `batches/summary-<run>-NNN.json`. A Haiku pass then follows `SUMMARIZER.md`. It writes a 2–3 sentence `summary` of what the repo does and how it is used, one `category` from a fixed list, and 3–6 normalized `topics`. It also refreshes `our_take`, `verdict` and `is_research_find` from the snippets. A repo is re-summarized only when its README changes. Pass `--all` to also summarize incidental repos.
+6. `load.py OUT_DIR` builds CSVs and upserts them with `psql \copy` (`load.sql`). Rows key on `full_name`. Later `out/` files win, so `summary-*` overrides `batch-*`. For each (repo, session) it re-reads, it replaces stale snippets. Apply `schema.sql` first; it is idempotent.
 
-Re-running on newer transcripts is incremental for the GitHub metadata. Only the new batches need classifying.
+In steps 4–5, READMEs and snippets are third-party text, so the model treats them as data, ignores any instructions inside them, and gets read/write access only to the batch files.
+
+Re-runs are incremental: metadata, READMEs, triage and summaries are only redone for new or changed repos.
 
 ## Known limitations
 

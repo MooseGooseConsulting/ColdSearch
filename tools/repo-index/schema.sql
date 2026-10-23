@@ -34,6 +34,8 @@ create table if not exists repos (
 );
 create index if not exists repos_search_tsv on repos using gin (search_tsv);
 create index if not exists repos_topics on repos using gin (topics);
+alter table repos add column if not exists category text;  -- one of SUMMARIZER.md's fixed categories
+create index if not exists repos_category on repos (category);
 create index if not exists repos_lower_name on repos (lower(full_name));
 
 create table if not exists repo_mentions (

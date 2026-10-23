@@ -38,3 +38,6 @@ parallel-cli-output/
 
 # APM dependencies
 apm_modules/
+
+# Python bytecode
+__pycache__/

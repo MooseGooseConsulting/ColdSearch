@@ -2,7 +2,8 @@
 """Build CSVs from candidates + Haiku outputs + mentions, then upsert into Neon via psql.
 
 Usage: python3 -I load.py OUT_DIR
-Reads OUT_DIR/candidates.json, OUT_DIR/out/batch-*.json, OUT_DIR/mentions.jsonl.
+Reads OUT_DIR/candidates.json, OUT_DIR/out/*.json (later files win, so summary-* overrides batch-*),
+OUT_DIR/mentions.jsonl.
 Needs REPO_INDEX_DATABASE_URL. Re-runnable: rows upsert on full_name; mentions dedupe on (full_name, session, snippet).
 """
 import csv
@@ -30,7 +31,7 @@ def main():
         sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
     cands = json.load(open(os.path.join(out, "candidates.json")))
     cls = {}
-    for f in sorted(glob.glob(os.path.join(out, "out", "batch-*.json"))):
+    for f in sorted(glob.glob(os.path.join(out, "out", "*.json"))):
         try:
             rows = json.load(open(f))
         except (OSError, ValueError) as e:
@@ -57,7 +58,8 @@ def main():
             ("t" if k["is_research_find"] else "f") if isinstance(k.get("is_research_find"), bool) else "",
             verdict or "", k.get("summary") or "", k.get("our_take") or "", pgarr(k.get("topics") or []),
             c["session_n"], c["mentions"], c["first_seen"] or "", c["last_seen"] or "", pgarr(c["cwds"]),
-            "claude-haiku" if k else "",
+            ("haiku-readme" if k.get("readme_hash") else "haiku-snippets") if k else "",
+            k.get("category") or "",
         ])
     with open(os.path.join(out, "repos.csv"), "w", newline="") as f:
         csv.writer(f).writerows(rows)

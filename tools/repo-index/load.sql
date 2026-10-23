@@ -2,14 +2,14 @@
 begin;
 create temp table s_repos (like repos including defaults) on commit drop;
 alter table s_repos drop column search_tsv, drop column updated_at, drop column exclude_from_search;
-\copy s_repos (full_name, aliases, url, exists_on_gh, description, stars, language, gh_topics, archived, pushed_at, we_forked_it, is_research_find, verdict, summary, our_take, topics, sessions, mentions, first_seen, last_seen, projects, classified_by) from '{DIR}/repos.csv' with (format csv, null '')
+\copy s_repos (full_name, aliases, url, exists_on_gh, description, stars, language, gh_topics, archived, pushed_at, we_forked_it, is_research_find, verdict, summary, our_take, topics, sessions, mentions, first_seen, last_seen, projects, classified_by, category) from '{DIR}/repos.csv' with (format csv, null '')
 
 insert into repos (full_name, aliases, url, exists_on_gh, description, stars, language, gh_topics, archived, pushed_at,
                    we_forked_it, is_research_find, verdict, summary, our_take, topics, sessions, mentions,
-                   first_seen, last_seen, projects, classified_by)
+                   first_seen, last_seen, projects, classified_by, category)
 select full_name, aliases, url, exists_on_gh, description, stars, language, gh_topics, archived, pushed_at,
        we_forked_it, is_research_find, verdict, summary, our_take, topics, sessions, mentions,
-       first_seen, last_seen, projects, classified_by
+       first_seen, last_seen, projects, classified_by, category
 from s_repos
 on conflict (full_name) do update set
     aliases = excluded.aliases, url = excluded.url, exists_on_gh = excluded.exists_on_gh,
@@ -24,6 +24,7 @@ on conflict (full_name) do update set
     summary = case when excluded.classified_by is not null then excluded.summary else repos.summary end,
     our_take = case when excluded.classified_by is not null then excluded.our_take else repos.our_take end,
     topics = case when excluded.classified_by is not null then excluded.topics else repos.topics end,
+    category = case when excluded.classified_by is not null then excluded.category else repos.category end,
     classified_by = coalesce(excluded.classified_by, repos.classified_by),
     sessions = excluded.sessions, mentions = excluded.mentions, first_seen = excluded.first_seen,
     last_seen = excluded.last_seen, projects = excluded.projects, updated_at = now();
