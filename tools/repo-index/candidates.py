@@ -54,9 +54,10 @@ def merged_classifications(out):
                 continue
             cur = rows.setdefault(r["repo"].lower(), {})
             if is_summary:
-                cur.update({k: r[k] for k in SUMMARY_FIELDS if k in r})
-                if cur.get("category") not in CATEGORIES:  # off-list value: treat as not summarized
-                    cur["category"] = None
+                if not (isinstance(r.get("summary"), str) and r["summary"] and r.get("category") in CATEGORIES
+                        and isinstance(r.get("topics"), list) and isinstance(r.get("readme_hash"), str)):
+                    continue  # incomplete or off-list summary: ignore it whole, so enrich.py redoes it
+                cur.update({k: r[k] for k in SUMMARY_FIELDS})
                 cur.setdefault("repo", r["repo"])
                 for k in ("is_research_find", "verdict"):  # only fills gaps when no triage row exists
                     cur.setdefault(k, r.get(k))
