@@ -10,6 +10,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -23,6 +24,49 @@ def fingerprint(c):
     """Hash of the classifier's evidence; when it changes, the repo is re-batched."""
     ev = json.dumps([sorted(c["kinds"]), [s["snippet"] for s in c["snippets"]]], sort_keys=True)
     return hashlib.sha1(ev.encode()).hexdigest()
+
+
+SUMMARY_FIELDS = ("summary", "category", "topics", "readme_hash")
+CATEGORIES = {"llm-inference", "llm-gateway", "ai-agents", "agent-tooling", "llm-evals-observability", "ml-models-data",
+              "kubernetes", "infrastructure", "ci-cd", "observability", "databases-storage", "networking-security",
+              "developer-tools", "search-scraping", "frontend-ui", "hardware-embedded", "docs-reference", "other"}
+
+
+def run_order(path):
+    """Sort out/ files by the run timestamp in their name (batch-NNN from the first run sorts first)."""
+    m = re.search(r"-(\d{12})-", os.path.basename(path))
+    return (m.group(1) if m else "0", os.path.basename(path))
+
+
+def merged_classifications(out):
+    """Per-repo rows from out/: triage (batch-*) owns is_research_find/verdict, the README-based
+    summarize pass (summary-*) owns summary/category/topics, and a non-empty our_take from either wins."""
+    rows = {}
+    for f in sorted(glob.glob(os.path.join(out, "out", "*.json")), key=run_order):  # oldest run first
+        try:
+            data = json.load(open(f))
+        except (OSError, ValueError) as e:
+            print(f"skip {f}: {e}", file=sys.stderr)
+            continue
+        is_summary = os.path.basename(f).startswith("summary-")
+        for r in data if isinstance(data, list) else []:
+            if not (isinstance(r, dict) and isinstance(r.get("repo"), str)):
+                continue
+            cur = rows.setdefault(r["repo"].lower(), {})
+            if is_summary:
+                if not (isinstance(r.get("summary"), str) and r["summary"] and r.get("category") in CATEGORIES
+                        and isinstance(r.get("topics"), list) and isinstance(r.get("readme_hash"), str)):
+                    continue  # incomplete or off-list summary: ignore it whole, so enrich.py redoes it
+                cur.update({k: r[k] for k in SUMMARY_FIELDS})
+                cur.setdefault("repo", r["repo"])
+                for k in ("is_research_find", "verdict"):  # only fills gaps when no triage row exists
+                    cur.setdefault(k, r.get(k))
+            else:
+                cur.update({k: v for k, v in r.items() if k not in SUMMARY_FIELDS or "category" not in cur})
+            if r.get("our_take"):
+                cur["our_take"] = r["our_take"]
+            cur.setdefault("our_take", "")
+    return rows
 
 
 def complete(r):
@@ -82,18 +126,8 @@ def main():
         cands.append(c)
     cands.sort(key=lambda c: -c["session_n"])
     json.dump(cands, open(os.path.join(out, "candidates.json"), "w"))
-    done = set()
-    for f in glob.glob(os.path.join(out, "out", "batch-*.json")):
-        try:
-            rows = json.load(open(f))
-        except (OSError, ValueError) as e:
-            print(f"skip {f}: {e}", file=sys.stderr)
-            continue
-        if not isinstance(rows, list):
-            print(f"skip {f}: not a JSON array", file=sys.stderr)
-            continue
-        # only fully classified rows count as done; anything partial gets re-batched
-        done.update(r["repo"].lower() for r in rows if complete(r))
+    # only fully triaged rows count as done; anything partial gets re-batched
+    done = {k for k, r in merged_classifications(out).items() if complete(r)}
     fp_path = os.path.join(out, "fingerprints.json")
     fps = json.load(open(fp_path)) if os.path.exists(fp_path) else {}
     todo = []

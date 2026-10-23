@@ -2,7 +2,8 @@
 """Build CSVs from candidates + Haiku outputs + mentions, then upsert into Neon via psql.
 
 Usage: python3 -I load.py OUT_DIR
-Reads OUT_DIR/candidates.json, OUT_DIR/out/batch-*.json, OUT_DIR/mentions.jsonl.
+Reads OUT_DIR/candidates.json, OUT_DIR/out/*.json (merged: triage owns verdicts, summaries own
+summary/category/topics), OUT_DIR/mentions.jsonl.
 Needs REPO_INDEX_DATABASE_URL. Re-runnable: rows upsert on full_name; mentions dedupe on (full_name, session, snippet).
 """
 import csv
@@ -15,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # python3 -I leaves the script dir off sys.path
-from candidates import complete  # noqa: E402
+from candidates import complete, merged_classifications  # noqa: E402
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 
@@ -29,16 +30,8 @@ def main():
     if not url:
         sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
     cands = json.load(open(os.path.join(out, "candidates.json")))
-    cls = {}
-    for f in sorted(glob.glob(os.path.join(out, "out", "batch-*.json"))):
-        try:
-            rows = json.load(open(f))
-        except (OSError, ValueError) as e:
-            print(f"skip {f}: {e}", file=sys.stderr)
-            continue
-        for row in rows if isinstance(rows, list) else []:
-            if complete(row):  # partial rows never overwrite a stored classification
-                cls[row["repo"].lower()] = row
+    # partial rows never overwrite a stored classification
+    cls = {k: r for k, r in merged_classifications(out).items() if complete(r)}
     alias_to_name = {}
     rows = []
     for c in cands:
@@ -57,7 +50,8 @@ def main():
             ("t" if k["is_research_find"] else "f") if isinstance(k.get("is_research_find"), bool) else "",
             verdict or "", k.get("summary") or "", k.get("our_take") or "", pgarr(k.get("topics") or []),
             c["session_n"], c["mentions"], c["first_seen"] or "", c["last_seen"] or "", pgarr(c["cwds"]),
-            "claude-haiku" if k else "",
+            ("haiku-readme" if k.get("readme_hash") else "haiku-snippets") if k else "",
+            k.get("category") or "",
         ])
     with open(os.path.join(out, "repos.csv"), "w", newline="") as f:
         csv.writer(f).writerows(rows)
@@ -75,7 +69,7 @@ def main():
             seen.add(key)
             w.writerow([name, m["source"], m["session"] or "", m["ts"] or "", m["cwd"] or "", m["kind"],
                         m["tool"] or "", m["snippet"]])
-    print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
+    print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-2]), "categorized": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
     sql = open(os.path.join(HERE, "load.sql")).read().replace("{DIR}", os.path.abspath(out))
     subprocess.run(["psql", "-q", "-f", "-"], input=sql, text=True, check=True, env={**os.environ, **pg_env(url)})
 
