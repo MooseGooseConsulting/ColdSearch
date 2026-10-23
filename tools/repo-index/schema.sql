@@ -50,7 +50,7 @@ create table if not exists repo_mentions (
 );
 create index if not exists repo_mentions_repo on repo_mentions (full_name);
 
--- what research agents read before searching
+-- what research agents read before searching: research finds, plus anything we adopted
 create or replace view search_exclusions as
     select full_name, aliases, verdict, summary, our_take
-    from repos where exclude_from_search and is_research_find is true;
+    from repos where exclude_from_search and (is_research_find is true or verdict = 'adopted');

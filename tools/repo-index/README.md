@@ -2,13 +2,13 @@
 
 A Postgres index of GitHub repos that came up in past Claude Code and Codex sessions. Research can exclude them from new searches ("already evaluated") and still query what we concluded about each one. It serves G3 in `docs/NORTH_STAR.md` (search and reuse prior work). It is separate from ColdSearch's own execution history and cache (`docs/architecture.md`). Those record ColdSearch calls; this records what agents concluded about repos across every tool. ColdSearch search does not read it yet. Wiring it in as a result filter would need its own plan or ADR.
 
-**Database:** Neon project `coldsearch` (`lively-wildflower-09919715`, personal org), database `repo_index`. The scripts read `REPO_INDEX_DATABASE_URL`.
+**Database:** Neon project `coldsearch` (`lively-wildflower-09919715`, personal org), database `repo_index`. The scripts read `REPO_INDEX_DATABASE_URL`. It is not in Doppler yet. Locally it is at `~/.config/coldsearch/repo-index.dburl` (mode 600), or get it from the Neon console.
 
 ## Tables
 
 - `repos`: one row per canonical repo (GitHub `nameWithOwner`, so renames merge). Holds GitHub metadata, `is_research_find`, `verdict` (`adopted | rejected | reference | considered | unknown`), `summary`, `our_take`, `topics`, session counts and dates. `search_tsv` is a weighted full-text index over name, description, summary and take.
 - `repo_mentions`: transcript snippets for each repo, with source, session, timestamp, cwd, kind and tool. Mentions from local file reads are not stored.
-- `search_exclusions` (view): research finds marked `exclude_from_search`. This is the list a search step filters against.
+- `search_exclusions` (view): research finds plus anything adopted (even if it only surfaced as a CI pin), limited to `exclude_from_search`. This is the list a search step filters against.
 
 ```sql
 -- have we looked at this already?
