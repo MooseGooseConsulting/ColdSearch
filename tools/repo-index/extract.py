@@ -79,11 +79,16 @@ SECRET_RE = re.compile(
     r"AKIA[0-9A-Z]{12,}|dp\.(st|pt|ct|sa)\.[A-Za-z0-9._-]{10,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
     r"(?<=Bearer )[A-Za-z0-9._~+/-]{20,}|(?<=://)[^/\s:@]+:[^/\s@]+(?=@))"
 )
+# NAME_KEY=value / "api_key": "value" style assignments, whatever the token format
+SECRET_ASSIGN_RE = re.compile(
+    r"(?i)\b([A-Z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_.-]*[\"']?\s*[=:]\s*[\"']?)([^\s\"',;}{)]{8,})"
+)
 
 
 def snippet(text, pos, width=220):
     s = text[max(0, pos - width): pos + width]
-    return SECRET_RE.sub("[REDACTED]", re.sub(r"\s+", " ", s).strip())
+    s = SECRET_RE.sub("[REDACTED]", re.sub(r"\s+", " ", s).strip())
+    return SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + "[REDACTED]", s)
 
 
 def to_text(v):

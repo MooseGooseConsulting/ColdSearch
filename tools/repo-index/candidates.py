@@ -14,6 +14,7 @@ from collections import defaultdict
 
 OWN = {"coldaine", "moosegooseconsulting"}
 RESEARCH_KINDS = ("search", "prose_assistant", "prose_user")
+VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 
 def main():
@@ -67,7 +68,14 @@ def main():
     json.dump(cands, open(os.path.join(out, "candidates.json"), "w"))
     done = set()
     for f in glob.glob(os.path.join(out, "out", "batch-*.json")):
-        done.update(r["repo"].lower() for r in json.load(open(f)))
+        try:
+            rows = json.load(open(f))
+        except ValueError as e:
+            print(f"skip {f}: {e}", file=sys.stderr)
+            continue
+        # only fully classified rows count as done; anything partial gets re-batched
+        done.update(r["repo"].lower() for r in rows if isinstance(r, dict) and isinstance(r.get("repo"), str)
+                    and isinstance(r.get("is_research_find"), bool) and r.get("verdict") in VERDICTS)
     todo = [c for c in cands if c["repo"].lower() not in done]
     run = time.strftime("%Y%m%d%H%M")
     bdir = os.path.join(out, "batches")

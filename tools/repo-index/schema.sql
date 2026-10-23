@@ -49,6 +49,10 @@ create table if not exists repo_mentions (
     unique nulls not distinct (full_name, session, snippet)
 );
 create index if not exists repo_mentions_repo on repo_mentions (full_name);
+-- migrate databases created before the constraint became nulls-not-distinct
+alter table repo_mentions drop constraint if exists repo_mentions_full_name_session_snippet_key;
+alter table repo_mentions add constraint repo_mentions_full_name_session_snippet_key
+    unique nulls not distinct (full_name, session, snippet);
 
 -- what research agents read before searching: research finds, plus anything we adopted
 create or replace view search_exclusions as
