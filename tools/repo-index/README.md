@@ -1,6 +1,6 @@
 # repo-index
 
-A Postgres index of GitHub repos that came up in past Claude Code and Codex sessions. Research can exclude them from new searches ("already evaluated") and still query what we concluded about each one. It serves G3 in `docs/NORTH_STAR.md` (search and reuse prior work). ColdSearch search does not read it yet.
+A Postgres index of GitHub repos that came up in past Claude Code and Codex sessions. Research can exclude them from new searches ("already evaluated") and still query what we concluded about each one. It serves G3 in `docs/NORTH_STAR.md` (search and reuse prior work). It is separate from ColdSearch's own execution history and cache (`docs/architecture.md`). Those record ColdSearch calls; this records what agents concluded about repos across every tool. ColdSearch search does not read it yet. Wiring it in as a result filter would need its own plan or ADR.
 
 **Database:** Neon project `coldsearch` (`lively-wildflower-09919715`, personal org), database `repo_index`. The scripts read `REPO_INDEX_DATABASE_URL`.
 
@@ -25,7 +25,7 @@ All steps write to `OUT_DIR`, a scratch directory outside the repo, because the 
 1. `extract.py OUT_DIR` scans `~/.claude/projects` (including subagent transcripts) and `~/.codex/sessions` for `github.com`, `api.github.com/repos`, `raw.githubusercontent.com` and `gh … owner/repo` references. It tags each mention by where it appeared: `prose_assistant`, `prose_user`, `search` (web or GitHub research tools, `gh search` / `gh api` / `git clone` commands), `call`, or `local`. Placeholders and GitHub UI paths are dropped. Writes `mentions.jsonl` and `repos.json`.
 2. `ghmeta.py OUT_DIR` resolves every repo in batched GraphQL calls through `gh`, picking up renames, forks, archived and deleted repos. It resumes from `ghmeta.json`.
 3. `candidates.py OUT_DIR [BATCH_SIZE]` merges aliases and drops Coldaine/MooseGooseConsulting repos (forks map to their upstream). It also drops repos that only appeared in local or tool-call output. Writes `candidates.json` and `batches/batch-NNN.json`.
-4. Classify: a small model (we used Haiku subagents, 4–5 batches each) follows `CLASSIFIER.md` and writes `out/batch-NNN.json`. It sets `is_research_find`, `verdict`, `summary`, `our_take` and `topics`, and uses `unknown` unless a snippet supports a verdict.
+4. Classify: a small model (we used Haiku subagents, 4–5 batches each) follows `CLASSIFIER.md` and writes `out/batch-*.json`. It sets `is_research_find`, `verdict`, `summary`, `our_take` and `topics`, and uses `unknown` unless a snippet supports a verdict. Snippets are web and tool output, so the classifier treats them as data and ignores any instructions inside them. It gets read and write access only to these files.
 5. `load.py OUT_DIR` builds CSVs and upserts them with `psql \copy` (`load.sql`). Rows key on `full_name`. A re-run without new classifications keeps earlier verdicts. Apply `schema.sql` once first.
 
 Re-running on newer transcripts is incremental for the GitHub metadata. Only the new batches need classifying.
