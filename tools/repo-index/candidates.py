@@ -19,7 +19,7 @@ VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 def complete(r):
     return (isinstance(r, dict) and isinstance(r.get("repo"), str) and isinstance(r.get("is_research_find"), bool)
-            and r.get("verdict") in VERDICTS and isinstance(r.get("summary"), str)
+            and isinstance(r.get("verdict"), str) and r["verdict"] in VERDICTS and isinstance(r.get("summary"), str)
             and isinstance(r.get("our_take"), str) and isinstance(r.get("topics"), list))
 
 

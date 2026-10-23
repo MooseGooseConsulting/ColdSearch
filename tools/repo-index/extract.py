@@ -88,9 +88,17 @@ SECRET_ASSIGN_RE = re.compile(
 )
 
 
-def snippet(text, pos, width=220):
-    s = SECRET_RE.sub("[REDACTED]", text[max(0, pos - width): pos + width])
-    s = SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + "[REDACTED]", s)  # before whitespace collapses quoted values
+def redact(s):
+    s = SECRET_RE.sub("[REDACTED]", s)
+    return SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + "[REDACTED]", s)
+
+
+def snippet(text, pos, width=220, margin=300):
+    # redact a wider window first so an assignment name just outside the slice still masks its value
+    start = max(0, pos - width - margin)
+    window = redact(text[start: pos + width + margin])
+    rel = len(redact(text[start:pos]))  # where pos lands after redaction shrank the prefix
+    s = window[max(0, rel - width): rel + width]
     return re.sub(r"\s+", " ", s).strip()
 
 

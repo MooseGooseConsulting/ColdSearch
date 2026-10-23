@@ -17,11 +17,13 @@ on conflict (full_name) do update set
     gh_topics = excluded.gh_topics, archived = excluded.archived, pushed_at = excluded.pushed_at,
     we_forked_it = excluded.we_forked_it,
     -- keep earlier classification when this run has none
-    is_research_find = coalesce(excluded.is_research_find, repos.is_research_find),
-    verdict = coalesce(excluded.verdict, repos.verdict),
-    summary = coalesce(nullif(excluded.summary, ''), repos.summary),
-    our_take = coalesce(nullif(excluded.our_take, ''), repos.our_take),
-    topics = case when excluded.topics = '{}' then repos.topics else excluded.topics end,
+    -- a row classified in this run replaces the old classification (including clearing our_take);
+    -- an unclassified row keeps whatever an earlier run decided
+    is_research_find = case when excluded.classified_by is not null then excluded.is_research_find else repos.is_research_find end,
+    verdict = case when excluded.classified_by is not null then excluded.verdict else repos.verdict end,
+    summary = case when excluded.classified_by is not null then excluded.summary else repos.summary end,
+    our_take = case when excluded.classified_by is not null then excluded.our_take else repos.our_take end,
+    topics = case when excluded.classified_by is not null then excluded.topics else repos.topics end,
     classified_by = coalesce(excluded.classified_by, repos.classified_by),
     sessions = excluded.sessions, mentions = excluded.mentions, first_seen = excluded.first_seen,
     last_seen = excluded.last_seen, projects = excluded.projects, updated_at = now();

@@ -52,7 +52,7 @@ def main():
     for i in range(0, len(todo), 80):
         meta.update(query(todo[i:i + 80]))
         json.dump(meta, open(path, "w"))
-    missing = [r for r in repos if r.lower() not in meta]
+    missing = [r for r in [*repos, *parents] if r.lower() not in meta]
     print(json.dumps({"total": len(meta), "resolved": sum(1 for v in meta.values() if v), "retry": len(missing)}))
     if missing:
         sys.exit(f"{len(missing)} repos hit retryable GraphQL errors; re-run before candidates.py")

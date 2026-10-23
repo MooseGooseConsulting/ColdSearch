@@ -30,6 +30,10 @@ All steps write to `OUT_DIR`, a scratch directory outside the repo, because the 
 
 Re-running on newer transcripts is incremental for the GitHub metadata. Only the new batches need classifying.
 
+## Known limitations
+
+- `ghmeta.json` caches each repo once. A repo renamed or transferred after it was cached keeps its old metadata, and if the new name later appears it loads as a separate row. Delete `ghmeta.json` to force a full refresh; merging old rows by alias is not implemented.
+
 ## First run (2026-10-22)
 
 1,274 transcript files produced 89,370 raw mentions, which deduplicated to 53,872 across 3,366 repos. Dropping 167 owned repos and 834 local-only repos left 2,314 candidates, of which 950 were classified as research finds. Verdicts among those: 118 adopted, 23 rejected, 429 reference, 217 considered and 163 unknown.
