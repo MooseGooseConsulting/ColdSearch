@@ -28,6 +28,8 @@ URL_RE = re.compile(
 # bare owner/repo where gh names it explicitly
 GH_ARG_RE = re.compile(rf"(?:gh\s+repo\s+(?:view|clone|fork)\s+|--repo[ =]|-R\s+|gh\s+api\s+/?repos/)({SEG})/({NAME})")
 GH_SEARCH_LINE_RE = re.compile(rf"^({SEG})/({NAME})\s", re.M)
+# gh/GitHub API JSON output: "fullName" / "nameWithOwner" / "full_name": "owner/repo"
+GH_JSON_RE = re.compile(rf"\"(?:fullName|nameWithOwner|full_name)\"\s*:\s*\"({SEG})/({NAME})\"")
 
 NON_OWNERS = {
     "settings", "orgs", "apps", "topics", "marketplace", "sponsors", "user-attachments", "features",
@@ -60,7 +62,7 @@ def norm(owner, name):
 
 def find_repos(text, gh_search_output=False):
     out = []
-    for rx in (URL_RE, GH_ARG_RE):
+    for rx in (URL_RE, GH_ARG_RE, GH_JSON_RE):
         for m in rx.finditer(text):
             r = norm(m.group(1), m.group(2))
             if r:
@@ -81,14 +83,15 @@ SECRET_RE = re.compile(
 )
 # NAME_KEY=value / "api_key": "value" style assignments, whatever the token format
 SECRET_ASSIGN_RE = re.compile(
-    r"(?i)\b([A-Z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_.-]*[\"']?\s*[=:]\s*[\"']?)([^\s\"',;}{)]{8,})"
+    r"(?i)\b([A-Z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|AUTH_CONFIG|AUTHORIZATION)"
+    r"[A-Z0-9_.-]*[\"']?\s*[=:]\s*)(\"[^\"\n]{8,}\"|'[^'\n]{8,}'|[^\s\"',;}{)]{8,})"
 )
 
 
 def snippet(text, pos, width=220):
-    s = text[max(0, pos - width): pos + width]
-    s = SECRET_RE.sub("[REDACTED]", re.sub(r"\s+", " ", s).strip())
-    return SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + "[REDACTED]", s)
+    s = SECRET_RE.sub("[REDACTED]", text[max(0, pos - width): pos + width])
+    s = SECRET_ASSIGN_RE.sub(lambda m: m.group(1) + "[REDACTED]", s)  # before whitespace collapses quoted values
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def to_text(v):

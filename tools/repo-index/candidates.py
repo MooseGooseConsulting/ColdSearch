@@ -17,6 +17,12 @@ RESEARCH_KINDS = ("search", "prose_assistant", "prose_user")
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
 
 
+def complete(r):
+    return (isinstance(r, dict) and isinstance(r.get("repo"), str) and isinstance(r.get("is_research_find"), bool)
+            and r.get("verdict") in VERDICTS and isinstance(r.get("summary"), str)
+            and isinstance(r.get("our_take"), str) and isinstance(r.get("topics"), list))
+
+
 def main():
     out = sys.argv[1]
     size = int(sys.argv[2]) if len(sys.argv) > 2 else 55
@@ -70,16 +76,19 @@ def main():
     for f in glob.glob(os.path.join(out, "out", "batch-*.json")):
         try:
             rows = json.load(open(f))
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             print(f"skip {f}: {e}", file=sys.stderr)
             continue
+        if not isinstance(rows, list):
+            print(f"skip {f}: not a JSON array", file=sys.stderr)
+            continue
         # only fully classified rows count as done; anything partial gets re-batched
-        done.update(r["repo"].lower() for r in rows if isinstance(r, dict) and isinstance(r.get("repo"), str)
-                    and isinstance(r.get("is_research_find"), bool) and r.get("verdict") in VERDICTS)
+        done.update(r["repo"].lower() for r in rows if complete(r))
     todo = [c for c in cands if c["repo"].lower() not in done]
     run = time.strftime("%Y%m%d%H%M")
     bdir = os.path.join(out, "batches")
     os.makedirs(bdir, exist_ok=True)
+    os.makedirs(os.path.join(out, "out"), exist_ok=True)
     for i in range(0, len(todo), size):
         batch = []
         for c in todo[i:i + size]:

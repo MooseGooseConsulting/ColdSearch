@@ -49,10 +49,20 @@ create table if not exists repo_mentions (
     unique nulls not distinct (full_name, session, snippet)
 );
 create index if not exists repo_mentions_repo on repo_mentions (full_name);
--- migrate databases created before the constraint became nulls-not-distinct
-alter table repo_mentions drop constraint if exists repo_mentions_full_name_session_snippet_key;
-alter table repo_mentions add constraint repo_mentions_full_name_session_snippet_key
-    unique nulls not distinct (full_name, session, snippet);
+-- migrate databases created before the constraint became nulls-not-distinct:
+-- drop NULL-session duplicates the old constraint allowed, then swap it, atomically
+do $$
+begin
+    if exists (select 1 from pg_constraint c join pg_index i on i.indexrelid = c.conindid
+               where c.conname = 'repo_mentions_full_name_session_snippet_key' and not i.indnullsnotdistinct) then
+        delete from repo_mentions a using repo_mentions b
+         where a.id > b.id and a.full_name = b.full_name and a.session is null and b.session is null
+           and a.snippet is not distinct from b.snippet;
+        alter table repo_mentions drop constraint repo_mentions_full_name_session_snippet_key;
+        alter table repo_mentions add constraint repo_mentions_full_name_session_snippet_key
+            unique nulls not distinct (full_name, session, snippet);
+    end if;
+end $$;
 
 -- what research agents read before searching: research finds, plus anything we adopted
 create or replace view search_exclusions as

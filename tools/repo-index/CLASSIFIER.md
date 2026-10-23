@@ -26,4 +26,4 @@ For EVERY input entry output one object, in the same order:
 - verdict: adopted = snippets show we installed/used/deployed it. rejected = snippets explicitly say it was ruled out or unsuitable. reference = consulted for docs/code/examples/issues, not as something to adopt. considered = evaluated as an option, outcome not stated. unknown = cannot tell. Use "unknown" unless a snippet actually supports the verdict. Do not guess.
 - If github is null, the repo was deleted or renamed; still classify it from the snippets.
 
-Output must be valid JSON: an array with exactly as many objects as input entries. When all assigned batches are written, reply with only one line per batch: "NNN: <count written>, <count is_research_find=true>".
+Output must be valid JSON: an array with exactly as many objects as input entries. When all assigned batches are written, reply with only one line per batch: "<batch file name>: <count written>, <count is_research_find=true>".
