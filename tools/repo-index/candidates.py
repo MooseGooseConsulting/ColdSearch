@@ -2,11 +2,14 @@
 """Merge repos.json + ghmeta.json into research candidates and Haiku batch files.
 
 Usage: python3 -I candidates.py OUT_DIR [BATCH_SIZE]
-Writes OUT_DIR/candidates.json and OUT_DIR/batches/batch-NNN.json.
+Writes OUT_DIR/candidates.json and OUT_DIR/batches/batch-<run>-NNN.json for repos that
+no OUT_DIR/out/batch-*.json has classified yet, so re-runs only classify new repos.
 """
+import glob
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 
 OWN = {"coldaine", "moosegooseconsulting"}
@@ -62,11 +65,16 @@ def main():
         cands.append(c)
     cands.sort(key=lambda c: -c["session_n"])
     json.dump(cands, open(os.path.join(out, "candidates.json"), "w"))
+    done = set()
+    for f in glob.glob(os.path.join(out, "out", "batch-*.json")):
+        done.update(r["repo"].lower() for r in json.load(open(f)))
+    todo = [c for c in cands if c["repo"].lower() not in done]
+    run = time.strftime("%Y%m%d%H%M")
     bdir = os.path.join(out, "batches")
     os.makedirs(bdir, exist_ok=True)
-    for i in range(0, len(cands), size):
+    for i in range(0, len(todo), size):
         batch = []
-        for c in cands[i:i + size]:
+        for c in todo[i:i + size]:
             g = c["gh"] or {}
             batch.append({
                 "repo": c["repo"],
@@ -81,8 +89,9 @@ def main():
                 "snippets": [{"kind": s["kind"], "date": (s.get("ts") or "")[:10], "text": s["snippet"][:400]}
                              for s in c["snippets"]],
             })
-        json.dump(batch, open(os.path.join(bdir, f"batch-{i // size:03d}.json"), "w"), indent=0)
-    stats.update(candidates=len(cands), batches=(len(cands) + size - 1) // size,
+        json.dump(batch, open(os.path.join(bdir, f"batch-{run}-{i // size:03d}.json"), "w"), indent=0)
+    stats.update(candidates=len(cands), already_classified=len(cands) - len(todo),
+                 batches=(len(todo) + size - 1) // size,
                  unresolved=sum(1 for c in cands if not c["gh"]))
     print(json.dumps(stats))
 

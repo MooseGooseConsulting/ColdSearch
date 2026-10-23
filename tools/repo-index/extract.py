@@ -53,7 +53,6 @@ SEARCH_CMD_RE = re.compile(
 
 def norm(owner, name):
     name = re.sub(r"\.git$", "", name.rstrip(".,;:)]}>'\"`*_"))
-    name = re.sub(r"\.git$", "", name)
     if owner.lower() in NON_OWNERS or owner.lower() in PLACEHOLDER_OWNERS or name.lower() in NON_NAMES or name.startswith("."):
         return None
     return f"{owner}/{name}"
@@ -74,9 +73,17 @@ def find_repos(text, gh_search_output=False):
     return out
 
 
+# credentials that show up in transcript tool output; snippets end up in a shared database
+SECRET_RE = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|npg_[A-Za-z0-9]{8,}|"
+    r"AKIA[0-9A-Z]{12,}|dp\.(st|pt|ct|sa)\.[A-Za-z0-9._-]{10,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
+    r"(?<=Bearer )[A-Za-z0-9._~+/-]{20,}|(?<=://)[^/\s:@]+:[^/\s@]+(?=@))"
+)
+
+
 def snippet(text, pos, width=220):
     s = text[max(0, pos - width): pos + width]
-    return re.sub(r"\s+", " ", s).strip()
+    return SECRET_RE.sub("[REDACTED]", re.sub(r"\s+", " ", s).strip())
 
 
 def to_text(v):
@@ -169,7 +176,7 @@ def scan_codex(path):
     seen_items = False
     with fh:
         for line in fh:
-            if not any(k in line for k in ("github", "session_meta", "turn_context", "function_call", "custom_tool_call")):
+            if not any(k in line for k in ("github", "item_completed", "session_meta", "turn_context", "function_call", "custom_tool_call")):
                 continue
             try:
                 d = json.loads(line)

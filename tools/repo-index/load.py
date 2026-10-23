@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERDICTS = {"adopted", "rejected", "reference", "considered", "unknown"}
@@ -22,6 +23,9 @@ def pgarr(xs):
 
 def main():
     out = sys.argv[1]
+    url = os.environ.get("REPO_INDEX_DATABASE_URL")
+    if not url:
+        sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
     cands = json.load(open(os.path.join(out, "candidates.json")))
     cls = {}
     for f in sorted(glob.glob(os.path.join(out, "out", "batch-*.json"))):
@@ -67,11 +71,20 @@ def main():
             w.writerow([name, m["source"], m["session"] or "", m["ts"] or "", m["cwd"] or "", m["kind"],
                         m["tool"] or "", m["snippet"]])
     print(json.dumps({"repos": len(rows), "classified": sum(1 for r in rows if r[-1]), "mentions": len(seen)}))
-    url = os.environ.get("REPO_INDEX_DATABASE_URL")
-    if not url:
-        sys.exit("REPO_INDEX_DATABASE_URL is not set (run under doppler run, or export it)")
     sql = open(os.path.join(HERE, "load.sql")).read().replace("{DIR}", os.path.abspath(out))
-    subprocess.run(["psql", url, "-q", "-f", "-"], input=sql, text=True, check=True)
+    subprocess.run(["psql", "-q", "-f", "-"], input=sql, text=True, check=True, env={**os.environ, **pg_env(url)})
+
+
+def pg_env(url):
+    """libpq env vars for a postgres:// URL, so the password never appears in psql's argv."""
+    u = urlparse(url)
+    env = {"PGHOST": u.hostname or "", "PGPORT": str(u.port or 5432), "PGUSER": unquote(u.username or ""),
+           "PGPASSWORD": unquote(u.password or ""), "PGDATABASE": u.path.lstrip("/")}
+    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+    for key, var in (("sslmode", "PGSSLMODE"), ("channel_binding", "PGCHANNELBINDING")):
+        if key in q:
+            env[var] = q[key]
+    return env
 
 
 if __name__ == "__main__":

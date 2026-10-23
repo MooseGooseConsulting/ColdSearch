@@ -46,11 +46,11 @@ create table if not exists repo_mentions (
     kind      text not null,       -- prose_assistant | prose_user | search | call | local
     tool      text,
     snippet   text,
-    unique (full_name, session, snippet)
+    unique nulls not distinct (full_name, session, snippet)
 );
 create index if not exists repo_mentions_repo on repo_mentions (full_name);
 
 -- what research agents read before searching
 create or replace view search_exclusions as
     select full_name, aliases, verdict, summary, our_take
-    from repos where exclude_from_search and coalesce(is_research_find, true);
+    from repos where exclude_from_search and is_research_find is true;

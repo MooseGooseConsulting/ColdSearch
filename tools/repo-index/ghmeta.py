@@ -11,6 +11,7 @@ import sys
 FIELDS = """nameWithOwner description stargazerCount pushedAt isArchived isFork url homepageUrl
 primaryLanguage { name } repositoryTopics(first: 10) { nodes { topic { name } } }
 parent { nameWithOwner }"""
+OWN = {"coldaine", "moosegooseconsulting"}
 
 
 def query(batch):
@@ -21,8 +22,17 @@ def query(batch):
     q = "query {" + "\n".join(parts) + "}"
     p = subprocess.run(["gh", "api", "graphql", "-f", f"query={q}"], capture_output=True, text=True,
                        env={**os.environ, "MISE_QUIET": "1"})
-    data = json.loads(p.stdout or "{}").get("data") or {}
-    return {batch[i].lower(): data.get(f"r{i}") for i in range(len(batch))}
+    try:
+        body = json.loads(p.stdout or "{}")
+    except ValueError:
+        body = {}
+    data = body.get("data")
+    if not data:
+        # auth, rate limit or network failure: cache nothing so the next run retries
+        sys.exit(f"GraphQL batch failed (exit {p.returncode}): {(p.stderr or p.stdout)[:500]}")
+    # NOT_FOUND is a real answer (deleted/renamed away); any other per-repo error is retried next run
+    retry = {e["path"][0] for e in body.get("errors", []) if e.get("type") != "NOT_FOUND" and e.get("path")}
+    return {batch[i].lower(): data.get(f"r{i}") for i in range(len(batch)) if f"r{i}" not in retry}
 
 
 def main():
@@ -35,6 +45,13 @@ def main():
         meta.update(query(todo[i:i + 80]))
         json.dump(meta, open(path, "w"))
         print(f"{min(i + 80, len(todo))}/{len(todo)}", file=sys.stderr)
+    # upstreams of our forks, so candidates.py can attach their metadata
+    parents = {v["parent"]["nameWithOwner"] for v in meta.values()
+               if v and v.get("parent") and v["nameWithOwner"].split("/")[0].lower() in OWN}
+    todo = [p for p in parents if p.lower() not in meta]
+    for i in range(0, len(todo), 80):
+        meta.update(query(todo[i:i + 80]))
+        json.dump(meta, open(path, "w"))
     print(json.dumps({"total": len(meta), "resolved": sum(1 for v in meta.values() if v)}))
 
 
