@@ -60,6 +60,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   }
 
   return {
+// @codescene(disable-all) Pinned upstream generated handler; maintain protocol in entireio/external-agents, not in each checkout.
     event: async ({ event }) => {
       try {
         switch (event.type) {

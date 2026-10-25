@@ -105,6 +105,7 @@ export default function entireAgent(pi: ExtensionAPI): void {
     pendingPrompt = event.prompt;
   });
 
+// @codescene(disable-all) Pinned upstream generated handler; maintain protocol in entireio/external-agents, not in each checkout.
   pi.on("agent_start", async (_event, ctx) => {
     if (pendingPrompt === undefined) {
       if (!turnOpen) return;

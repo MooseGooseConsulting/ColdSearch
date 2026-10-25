@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid post-tool-use)\""
+            "command": "entire hooks factoryai-droid post-tool-use"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid pre-compact)\""
+            "command": "entire hooks factoryai-droid pre-compact"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid pre-tool-use)\""
+            "command": "entire hooks factoryai-droid pre-tool-use"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid session-end)\""
+            "command": "entire hooks factoryai-droid session-end"
           }
         ]
       }
@@ -50,11 +50,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid session-start)\""
+            "command": "entire hooks factoryai-droid session-start"
           },
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid user-prompt-submit)\""
+            "command": "entire hooks factoryai-droid user-prompt-submit"
           }
         ]
       }
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "where.exe entire >nul 2>nul & if errorlevel 1 (echo Entire CLI is enabled but not installed or not on PATH. Installation guide: https://docs.entire.io/cli/installation#installation-methods) else (entire hooks factoryai-droid stop)"
+            "command": "entire hooks factoryai-droid stop"
           }
         ]
       }
@@ -76,7 +76,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe /d /s /c \"where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks factoryai-droid user-prompt-submit)\""
+            "command": "entire hooks factoryai-droid user-prompt-submit"
           }
         ]
       }
