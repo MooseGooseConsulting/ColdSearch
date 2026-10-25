@@ -289,6 +289,20 @@ Maintenance:
 - `coldsearch cache stats` describes replay-cache storage
 - `coldsearch cache clear` deletes replay-cache entries (history is kept)
 
+Both commands touch only cache-owned files: real `.json` files directly inside
+real capability directories (`search/`, `extract/`, `tool/`) under the
+configured `path`. A `path` that is itself a symlink is followed, as chosen.
+A symlink/junction capability directory, or a linked or non-regular entry
+inside one, is never read, counted, or deleted; it is listed in the additive
+`skipped` field (JSON) and on stderr (human mode), and `removed` counts only
+files actually unlinked. Removal failures stay in `errors`. Entries with
+unreadable JSON or invalid timing metadata (non-finite or out-of-range
+`created_at`, negative or non-finite `ttl_seconds`) still count as stored
+material, are reported in the additive `corrupt_entries` field of `cache
+stats`, are treated as misses on lookup (never replayed), and are removed by
+`cache clear`. Exit codes are unchanged. This is a check-then-use guard; it is
+not isolation against a path being swapped while a command runs.
+
 Crawl results are never replay-cached; crawls are recorded in history only.
 
 ## Execution history

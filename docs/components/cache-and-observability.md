@@ -79,6 +79,19 @@ Keep exact replay and cache maintenance as cache concerns:
 - `cache stats` describes replay-cache storage
 - `cache clear` clears replay-cache material only, not history
 - atomic writes and restrictive permissions apply where supported
+- the cache owns only real `.json` files inside real capability directories
+  under its configured root (a root that is itself a symlink is followed as
+  configured). Linked capability directories and linked or non-regular entries
+  are never read, written, counted, or deleted by lookups, `cache stats`, or
+  `cache clear`; maintenance lists them under `skipped` instead of claiming
+  they were handled, so a link cannot make `cache clear` reach history or other
+  data outside the cache. The guard is `lstat` check-then-use, not protection
+  against a concurrent adversarial path swap
+- an entry whose timing metadata is not a finite in-range `created_at` and a
+  finite non-negative `ttl_seconds` is corrupt: lookups treat it as a miss
+  (never a replay), `cache stats` counts it in `corrupt_entries` without
+  formatting a date, and `cache clear` removes it. A zero TTL, an expired entry,
+  and a per-invocation `--freshness` override keep their existing meaning
 - crawl executions belong in history, while exact crawl replay remains disabled until a deliberate cache policy is chosen
 - provider-tool exact replay is allowed only when the tool has an explicit replay-safe request key/policy; otherwise provider-tool executions are history-only
 

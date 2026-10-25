@@ -1781,7 +1781,24 @@ function runCacheStats(options: ExtendedCLIOptions): void {
   if (stats.oldest_created_at) {
     lines.push(`  Oldest: ${stats.oldest_created_at}  Newest: ${stats.newest_created_at}`);
   }
+  if (stats.corrupt_entries > 0) {
+    lines.push(
+      `  Corrupt: ${stats.corrupt_entries} entr${stats.corrupt_entries === 1 ? "y" : "ies"} ` +
+        `unreadable or with invalid metadata`
+    );
+  }
   printData(data, lines.join("\n"), options);
+  reportCacheProblems("skipped (not cache-owned)", stats.skipped, options);
+}
+
+/**
+ * Human mode only: list non-secret cache maintenance problems on stderr so a
+ * count is never the sole signal. `--json`/`--pretty` stdout stays pure JSON
+ * (the same details are in the payload).
+ */
+function reportCacheProblems(label: string, items: string[], options: ExtendedCLIOptions): void {
+  if (options.json || options.pretty) return;
+  for (const item of items) console.error(`  ${label}: ${item}`);
 }
 
 /**
@@ -1797,11 +1814,17 @@ function runCacheClear(options: ExtendedCLIOptions): void {
       command: "cache clear",
       removed: result.removed,
       errors: result.errors.length > 0 ? result.errors : undefined,
+      skipped: result.skipped.length > 0 ? result.skipped : undefined,
     },
     `Removed ${result.removed} replay-cache entr${result.removed === 1 ? "y" : "ies"}.` +
-      (result.errors.length > 0 ? ` (${result.errors.length} removal error(s))` : ""),
+      (result.errors.length > 0 ? ` (${result.errors.length} removal error(s))` : "") +
+      (result.skipped.length > 0
+        ? ` (${result.skipped.length} non-owned path(s) left untouched)`
+        : ""),
     options
   );
+  reportCacheProblems("error", result.errors, options);
+  reportCacheProblems("left untouched", result.skipped, options);
 }
 
 function runCacheCommand(options: ExtendedCLIOptions): void {
