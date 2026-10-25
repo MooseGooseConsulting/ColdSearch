@@ -3,7 +3,7 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks antigravity session-start'"
+        "command": "where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks antigravity session-start)"
       }
     ],
     "PreToolUse": [
@@ -12,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks antigravity pre-tool-use'"
+            "command": "where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks antigravity pre-tool-use)"
           }
         ]
       }
@@ -20,13 +20,13 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks antigravity pre-invocation'"
+        "command": "where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks antigravity pre-invocation)"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "sh -c 'if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks antigravity stop'",
+        "command": "where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (entire hooks antigravity stop)",
         "timeout": 300
       }
     ]
