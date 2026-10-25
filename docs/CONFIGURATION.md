@@ -293,7 +293,8 @@ Both commands touch only cache-owned files: real `.json` files directly inside
 real capability directories (`search/`, `extract/`, `tool/`) under the
 configured `path`. A `path` that is itself a symlink is followed, as chosen.
 A symlink/junction capability directory, or a linked or non-regular entry
-inside one, is never read, counted, or deleted; it is listed in the additive
+inside one, is never read, counted, deleted, or replaced by a cache write (a
+live or dangling link at an entry path makes that write a silent no-op); it is listed in the additive
 `skipped` field (JSON) and on stderr (human mode), and `removed` counts only
 files actually unlinked. Removal failures stay in `errors`. Entries with
 unreadable JSON or invalid timing metadata (non-finite or out-of-range

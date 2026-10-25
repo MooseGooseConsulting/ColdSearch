@@ -109,6 +109,19 @@ function isOwnedFile(path: string): boolean {
   }
 }
 
+/**
+ * A cache write may publish over a path that is absent (ENOENT) or already an
+ * owned regular file. Linked or otherwise non-regular targets, and targets
+ * whose state cannot be determined (any other lstat error), are not written.
+ */
+function isWritableTarget(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -246,6 +259,11 @@ export class CacheStore {
       // A linked capability directory would redirect the write outside the
       // cache root; treat it like any other write failure (best-effort skip).
       if (!isOwnedDir(dir)) return;
+      // rename() would replace an existing symlink (live or dangling) or
+      // other non-regular entry with the new file. Inspect the target itself
+      // (lstat does not follow links; existsSync reports a dangling link as
+      // absent): only an absent target or an owned regular file may be written.
+      if (!isWritableTarget(target)) return;
 
       const entry: CacheEntry<T> = {
         key,

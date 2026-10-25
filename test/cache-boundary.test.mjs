@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -287,6 +288,44 @@ test("missing cache root: stats and clear report empty, with the additive fields
     assert.equal(stats.corrupt_entries, 0);
     assert.deepEqual(stats.skipped, []);
     assert.deepEqual(store.clear(), { removed: 0, errors: [], skipped: [] });
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("set() leaves live and dangling linked entry targets alone; owned writes still work", (t) => {
+  const { root, cache, outside } = fixture();
+  try {
+    const victim = join(outside, "preserve.json");
+    const missing = join(outside, "missing.json");
+    writeFileSync(victim, "PRESERVE_OUTSIDE_CACHE", "utf8");
+    mkdirSync(join(cache, "search"));
+    const live = join(cache, "search", "live.json");
+    const dangling = join(cache, "search", "dangling.json");
+    try {
+      symlinkSync(victim, live, "file");
+      symlinkSync(missing, dangling, "file");
+    } catch (error) {
+      if (error.code === "EPERM") return t.skip(`file symlink needs privilege on this host: ${error.code}`);
+      throw error;
+    }
+
+    const store = new CacheStore({ path: cache });
+    assert.doesNotThrow(() => store.set("search", "live", { synthetic: true }, 60));
+    assert.doesNotThrow(() => store.set("search", "dangling", { synthetic: true }, 60));
+
+    assert.ok(lstatSync(live).isSymbolicLink(), "live link object survives set()");
+    assert.ok(lstatSync(dangling).isSymbolicLink(), "dangling link object survives set()");
+    assert.equal(readFileSync(victim, "utf8"), "PRESERVE_OUTSIDE_CACHE", "outside bytes unchanged");
+    assert.equal(existsSync(missing), false, "missing outside target is not created");
+    assert.deepEqual(readdirSync(join(cache, "search")).sort(), ["dangling.json", "live.json"], "no tmp files left");
+    assert.deepEqual(readdirSync(outside), ["preserve.json"]);
+
+    // Ordinary behavior is unchanged: new entry, then atomic replacement of an owned file.
+    store.set("search", "fresh", { v: 1 }, 60);
+    store.set("search", "fresh", { v: 2 }, 60);
+    assert.deepEqual(store.get("search", "fresh"), { v: 2 });
+    assert.ok(lstatSync(join(cache, "search", "fresh.json")).isFile());
   } finally {
     cleanup(root);
   }
