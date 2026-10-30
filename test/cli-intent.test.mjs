@@ -221,3 +221,30 @@ test("--measure-tokens is rejected outside search --intent code-context", () => 
     assert.match(result.stderr, /--measure-tokens is only valid with search --intent code-context/);
   });
 });
+
+test("code-context warns when it overrides a configured exa option", () => {
+  withTempDir((dir) => {
+    const configPath = writeConfig(
+      dir,
+      SEARCH_CONFIG.replace(
+        "[providers.exa]\n",
+        "[providers.exa]\n[providers.exa.options]\nsearchType = \"deep\"\n"
+      )
+    );
+    // The mock provider endpoint is unreachable, so the call fails after the
+    // warning is printed; the warning is what this test is about.
+    const result = runCli([
+      "search",
+      "--intent",
+      "code-context",
+      "--json",
+      "--config",
+      configPath,
+      "hello",
+    ]);
+    assert.match(
+      result.stderr,
+      /Warning: intent 'code-context' sets exa option searchType="lite", overriding configured searchType="deep"/
+    );
+  });
+});

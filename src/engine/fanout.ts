@@ -1104,6 +1104,20 @@ export class FanoutEngine {
         "search",
         translatedCommonOptions
       );
+      if (fixedProviderOptions) {
+        // Fail Visible: say so when the intent replaces a value the operator
+        // configured, instead of silently sending a different request shape.
+        for (const [key, fixed] of Object.entries(fixedProviderOptions)) {
+          const configured = this.config.providers[provider]?.options?.[key];
+          if (configured !== undefined && configured !== fixed) {
+            console.error(
+              `Warning: intent '${options.intent}' sets ${provider} option ` +
+                `${key}=${JSON.stringify(fixed)}, overriding configured ` +
+                `${key}=${JSON.stringify(configured)} for this call`
+            );
+          }
+        }
+      }
       const providerOptions =
         fixedProviderOptions || options.measureTokens
           ? {
