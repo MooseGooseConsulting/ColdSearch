@@ -11,6 +11,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   let currentModel: string | null = null
   const messageStore = new Map<string, any>()
   const announcedSessions = new Set<string>()
+  const childSessions = new Set<string>()
 
   function hookCmd(hookName: string): string[] {
     if (ENTIRE_CMD !== "entire") {
@@ -69,7 +70,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             if (!session?.id) break
             // Sub-sessions are tracked by Kilo too; only top-level ones get an
             // Entire SessionStart.
-            if (session.parentID) break
+            if (session.parentID) { childSessions.add(session.id); break }
             if (announcedSessions.has(session.id)) break
             announcedSessions.add(session.id)
             if (resetSessionTracking(session.id)) {
@@ -80,7 +81,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
 
           case "message.updated": {
             const msg = (event as any).properties?.info
-            if (!msg) break
+            if (!msg || (msg.sessionID && childSessions.has(msg.sessionID))) break
             if (msg.sessionID && resetSessionTracking(msg.sessionID) && !announcedSessions.has(msg.sessionID)) {
               announcedSessions.add(msg.sessionID)
               callHookSync("session-start", { session_id: msg.sessionID })
@@ -119,7 +120,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             const props = (event as any).properties
             if (props?.status?.type !== "idle") break
             const sessionID = props?.sessionID ?? currentSessionID
-            if (!sessionID) break
+            if (!sessionID || childSessions.has(sessionID)) break
             // Fire turn-end synchronously — kilo run exits on this same idle
             // event, so an awaited async fetch here can be cancelled before the
             // hook runs. Entire materializes the transcript on its side via
@@ -134,7 +135,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
 
           case "session.compacted": {
             const sessionID = (event as any).properties?.sessionID
-            if (!sessionID) break
+            if (!sessionID || childSessions.has(sessionID)) break
             await callHook("compaction", { session_id: sessionID })
             break
           }
@@ -142,6 +143,11 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
           case "session.deleted": {
             const session = (event as any).properties?.info
             if (!session?.id) break
+            if (session.parentID || childSessions.has(session.id)) break
+            if (session.id !== currentSessionID) {
+              if (announcedSessions.delete(session.id)) callHookSync("session-end", { session_id: session.id })
+              break
+            }
             seenUserMessages.clear()
             messageStore.clear()
             announcedSessions.delete(session.id)
