@@ -330,3 +330,22 @@ test("set() leaves live and dangling linked entry targets alone; owned writes st
     cleanup(root);
   }
 });
+
+test("only known capability directories are owned: an unrelated child of the root is never read or cleared", () => {
+  const { root, cache } = fixture();
+  try {
+    put(cache, "search", "own.json", validEntry());
+    put(cache, "exports", "keep.json", validEntry({ key: "not-cache" }));
+
+    const store = new CacheStore({ path: cache });
+    const stats = store.stats();
+    assert.equal(stats.total_entries, 1, "only the search entry is counted");
+    assert.deepEqual(Object.keys(stats.capabilities), ["search"]);
+
+    const result = store.clear();
+    assert.equal(result.removed, 1);
+    assert.ok(existsSync(join(cache, "exports", "keep.json")), "unrelated child survives clear");
+  } finally {
+    cleanup(root);
+  }
+});

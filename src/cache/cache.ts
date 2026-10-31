@@ -69,6 +69,9 @@ export interface CacheClearResult {
 /** Largest magnitude a JS `Date` can represent (ECMA-262 time value range). */
 const MAX_DATE_MS = 8.64e15;
 
+/** The capability directories the cache owns under its root. */
+const CACHE_CAPABILITIES = ["search", "extract", "tool"] as const;
+
 /**
  * Validate the timing metadata of a parsed entry. `created_at` must be a finite
  * epoch-ms inside the `Date` range so it can be formatted; `ttl_seconds` must be
@@ -295,20 +298,26 @@ export class CacheStore {
   }
 
   /**
-   * Enumerate the owned capability directories under the root. Linked or
-   * otherwise non-directory children are reported (links only) rather than
-   * followed. Returns null when the root does not exist.
+   * Enumerate the owned capability directories under the root. Only the known
+   * capability names (`search`, `extract`, `tool`) are considered, so unrelated
+   * children of the root are never read or cleared. A linked capability
+   * directory, or one whose state cannot be inspected, is reported in
+   * `skipped` rather than followed. Returns null when the root does not exist.
    */
   private ownedCapabilities(skipped: string[]): string[] | null {
     if (!existsSync(this.path)) return null;
 
     const capabilities: string[] = [];
+    // readdirSync still throws for a root that is not a directory, so a
+    // misconfigured path fails visibly instead of reporting an empty cache.
     for (const capability of readdirSync(this.path)) {
+      if (!(CACHE_CAPABILITIES as readonly string[]).includes(capability)) continue;
       const capDir = join(this.path, capability);
       let info;
       try {
         info = lstatSync(capDir);
-      } catch {
+      } catch (error) {
+        skipped.push(`${capability}: could not inspect: ${describe(error)}`);
         continue;
       }
       if (info.isSymbolicLink()) {
