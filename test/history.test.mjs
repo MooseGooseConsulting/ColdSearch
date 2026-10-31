@@ -1020,13 +1020,13 @@ test("cache clear survives an unreadable capability directory and reports it (re
   try {
     const cacheDir = join(dir, "cache");
     mkdirSync(join(cacheDir, "search"), { recursive: true });
-    mkdirSync(join(cacheDir, "locked"), { recursive: true });
+    mkdirSync(join(cacheDir, "extract"), { recursive: true });
     writeFileSync(join(cacheDir, "search", "a.json"), "{}");
-    writeFileSync(join(cacheDir, "locked", "b.json"), "{}");
+    writeFileSync(join(cacheDir, "extract", "b.json"), "{}");
 
-    const lockedDir = join(cacheDir, "locked");
+    const extractDir = join(cacheDir, "extract");
     try {
-      denyDirectoryListing(lockedDir);
+      denyDirectoryListing(extractDir);
     } catch (error) {
       t.skip(`cannot make a directory unreadable on this platform: ${error.message}`);
       return;
@@ -1036,14 +1036,14 @@ test("cache clear survives an unreadable capability directory and reports it (re
       const result = new CacheStore({ path: cacheDir }).clear();
       assert.equal(result.removed, 1, "the readable capability directory is still cleared");
       assert.equal(result.errors.length, 1, "the unreadable directory is reported, not fatal");
-      assert.match(result.errors[0], /could not enumerate locked/);
+      assert.match(result.errors[0], /could not enumerate extract/);
       assert.equal(
         readdirSync(join(cacheDir, "search")).length,
         0,
         "remaining directories are processed after the failure"
       );
     } finally {
-      restoreDirectoryListing(lockedDir);
+      restoreDirectoryListing(extractDir);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
