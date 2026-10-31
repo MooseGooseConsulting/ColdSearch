@@ -3,7 +3,8 @@ import path from "node:path";
 import process from "node:process";
 import {
   ALLOWED_STATUSES,
-  REQUIRED_PROVIDER_PATHS,
+  missingRequiredEvidenceRows,
+  targetId,
 } from "./provider-pass-through.mjs";
 
 const root = process.cwd();
@@ -280,11 +281,11 @@ await requireFile(`${providerEvidenceDir}/results.jsonl`);
 
 if (await exists(providerEvidenceDir)) {
   const rows = await readJsonl(`${providerEvidenceDir}/results.jsonl`);
-  const expected = REQUIRED_PROVIDER_PATHS.map((row) => `${row.provider}:${row.path}`);
+  const summary = await read(`${providerEvidenceDir}/summary.md`);
   const seen = new Set();
 
   for (const row of rows) {
-    const key = `${row.provider}:${row.path}`;
+    const key = targetId(row);
     if (seen.has(key)) {
       fail(`${providerEvidenceDir}/results.jsonl has duplicate row for ${key}`);
     }
@@ -295,14 +296,23 @@ if (await exists(providerEvidenceDir)) {
     }
   }
 
-  for (const key of expected) {
-    if (!seen.has(key)) {
+  try {
+    for (const key of missingRequiredEvidenceRows(rows, summary)) {
       fail(`${providerEvidenceDir}/results.jsonl is missing required row ${key}`);
     }
+  } catch (error) {
+    fail(`${providerEvidenceDir}/summary.md: ${error.message}`);
   }
 
-  const summary = await read(`${providerEvidenceDir}/summary.md`);
+  // The committed baseline is a historical full-matrix snapshot and cannot be
+  // regenerated in CI (that would require paid live calls), so it is validated
+  // against the status vocabulary in effect when it was generated: statuses
+  // added after the baseline (e.g. not_run) legitimately do not appear in it.
+  // Every pre-existing status must still be enumerated even at zero count, so
+  // a baseline that accidentally drops a status cannot hide.
+  const postBaselineStatuses = new Set(["not_run"]);
   for (const status of ALLOWED_STATUSES) {
+    if (postBaselineStatuses.has(status)) continue;
     if (!summary.includes(status)) {
       fail(`${providerEvidenceDir}/summary.md does not enumerate status ${status}`);
     }

@@ -54,12 +54,20 @@ jobs:
         uses: DopplerHQ/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
 
       - name: Live smoke test
+        shell: bash
+        # PIPESTATUS requires Bash. Publish the smoke coverage summary even
+        # when a check fails, while preserving the smoke command's exit status.
         run: |
+          set +e
           if [ -n "$DOPPLER_TOKEN" ]; then
-            doppler run -- node scripts/smoke.mjs
+            doppler run -- node scripts/smoke.mjs 2>&1 | tee smoke-output.txt
+            status=${PIPESTATUS[0]}
           else
-            node scripts/smoke.mjs
+            node scripts/smoke.mjs 2>&1 | tee smoke-output.txt
+            status=${PIPESTATUS[0]}
           fi
+          cat smoke-output.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}

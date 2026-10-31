@@ -13,8 +13,16 @@
  *   are skipped (not failed), so the canary is green with zero secrets.
  * - Coverage: search (tavily/brave/exa/serper), extract (jina keyless +
  *   tavily/exa/firecrawl), crawl (tavily), and agent mode (OpenRouter free; optional Isoquant conformance).
+ * - Published inventory also lists Bright Data and catalogued provider tools;
+ *   rows without a dedicated routine fixture remain explicitly not covered.
  *
  * Exit code is non-zero only when a check that actually ran fails.
+ *
+ * CLI-only smoke is NOT native-vs-ColdSearch conformance: it performs no
+ * provider-native leg or comparison, so the provider/path coverage table it
+ * prints always keeps conformance rows at `not_run` with an explicit smoke-only
+ * label (see renderCoverageTable). The table is printed to stdout so the canary
+ * can publish it in the workflow summary.
  *
  * Usage:
  *   npm run build && node scripts/smoke.mjs
@@ -24,20 +32,21 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  REQUIRED_PROVIDER_TOOLS,
+  SUPPORTED_PROVIDER_PATHS,
+  redactSensitiveText,
+} from "./provider-pass-through.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "cli.js");
-
-if (!fs.existsSync(cliPath)) {
-  console.error(`dist/cli.js not found at ${cliPath} — run "npm run build" first.`);
-  process.exit(1);
-}
 
 /** Each check: name, the env var it needs (null = keyless), and how to run + assert. */
 const CHECKS = [
   {
     name: "jina extract (keyless)",
+    coverage: { provider: "jina", path: "extract" },
     requiredEnv: null,
     config: `
 [capabilities.extract]
@@ -76,6 +85,7 @@ enabled = false
 function searchCheck(provider, envVar) {
   return {
     name: `${provider} search`,
+    coverage: { provider, path: "search" },
     requiredEnv: envVar,
     config: `
 [capabilities.search]
@@ -106,6 +116,7 @@ enabled = false
 function extractCheck(provider, envVar, url = "https://example.com") {
   return {
     name: `${provider} extract`,
+    coverage: { provider, path: "extract" },
     requiredEnv: envVar,
     config: `
 [capabilities.extract]
@@ -132,6 +143,7 @@ enabled = false
 function crawlCheck(provider, envVar) {
   return {
     name: `${provider} crawl`,
+    coverage: { provider, path: "crawl" },
     requiredEnv: envVar,
     // Use a real multi-page site: example.com crawls to zero pages (single thin page),
     // which is a valid-but-empty API response, not a useful smoke signal.
@@ -164,6 +176,9 @@ enabled = false
 function agentCheck(provider, envVar, model, reasoningEffort) {
   return {
     name: `agent research (${provider})`,
+    // Not a provider/path row in the conformance inventory; reported only in the
+    // PASS/FAIL/SKIP lines, not in the provider/path coverage table.
+    coverage: null,
     // Requires both the LLM key and TAVILY_API_KEY (the agent's search tool uses tavily).
     requiredEnv: [envVar, "TAVILY_API_KEY"],
     timeoutMs: 120000,
@@ -208,13 +223,15 @@ function runCheck(check) {
       env: process.env,
     });
     if (res.status !== 0) {
-      throw new Error(`CLI exited ${res.status}: ${(res.stderr || "").trim() || "(no stderr)"}`);
+      throw new Error(redactSensitiveText(
+        `CLI exited ${res.status}: ${(res.stderr || res.stdout || "").trim() || "(no output)"}`
+      ));
     }
     let out;
     try {
       out = JSON.parse(res.stdout);
     } catch {
-      throw new Error(`output was not valid JSON: ${res.stdout.slice(0, 200)}`);
+      throw new Error(redactSensitiveText(`output was not valid JSON: ${res.stdout.slice(0, 200)}`));
     }
     check.assert(out);
   } finally {
@@ -222,31 +239,125 @@ function runCheck(check) {
   }
 }
 
-let passed = 0;
-let skipped = 0;
-let failed = 0;
-
-for (const check of CHECKS) {
-  const requiredEnv = Array.isArray(check.requiredEnv)
-    ? check.requiredEnv
-    : check.requiredEnv
-      ? [check.requiredEnv]
-      : [];
-  const missingEnv = requiredEnv.find((name) => !process.env[name]);
-  if (missingEnv) {
-    console.log(`SKIP  ${check.name} (${missingEnv} not set)`);
-    skipped++;
-    continue;
-  }
-  try {
-    runCheck(check);
-    console.log(`PASS  ${check.name}`);
-    passed++;
-  } catch (err) {
-    console.error(`FAIL  ${check.name}: ${err.message}`);
-    failed++;
-  }
+function coverageRowId(row) {
+  return row.tool
+    ? `${row.provider}.${row.tool}`
+    : `${row.provider}:${row.path}`;
 }
 
-console.log(`\n${passed} passed, ${skipped} skipped, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+/**
+ * Build the provider/path coverage rows for the shared conformance inventory.
+ *
+ * Every supported row is seeded at conformance status `not_run` — CLI-only
+ * smoke checks run only the ColdSearch CLI with no provider-native leg and no
+ * comparison, so they can never produce a native-vs-ColdSearch `pass`. The
+ * `smoke` column carries the CLI-only outcome: pass / fail / skip / "not
+ * covered".
+ *
+ * @param {Array<{coverage: {provider: string, path?: string, tool?: string} | null, status: "pass"|"fail"|"skip"}>} [checkResults]
+ */
+export function buildCoverageRows(checkResults = []) {
+  const byKey = new Map();
+  for (const target of SUPPORTED_PROVIDER_PATHS) {
+    const key = `${target.provider}:${target.path}`;
+    byKey.set(key, { row: { ...target }, conformance: "not_run", smoke: "not covered" });
+  }
+  for (const target of REQUIRED_PROVIDER_TOOLS) {
+    const key = `${target.provider}.${target.tool}`;
+    byKey.set(key, { row: { ...target, kind: "tool" }, conformance: "not_run", smoke: "not covered" });
+  }
+  for (const entry of checkResults) {
+    if (!entry || !entry.coverage) continue;
+    const { provider, path: capabilityPath, tool } = entry.coverage;
+    const key = tool ? `${provider}.${tool}` : `${provider}:${capabilityPath}`;
+    const row = byKey.get(key);
+    if (row) row.smoke = entry.status;
+  }
+  return [...byKey.values()];
+}
+
+/** Markdown provider/path coverage table for stdout and the canary job summary. */
+export function renderCoverageTable(checkResults = []) {
+  const rows = buildCoverageRows(checkResults);
+  const lines = [
+    "## Provider/Path Coverage (smoke-only)",
+    "",
+    "These are CLI-only smoke results. Each check executes the ColdSearch CLI with no",
+    "provider-native leg and no comparison, so no row below is a native-vs-ColdSearch",
+    "conformance pass: every supported row stays `not_run` in conformance vocabulary.",
+    "The Smoke column reports the CLI-only outcome: pass / fail / skip / not covered.",
+    "",
+    "| Row | Conformance | Smoke |",
+    "|---|---|---|",
+    ...rows.map((entry) => `| ${coverageRowId(entry.row)} | ${entry.conformance} | ${entry.smoke} |`),
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * Totals over the coverage rows, so the published numbers always reconcile with
+ * the table: one row per inventory entry, each smoke status counted once.
+ */
+export function coverageTotals(checkResults = []) {
+  const totals = { pass: 0, skip: 0, fail: 0, "not covered": 0 };
+  for (const entry of buildCoverageRows(checkResults)) {
+    totals[entry.smoke] = (totals[entry.smoke] || 0) + 1;
+  }
+  return totals;
+}
+
+function main() {
+  if (!fs.existsSync(cliPath)) {
+    console.error(`dist/cli.js not found at ${cliPath} — run "npm run build" first.`);
+    process.exit(1);
+  }
+
+  const checkResults = [];
+  let passed = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const check of CHECKS) {
+    const requiredEnv = Array.isArray(check.requiredEnv)
+      ? check.requiredEnv
+      : check.requiredEnv
+        ? [check.requiredEnv]
+        : [];
+    const missingEnv = requiredEnv.find((name) => !process.env[name]);
+    if (missingEnv) {
+      console.log(`SKIP  ${check.name} (${missingEnv} not set)`);
+      skipped++;
+      checkResults.push({ coverage: check.coverage, status: "skip" });
+      continue;
+    }
+    try {
+      runCheck(check);
+      console.log(`PASS  ${check.name}`);
+      passed++;
+      checkResults.push({ coverage: check.coverage, status: "pass" });
+    } catch (err) {
+      console.error(`FAIL  ${check.name}: ${redactSensitiveText(err.message)}`);
+      failed++;
+      checkResults.push({ coverage: check.coverage, status: "fail" });
+    }
+  }
+
+  // The check counters and the coverage-table totals measure different things:
+  // the agent check has no conformance row, and inventory rows unsupported by
+  // smoke never run. Both are reported so the table reconciles with its totals.
+  const totals = coverageTotals(checkResults);
+  console.log(
+    `\n${passed} passed, ${skipped} skipped, ${failed} failed (checks; the agent check has no coverage row)`
+  );
+  console.log(
+    `Coverage rows: ${totals.pass} passed, ${totals.skip} skipped, ${totals.fail} failed, ${totals["not covered"]} not covered`
+  );
+  console.log("");
+  console.log(renderCoverageTable(checkResults));
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+const isMain = process.argv[1] &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isMain) main();

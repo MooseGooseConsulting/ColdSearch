@@ -9,7 +9,7 @@ How ColdSearch is verified — and, more importantly, **how to read a check that
 | Workflow | Trigger | What it does | Gates merge? |
 |---|---|---|---|
 | `ci.yml` | every push + PR | `typecheck` → `test:docs` (capability-matrix drift) → `test` (full offline suite) | **yes** |
-| `canary.yml` | daily 06:00 UTC + manual dispatch | live smoke test against real provider APIs (`scripts/smoke.mjs`); green even with zero secrets | no |
+| `canary.yml` | daily 06:00 UTC + manual dispatch | live smoke test against real provider APIs (`scripts/smoke.mjs`); prints totals and a smoke-only provider/path coverage table into the job summary; green even with zero secrets | no |
 
 **External apps that post checks to PRs** (configured outside the repo, via GitHub Apps — not in `.github/`):
 
@@ -24,7 +24,7 @@ How ColdSearch is verified — and, more importantly, **how to read a check that
 
 The canary is health monitoring, not provider-effectiveness evaluation. Paid multi-provider comparisons and benchmark workloads must not be added to required CI or normal PR validation. Manual native-vs-ColdSearch conformance is limited to provider-facing changes; unrelated changes rely on offline tests and scheduled coverage.
 
-Canary success is not full provider coverage: the workflow deliberately omits keyed providers when their secrets are unavailable. Its provider/path summary should report `pass`, `fail`, blocked, and intentionally unrun rows explicitly so a green workflow cannot be read as “all supported integrations passed.” See `plans/2026-08-10-live-provider-conformance.md`.
+Canary success is not full provider coverage: the workflow deliberately omits keyed providers when their secrets are unavailable. The job appends the smoke reporter's provider/path coverage table (totals plus one row per supported provider/path and provider-tool row) to the workflow summary. CLI-only smoke rows carry an explicit smoke-only label and stay `not_run` in the native-vs-ColdSearch conformance vocabulary — never `pass` — so a green workflow cannot be read as “all supported integrations passed.” The `pass`/`fail`/blocked/waived vocabulary and the `not_run` disclosure for intentionally unrun rows follow `plans/2026-08-10-live-provider-conformance.md`.
 
 ## Reading a red check
 
