@@ -407,7 +407,7 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         const llm = args[i];
         if (!(LLM_PROVIDERS as readonly string[]).includes(llm)) {
           throw new Error(
-            `Invalid LLM provider: ${llm}. Supported: ${LLM_PROVIDERS.join(", ")} (Anthropic API is not used).`
+            `Invalid LLM provider: ${llm}. Supported: ${LLM_PROVIDERS.join(", ")}.`
           );
         }
         options.llmProvider = llm as LLMProvider;

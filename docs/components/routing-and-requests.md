@@ -34,4 +34,4 @@ All networked operations use shared request handling:
 - bounded transient retries
 - normalized error reporting
 
-Applies to provider adapters and agent LLM calls. Agent LLM uses OpenAI-compatible endpoints only; ColdSearch does not call Anthropic APIs.
+Applies to provider adapters and agent LLM calls. Agent LLM calls go to a configured OpenAI-compatible endpoint, whatever model is behind it. Claude only on the Claude subscription or its included API credit, never pay-per-token (see the North Star).

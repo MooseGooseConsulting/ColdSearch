@@ -1,6 +1,6 @@
 /**
  * LLM client interface for the search agent.
- * OpenAI-compatible HTTP only — ColdSearch does not call the Anthropic API.
+ * OpenAI-compatible HTTP only; the model behind the endpoint is configuration.
  */
 import { KeyPoolManager } from "../engine/keypool.js";
 import { APP_USER_AGENT } from "../app.js";
@@ -234,7 +234,6 @@ function resolveOpenAiBaseUrl(baseUrl?: string): string {
 
 /**
  * Create an LLM client from environment.
- * Anthropic is intentionally unsupported — do not add api.anthropic.com calls here.
  */
 export function createLLMClient(
   provider: LLMProvider = "isoquant",
