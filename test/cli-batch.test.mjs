@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Provider hosts batch items dispatch to; redirected to the local mock. */
-const PROVIDER_HOSTS = ["https://api.exa.ai", "https://api.tavily.com"];
+const PROVIDER_HOSTS = ["https://api.exa.ai", "https://api.tavily.com", "https://api.firecrawl.dev"];
 
 function makeDir(tag = "coldsearch-batch-cli-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), tag));
@@ -24,26 +24,35 @@ function makeDir(tag = "coldsearch-batch-cli-") {
  * and resumed skips.
  */
 function startMockServer() {
-  const state = { requests: 0 };
+  const state = { requests: 0, searchBodies: [] };
   const server = http.createServer((req, res) => {
     state.requests += 1;
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("Content-Type", "application/json");
     if (req.method === "POST" && url.pathname === "/search") {
-      res.end(
-        JSON.stringify({
-          results: [
-            { title: "Mock Title", url: "https://mock.example/1", text: "mock snippet", score: 0.9 },
-          ],
-          answer: "mock answer",
-        })
-      );
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        state.searchBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.end(
+          JSON.stringify({
+            results: [
+              { title: "Mock Title", url: "https://mock.example/1", text: "mock snippet", score: 0.9 },
+            ],
+            answer: "mock answer",
+          })
+        );
+      });
     } else if (req.method === "POST" && url.pathname === "/contents") {
       res.end(
         JSON.stringify({
           results: [{ url: "https://mock.example/page", title: "Mock Page", text: "mock body content" }],
         })
       );
+    } else if (req.method === "POST" && url.pathname === "/v2/crawl") {
+      res.end(JSON.stringify({ success: true, id: "cli-pending-job", url: "https://example.com" }));
+    } else if (req.method === "GET" && url.pathname === "/v2/crawl/cli-pending-job") {
+      res.end(JSON.stringify({ success: true, status: "scraping" }));
     } else {
       res.writeHead(404);
       res.end(JSON.stringify({ error: `unexpected ${req.method} ${url.pathname}` }));
@@ -77,7 +86,7 @@ function closeServer(server) {
  * preload loaded via `--require` keeps this portable across Node 18+ (the
  * project's engine floor); `--import` would require Node >= 20.6.
  */
-function preloadOptions(dir, port) {
+function preloadOptions(dir, port, { fastPolls = false } = {}) {
   const preloadPath = path.join(dir, "mock-fetch.cjs");
   const hosts = JSON.stringify(PROVIDER_HOSTS);
   fs.writeFileSync(
@@ -93,10 +102,17 @@ globalThis.fetch = (input, init) => {
 `,
     "utf8"
   );
+  if (fastPolls) {
+    fs.appendFileSync(
+      preloadPath,
+      "const originalSetTimeout = globalThis.setTimeout;\nglobalThis.setTimeout = (fn, delay, ...args) => originalSetTimeout(fn, delay === 2000 ? 0 : delay, ...args);\n",
+      "utf8"
+    );
+  }
   return `--require ${JSON.stringify(preloadPath)}`;
 }
 
-function writeConfig(dir, { cacheEnabled = false } = {}) {
+function writeConfig(dir, { cacheEnabled = false, exaNumResults } = {}) {
   const configPath = path.join(dir, "config.toml");
   const cacheBlock = cacheEnabled
     ? `[cache]\nenabled = true\npath = ${JSON.stringify(path.join(dir, "cache"))}\n`
@@ -117,6 +133,9 @@ function writeConfig(dir, { cacheEnabled = false } = {}) {
       'strategy = "all"',
       "",
       "[providers.exa]",
+      ...(exaNumResults !== undefined
+        ? ["[providers.exa.options]", `numResults = ${exaNumResults}`, ""]
+        : []),
       "[providers.exa.keyPool]",
       'keys = ["env:EXA_API_KEY"]',
       "",
@@ -138,6 +157,31 @@ function writeConfig(dir, { cacheEnabled = false } = {}) {
   return configPath;
 }
 
+test("CLI honors Exa numResults when --limit is omitted and explicit --limit overrides it", async () => {
+  const dir = makeDir();
+  const { server, state, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port);
+  try {
+    const configPath = writeConfig(dir, { exaNumResults: 4 });
+    const implicit = await runCli(
+      ["search", "--config", configPath, "--json", "implicit count"],
+      nodeOptions
+    );
+    assert.equal(implicit.status, 0, implicit.stderr);
+    assert.equal(state.searchBodies[0].numResults, 4);
+
+    const explicit = await runCli(
+      ["search", "--config", configPath, "--json", "--limit", "7", "explicit count"],
+      nodeOptions
+    );
+    assert.equal(explicit.status, 0, explicit.stderr);
+    assert.equal(state.searchBodies[1].numResults, 7);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /**
  * Async CLI spawn. The mock provider server lives in this test process, so the
  * parent event loop must stay free to accept the child's connections while the
@@ -152,6 +196,7 @@ function runCli(args, nodeOptions) {
         ...process.env,
         EXA_API_KEY: "test-exa-key",
         TAVILY_API_KEY: "test-tavily-key",
+        FIRECRAWL_API_KEY: "test-firecrawl-key",
         ...(nodeOptions
           ? { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} ${nodeOptions}`.trim() }
           : {}),
@@ -260,6 +305,156 @@ test("runs a mixed search/extract/crawl/provider-tool batch with mocked provider
       .filter(Boolean)
       .map(JSON.parse);
     assert.equal(history.length, 4, "one history record per executed item");
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("crawl CLI warns visibly when Firecrawl returns a pending job", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const configPath = path.join(dir, "firecrawl.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["crawl", "--config", configPath, "--json", "https://example.com"],
+      nodeOptions
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "pending");
+    assert.deepEqual(output.results, []);
+    assert.deepEqual(output.pendingJobs, [
+      { provider: "firecrawl", jobId: "cli-pending-job", url: "https://example.com" },
+    ]);
+    assert.equal(output.total, 0);
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("crawl CLI warns about a pending Firecrawl job when Exa fallback completes", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const configPath = path.join(dir, "firecrawl-fallback.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl", "exa"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["env:EXA_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["crawl", "--config", configPath, "--json", "https://example.com"],
+      nodeOptions
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Warning: crawl is still pending.*cli-pending-job/);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "pending");
+    assert.equal(output.provider, "exa");
+    assert.deepEqual(output.pendingJobs, [
+      { provider: "firecrawl", jobId: "cli-pending-job", url: "https://example.com" },
+    ]);
+    assert.equal(output.results.length, 1);
+    assert.equal(output.results[0].status, "completed");
+    assert.equal(output.total, 1, "job handles do not inflate page count");
+  } finally {
+    await closeServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("batch with pending crawl items exits nonzero", async () => {
+  const dir = makeDir();
+  const { server, port } = await startMockServer();
+  const nodeOptions = preloadOptions(dir, port, { fastPolls: true });
+  try {
+    const inputPath = writeInput(dir, [
+      { id: "crawl-pending", capability: "crawl", url: "https://example.com" },
+    ]);
+    const outputPath = path.join(dir, "pending-out.jsonl");
+    const configPath = path.join(dir, "firecrawl.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+
+[cache]
+enabled = false
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+`,
+      "utf8"
+    );
+
+    const result = await runCli(
+      ["batch", "--input", inputPath, "--output", outputPath, "--config", configPath, "--json"],
+      nodeOptions
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.pending, 1);
+    assert.equal(summary.succeeded, 0);
+    assert.equal(outputRecords(outputPath)[0].status, "pending");
   } finally {
     await closeServer(server);
     fs.rmSync(dir, { recursive: true, force: true });

@@ -512,6 +512,78 @@ test("crawl executions are recorded but never served from exact replay", async (
   }
 });
 
+test("pending Firecrawl job and fallback pages are recorded separately", async () => {
+  const dir = makeTempDir();
+  const historyPath = join(dir, "history.jsonl");
+  const usagePath = join(dir, "usage.jsonl");
+  const configPath = join(dir, "config.toml");
+  writeFileSync(
+    configPath,
+    `
+[capabilities.crawl]
+providers = ["firecrawl", "exa"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["firecrawl-test-key"]
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["exa-test-key"]
+
+[history]
+path = ${JSON.stringify(historyPath)}
+
+[logging.usage]
+path = ${JSON.stringify(usagePath)}
+`,
+    "utf8"
+  );
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: "history-pending-job", url: "https://x.example" }),
+    "GET https://api.firecrawl.dev/v2/crawl/history-pending-job": async () =>
+      jsonResponse({ success: true, status: "scraping" }),
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/fallback", title: "Fallback" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/fallback", title: "Fallback", text: "page content" }] }),
+  });
+
+  try {
+    const result = await new LocalExecutionBackend(configPath).crawl("https://x.example", { limit: 1 });
+    assert.equal(result.status, "pending");
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].url, "https://x.example/fallback");
+    assert.deepEqual(result.pendingJobs, [
+      { provider: "firecrawl", jobId: "history-pending-job", url: "https://x.example" },
+    ]);
+
+    const [record] = readRecords(historyPath);
+    assert.equal(record.outcome, "pending");
+    assert.equal(record.result.length, 1);
+    assert.equal(record.result[0].url, "https://x.example/fallback");
+    assert.equal(record.result_count, 1);
+    assert.deepEqual(record.pending_jobs, result.pendingJobs);
+    assert.equal(record.attempts[0].success, false);
+    assert.equal(record.attempts[0].pending, true);
+    assert.equal(record.attempts[1].success, true);
+
+    const usage = readFileSync(usagePath, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(usage.length, 2);
+    assert.equal(usage[0].success, false);
+    assert.equal(usage[0].pending, true);
+    assert.equal(usage[1].success, true);
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("signed caller URLs are redacted from persisted inputs AND echoed results", async () => {
   const { dir, historyPath, configPath } = writeTempConfig();
   const signedUrl = "https://example.com/private?token=supersecrettoken123&sig=abc123&keep=1";
@@ -708,6 +780,24 @@ path = ${JSON.stringify(historyPath)}
     assert.ok(record.attempts[0].error.includes(REDACTED));
   } finally {
     restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("direct backend intent rejection is recorded for the correct capability", async () => {
+  const { dir, historyPath, configPath } = writeTempConfig();
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    await assert.rejects(
+      () => backend.extract("https://example.com", { intent: "structured-extraction" }),
+      /structured-extraction/
+    );
+    const [record] = readRecords(historyPath);
+    assert.equal(record.command, "extract");
+    assert.equal(record.outcome, "failed");
+    assert.equal(record.options.intent, "structured-extraction");
+    assert.deepEqual(record.attempts, []);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -930,13 +1020,13 @@ test("cache clear survives an unreadable capability directory and reports it (re
   try {
     const cacheDir = join(dir, "cache");
     mkdirSync(join(cacheDir, "search"), { recursive: true });
-    mkdirSync(join(cacheDir, "locked"), { recursive: true });
+    mkdirSync(join(cacheDir, "extract"), { recursive: true });
     writeFileSync(join(cacheDir, "search", "a.json"), "{}");
-    writeFileSync(join(cacheDir, "locked", "b.json"), "{}");
+    writeFileSync(join(cacheDir, "extract", "b.json"), "{}");
 
-    const lockedDir = join(cacheDir, "locked");
+    const extractDir = join(cacheDir, "extract");
     try {
-      denyDirectoryListing(lockedDir);
+      denyDirectoryListing(extractDir);
     } catch (error) {
       t.skip(`cannot make a directory unreadable on this platform: ${error.message}`);
       return;
@@ -946,14 +1036,14 @@ test("cache clear survives an unreadable capability directory and reports it (re
       const result = new CacheStore({ path: cacheDir }).clear();
       assert.equal(result.removed, 1, "the readable capability directory is still cleared");
       assert.equal(result.errors.length, 1, "the unreadable directory is reported, not fatal");
-      assert.match(result.errors[0], /could not enumerate locked/);
+      assert.match(result.errors[0], /could not enumerate extract/);
       assert.equal(
         readdirSync(join(cacheDir, "search")).length,
         0,
         "remaining directories are processed after the failure"
       );
     } finally {
-      restoreDirectoryListing(lockedDir);
+      restoreDirectoryListing(extractDir);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

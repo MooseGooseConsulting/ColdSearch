@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "provider": "serper",
+  "ts": "2026-10-12T09:19:27.418Z",
+  "label": "Serper search",
+  "method": "POST",
+  "url": "https://google.serper.dev/search",
+  "requestHeaders": {
+    "content-type": "application/json",
+    "x-api-key": "REDACTED"
+  },
+  "requestBody": "{\"q\":\"coldsearch contract probe\",\"num\":10}",
+  "status": 403,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBodyText": "{\"message\":\"Unauthorized. Sign up for a free account.\",\"statusCode\":403}",
+  "durationMs": 188,
+  "notes": "Verified 2026-10-12 live keyless probe: Serper POST /search without a valid key answers 403 with {message,statusCode}."
+}

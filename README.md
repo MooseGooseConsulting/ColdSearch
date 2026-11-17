@@ -46,6 +46,13 @@ The current implementation remains local-first, but the runtime is now being org
 | `extract` | Tavily, Exa, Jina, Firecrawl | Manual random pool |
 | `crawl` | Tavily, Firecrawl, Exa | Manual random pool |
 
+Random routing normally uses one provider. If its account credits/quota are
+exhausted, search/extract/crawl try the remaining eligible pool in order until
+one succeeds. Recovery retains failed attempts in usage logs and execution
+history; it does not remove providers or change config. An explicit single
+provider has no alternative to recover through. See
+[quota recovery](docs/CONFIGURATION.md#quota-recovery).
+
 ## Provider Overlap
 
 The core architectural truth is provider overlap, not just three coarse commands.
@@ -97,13 +104,16 @@ record; `id` is the stable resume key.
 
 ```jsonl
 {"id":"node-lts","capability":"search","query":"current node lts version","limit":5}
+{"id":"recent-content","capability":"search","intent":"content-backed-retrieval","query":"current node lts version","commonOptions":{"timeRange":"day"}}
 {"id":"example-extract","capability":"extract","url":"https://example.com"}
 {"id":"example-crawl","capability":"crawl","url":"https://example.com","limit":10}
 {"id":"tavily-answer","tool":"tavily.answer","input":{"query":"current node lts version"}}
 ```
 
-Optional knobs mirror the CLI flags: `limit`, `providers`, `singleProvider`,
-`noCache`.
+Optional capability-record fields include `intent`, `commonOptions`, `limit`,
+`providers`, `singleProvider`, and `noCache`. `commonOptions` accepts `limit`,
+`includeDomains`, `excludeDomains`, `timeRange`, and `includeContent`; intents
+must match the record's capability.
 
 Resume is keyed on `id` only: if you change an item's input, give it a new
 `id` or it will be skipped as already-succeeded. Batch items are configured
@@ -132,6 +142,9 @@ npm test
 - `docs/PROVIDERS.md` - Capability + tool matrix and per-provider coverage (single source of truth)
 - `docs/CONFIGURATION.md` - Configuration reference and precedence
 - `docs/reviews/2026-07-16-project-review-and-bright-data.md` - Dated project, GitHub, memory, and Bright Data review
+- `docs/reviews/2026-10-11-provider-contract-audit.md` - Dated native-contract audit of all 8 providers for issue #79 (evidence snapshot)
+- `docs/reviews/2026-10-12-live-probe-ledger.md` - Bounded keyless live probes of provider APIs (what is live-verified vs blocked)
+- `docs/follow-ups/` - Draft follow-up issue designs from the #79 alignment set (not yet filed)
 - `plans/2026-06-22-remaining-implementation-master-plan.md` - Active implementation sequence (informational)
 - `docs/contributing/testing.md` - What to test (and what not to duplicate)
 
@@ -145,3 +158,12 @@ architecture, provider matrix, code, or current GitHub state.
 - Add agent run IDs and step-level trace correlation
 - Finish guided configuration/status UX and normalized error classification
 - Keep remote/hybrid execution deferred until the local audit and workflow surfaces are trustworthy
+
+
+### Agent LLM configuration
+
+Agent synthesis defaults to Isoquant GLM 5.3 Flash at medium reasoning. Inject
+`ISOQUANT_API_KEY` with Doppler, or configure `[agent.llm] key_ref` to the actual
+`doppler:SECRET_NAME`. Routine live LLM tests use OpenRouter's `openrouter/free`.
+See [configuration](docs/CONFIGURATION.md#isoquant-production-and-free-router-testing)
+for the deployed config migration, CLI overrides and CI credential options.

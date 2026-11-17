@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { NormalizedResult } from "../types.js";
+import type { NormalizedResult, PendingCrawlJob, ToolExecutionMode } from "../types.js";
 
 /**
  * One top-level history execution is recorded per `coldsearch search`,
@@ -12,7 +12,7 @@ export type ExecutionCommand = "search" | "extract" | "crawl" | "tool";
 /** `live`: providers were called. `cache`: exact replay, zero provider calls. */
 export type ExecutionSource = "live" | "cache";
 
-export type ExecutionOutcome = "success" | "partial" | "failed";
+export type ExecutionOutcome = "success" | "partial" | "pending" | "failed";
 
 /**
  * One provider/tool attempt inside an execution. Carries only what the runtime
@@ -21,8 +21,16 @@ export type ExecutionOutcome = "success" | "partial" | "failed";
 export interface ProviderAttempt {
   provider: string;
   tool?: string;
+  /** Provider-native endpoint backing this leg, e.g. "POST /search" (issue #79 provenance). */
+  toolNativeName?: string;
+  /** How the backing tool executes upstream (sync/async-job/streaming). */
+  executionMode?: ToolExecutionMode;
   success: boolean;
+  /** Provider accepted an asynchronous job that has not completed yet. */
+  pending?: boolean;
   error?: string;
+  /** Account exhaustion observed in this attempt; enables bounded recovery. */
+  quota_exhausted?: boolean;
   duration_ms?: number;
   key_ref?: string;
   result_count?: number;
@@ -39,6 +47,8 @@ export interface ExecutionRouting {
   strategy?: string | null;
   requested_providers?: string[];
   providers_attempted?: string[];
+  /** Providers excluded before dispatch because they could not honor filters. */
+  providers_skipped?: Record<string, string>;
   reranker?: string;
 }
 
@@ -66,6 +76,8 @@ export interface ExecutionRecord {
   partitions?: Record<string, NormalizedResult[]>;
   /** Final normalized/merged output returned to the caller, redacted. */
   result?: unknown;
+  /** Async crawl handles, separate from page results and safe to resume. */
+  pending_jobs?: PendingCrawlJob[];
   result_count?: number;
   /**
    * Raw provider detail, only where the execution path already preserves it

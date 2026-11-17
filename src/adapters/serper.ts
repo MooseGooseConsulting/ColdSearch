@@ -19,10 +19,17 @@ interface SerperSearchResponse {
   organic?: SerperOrganicResult[];
 }
 
+/** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+function clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 /**
  * Serper.dev Google Search adapter.
  * Uses Serper's REST API for Google search results.
- * @see https://serper.dev/docs
+ * @see https://serper.dev (serper.dev/docs 404s; docs live on the homepage
+ * demo and the login-gated playground)
  */
 export class SerperAdapter implements SearchAdapter {
   name = "serper";
@@ -31,8 +38,18 @@ export class SerperAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const body: Record<string, unknown> = {
+      q: query,
+      // Serper accepts up to 100 results per request.
+      num: clampIntegerOption(options?.limit ?? options?.providerOptions?.num, 1, 100, 10),
+    };
+    const location = options?.providerOptions?.location;
+    if (typeof location === "string" && location.trim()) {
+      body.location = location.trim();
+    }
+
     const data = await fetchJson<SerperSearchResponse>("https://google.serper.dev/search", {
       method: "POST",
       headers: {
@@ -40,11 +57,12 @@ export class SerperAdapter implements SearchAdapter {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        q: query,
-        num: 10,
+        ...body,
+        num: clampIntegerOption(options?.limit ?? options?.providerOptions?.num, 1, 100, 10),
       }),
     }, {
       label: "Serper search",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     // Normalize Serper results to shared schema

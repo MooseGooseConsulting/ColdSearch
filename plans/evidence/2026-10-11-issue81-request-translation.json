@@ -1,0 +1,33 @@
+{
+  "issue": 81,
+  "date": "2026-10-11",
+  "launch": "local development launch command",
+  "notes": "Statuses and counts only. No response bodies, no secret values.",
+  "calls": [
+    { "name": "tavily.search", "result": "ok", "detail": "1 result" },
+    { "name": "tavily.extract", "result": "ok", "detail": "format=text accepted" },
+    { "name": "tavily.crawl", "result": "ok", "detail": "max_depth 0 rejected; clamped to 1; HTTP 200, results empty for example.com" },
+    { "name": "tavily.map", "result": "ok", "detail": "POST /map HTTP 200" },
+    { "name": "tavily.answer", "result": "alias", "detail": "POST /answer HTTP 404; tool answer stays POST /search with include_answer" },
+    { "name": "firecrawl.search", "result": "ok", "detail": "1 result" },
+    { "name": "firecrawl.extract", "result": "ok", "detail": "formats [text] HTTP 400; markdown accepted and used for the common text request" },
+    { "name": "firecrawl.crawl", "result": "ok", "detail": "short poll returned status pending and a job id" },
+    { "name": "firecrawl.map", "result": "ok", "detail": "POST /v2/map HTTP 200" },
+    { "name": "exa.search", "result": "ok", "detail": "1 result" },
+    { "name": "exa.crawl", "result": "ok", "detail": "derived true, status completed" },
+    { "name": "brave.search", "result": "ok", "detail": "1 result" },
+    { "name": "brave.images", "result": "ok", "detail": "GET /res/v1/images/search HTTP 200" },
+    { "name": "brave.news", "result": "ok", "detail": "GET /res/v1/news/search HTTP 200" },
+    { "name": "brave.videos", "result": "ok", "detail": "GET /res/v1/videos/search HTTP 200" },
+    { "name": "serper.search", "result": "ok", "detail": "1 result" },
+    { "name": "serper.news", "result": "ok", "detail": "POST /news HTTP 200" },
+    { "name": "jina.extract", "result": "blocked", "detail": "HTTP 401 AuthenticationRequiredError, no JINA_API_KEY" },
+    { "name": "jina.search", "result": "blocked", "detail": "s.jina.ai HTTP 401, no JINA_API_KEY" },
+    { "name": "jina.embeddings", "result": "blocked", "detail": "HTTP 401, not wired" },
+    { "name": "jina.rerank", "result": "blocked", "detail": "HTTP 401, not wired" },
+    { "name": "brightdata.datasetsList", "result": "ok", "detail": "GET /datasets/list HTTP 200 using BRIGHTDATA_API_TOKEN" },
+    { "name": "brightdata.serp", "result": "blocked", "detail": "missing BRIGHTDATA_SERP_ZONE" },
+    { "name": "brightdata.unlocker", "result": "blocked", "detail": "missing BRIGHTDATA_UNLOCKER_ZONE" },
+    { "name": "searxng.search", "result": "blocked", "detail": "missing SEARXNG_BASE_URL" }
+  ]
+}

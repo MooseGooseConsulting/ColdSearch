@@ -1,7 +1,7 @@
 services:
   searxng:
     container_name: searxng
-    image: searxng/searxng@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e
+    image: searxng/searxng:latest@sha256:47f9f764a453752574d117f6d77d40a1168fe3c95cb9e117cbc6aa6b295831c3
     ports:
       - "8889:8080"
     volumes:

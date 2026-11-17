@@ -8,6 +8,9 @@
 # Each capability maps to one or more providers.
 # strategy = "random"  → Pick one random provider per request
 # strategy = "all"     → Fan out to all providers (for search with reranking)
+# Random/single-provider requests recover from exhausted account credits by
+# trying the remaining eligible pool in order, stopping at the first success.
+# Pool membership and key configuration are never rewritten by recovery.
 #
 # Bright Data is intentionally NOT in these default pools yet. Configure it
 # below, then select it explicitly with --providers brightdata until measured
@@ -119,7 +122,7 @@ keys = []
 keys = ["doppler:FIRECRAWL_API_KEY"]
 
 # ============================================
-# DOPPLER SETUP (remove BWS section below)
+# DOPPLER SETUP
 # ============================================
 # 1. Authenticate: doppler login
 # 2. In Doppler, create secrets matching the names above (e.g., TAVILY_API_KEY_1)
@@ -134,12 +137,8 @@ keys = ["doppler:FIRECRAWL_API_KEY"]
 # Or set token in environment (CI pattern):
 #   DOPPLER_TOKEN=dp.st.xxx coldsearch search "query"
 
-# ============================================
-# BITWARDEN SECRETS MANAGER (REMOVED)
-# ============================================
-# Bitwarden Secrets Manager support has been removed. A `bws:` key reference now
-# raises an error at resolution time instead of being honored.
-# Migrate each `bws:` ref to a `doppler:` or `env:` ref:
+# Bitwarden Secrets Manager support was removed. A `bws:` key reference raises
+# an error at resolution time — migrate each `bws:` ref to `doppler:` or `env:`.
 #   doppler:SECRET_NAME   (preferred)   or   env:VAR_NAME
 
 # ============================================
@@ -220,6 +219,8 @@ tool_ttl = "6h"
 # --llm-base-url take precedence, and OPENAI_BASE_URL (or the provider's own
 # environment variable) remains the fallback below TOML.
 #[agent.llm]
-#provider = "openai"
-#model = "gpt-4o"
-#base_url = "https://api.openai.com/v1"
+#provider = "isoquant"
+#model = "glm-5.3-flash"
+#base_url = "https://api.isoquant.ai/v1"
+#reasoning_effort = "medium"
+#key_ref = "doppler:ISOQUANT_API_KEY"

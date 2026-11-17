@@ -7,7 +7,7 @@ import {
   LocalExecutionBackend,
   type ExecutionBackend,
 } from "../execution/backend.js";
-import { createLLMClient, type LLMClient, type LLMProvider } from "./llm.js";
+import { createLLMClient, type LLMClient, type LLMProvider, type LLMEndpointConfig } from "./llm.js";
 import { tools, parseAgentPayload } from "./tools.js";
 import { ResearchContext } from "./context.js";
 
@@ -25,6 +25,7 @@ export interface AgentOptions {
   model?: string;
   /** Override LLM API base URL (OpenAI-compatible /chat/completions) */
   llmBaseUrl?: string;
+  llmSettings?: LLMEndpointConfig;
   /** Config path */
   configPath?: string;
   /** Execution backend implementation */
@@ -175,9 +176,10 @@ export class SearchAgent {
     this.llm =
       options.llm ??
       createLLMClient(
-        options.llmProvider ?? "openai",
+        options.llmProvider ?? "isoquant",
         options.model,
-        options.llmBaseUrl
+        options.llmBaseUrl,
+        options.llmSettings
       );
     this.backend =
       options.executionBackend ?? new LocalExecutionBackend(options.configPath);
@@ -265,6 +267,7 @@ Be thorough but efficient. Focus on authoritative sources.`;
         searchFn: async (q: string) => {
           const result = await this.backend.search(q, {
             limit: 5,
+            limitSet: false,
             rerankStrategy: "rrf",
             noCache: this.noCache,
           });

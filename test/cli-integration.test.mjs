@@ -186,6 +186,32 @@ keys = ["k"]
   assert.equal(out.capability, "search");
 });
 
+test("dry-run discloses conditional quota alternatives separately from the initial random selection", () => {
+  const result = withTempDir((dir) => {
+    const configPath = writeConfig(dir, `
+[capabilities.extract]
+providers = ["firecrawl", "tavily", "exa"]
+strategy = "random"
+[providers.firecrawl.keyPool]
+keys = ["env:FIRECRAWL_API_KEY"]
+[providers.tavily.keyPool]
+keys = ["env:TAVILY_API_KEY"]
+[providers.exa.keyPool]
+keys = ["env:EXA_API_KEY"]
+`);
+    return runCli(["extract", "--config", configPath, "--dry-run", "--json", "https://x.example"]);
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.providers.length, 1);
+  assert.equal(out.estimated_provider_attempts, 1);
+  assert.equal(out.max_provider_attempts, 3);
+  assert.equal(out.estimated_api_calls, undefined);
+  assert.equal(out.max_api_calls, undefined);
+  assert.equal(out.quota_fallback_providers.length, 2);
+  assert.deepEqual(new Set([out.providers[0].provider, ...out.quota_fallback_providers]), new Set(["firecrawl", "tavily", "exa"]));
+});
+
 test("flags after the query positional are still parsed", () => {
   const result = withTempDir((dir) => {
     const configPath = writeConfig(
@@ -204,7 +230,7 @@ keys = ["k"]
     delete env.OPENAI_API_KEY;
 
     return runCli(
-      ["search", "--config", configPath, "topic", "--agent"],
+      ["search", "--config", configPath, "topic", "--agent", "--llm", "openai"],
       env
     );
   });
@@ -321,7 +347,9 @@ test("config doctor does not leak TOML parse-error source excerpts", () => {
   assert.equal(result.status, 1);
   const output = result.stdout + result.stderr;
   assert.doesNotMatch(output, /sk-fake-secret-xyz/);
-  assert.match(output, /row 3/);
+  // Position survives sanitization (line of the malformed entry) without the
+  // source excerpt.
+  assert.match(output, /line 3/);
 });
 
 test("config doctor --json reports valid config success", () => {
@@ -384,6 +412,32 @@ keys = ["sk-literal-secret-abc123"]
   assert.match(warnings, /raw literal/);
   // …but the secret VALUE is never echoed anywhere.
   assert.doesNotMatch(result.stdout + result.stderr, /sk-literal-secret-abc123/);
+});
+
+test("missing --llm-key-ref is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--llm-key-ref"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): --llm-key-ref requires/);
+});
+
+test("invalid --reasoning-effort is reported as a config error", () => {
+  const result = runCli(["search", "--agent", "--reasoning-effort", "turbo", "query"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Error \(config\): Invalid reasoning effort/);
+});
+
+test("--depth rejects missing, blank, fractional, negative, and trailing-junk values", () => {
+  for (const depthArgs of [
+    ["--depth"],
+    ["--depth", ""],
+    ["--depth", "1.5"],
+    ["--depth", "-1"],
+    ["--depth", "2pages"],
+  ]) {
+    const result = runCli(["crawl", ...depthArgs, "https://example.com"]);
+    assert.equal(result.status, 1, JSON.stringify(depthArgs));
+    assert.match(result.stderr, /^Error \([^)]*\): Invalid depth:/);
+  }
 });
 
 test("status --json includes the config path", () => {

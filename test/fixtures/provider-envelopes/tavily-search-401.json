@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "provider": "tavily",
+  "ts": "2026-10-12T09:18:03.942Z",
+  "label": "Tavily search",
+  "method": "POST",
+  "url": "https://api.tavily.com/search",
+  "requestHeaders": {
+    "content-type": "application/json",
+    "authorization": "REDACTED"
+  },
+  "requestBody": "{\"query\":\"coldsearch contract probe\",\"max_results\":10}",
+  "status": 401,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBodyText": "{\"detail\":{\"error\":\"Unauthorized: missing or invalid API key.\"}}",
+  "durationMs": 231,
+  "notes": "Verified 2026-10-12 live keyless probe: Tavily POST /search without a valid key answers 401 with {detail:{error}}."
+}

@@ -2,6 +2,8 @@
 
 Generated: 2026-06-24T07:58:19.302Z
 
+Inventory schema version: 1
+
 ## Commands
 
 - Baseline command for this evidence: `node scripts/provider-pass-through.mjs --all`

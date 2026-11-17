@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import TOML from "@iarna/toml";
+import { parse as parseToml, TomlError } from "smol-toml";
 import { DEFAULT_CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME } from "./app.js";
 import type { Config } from "./types.js";
 
@@ -44,9 +44,10 @@ export function resolveConfigPath(configPath?: string): string {
 }
 
 /**
- * @iarna/toml parse errors append the offending source lines (which may hold
- * literal credentials) after the first newline. Keep the location/reason prefix
- * and drop the source excerpt so secrets never surface in error output.
+ * TOML parse errors embed the offending source excerpt (smol-toml carries it
+ * in `TomlError.codeblock`), which may hold literal credentials. Keep the
+ * location/reason prefix and drop the source excerpt so secrets never surface
+ * in error output.
  */
 function sanitizeTomlError(message: string): string {
   const firstNewline = message.indexOf("\n");
@@ -76,10 +77,14 @@ export function loadConfig(configPath?: string): Config {
 
   let parsed: unknown;
   try {
-    parsed = TOML.parse(content);
+    parsed = parseToml(content);
   } catch (error) {
+    // Keep the structured position (never the source excerpt) so the operator
+    // gets a location without any credential material.
+    const location =
+      error instanceof TomlError ? ` (line ${error.line}, column ${error.column})` : "";
     throw new Error(
-      `Failed to parse config file ${path}: ${sanitizeTomlError((error as Error).message)}`
+      `Failed to parse config file ${path}${location}: ${sanitizeTomlError((error as Error).message)}`
     );
   }
 
@@ -95,7 +100,10 @@ export function loadConfig(configPath?: string): Config {
     typeof llm === "object" &&
     !Array.isArray(llm)
   ) {
-    const llmCfg = llm as { base_url?: string; baseUrl?: string };
+    const llmCfg = llm as Record<string, unknown>;
+    for (const [snake, camel] of [["reasoning_effort", "reasoningEffort"], ["key_ref", "keyRef"]]) {
+      if (llmCfg[snake] !== undefined && llmCfg[camel] === undefined) llmCfg[camel] = llmCfg[snake];
+    }
     if (llmCfg.base_url !== undefined && llmCfg.baseUrl === undefined) {
       llmCfg.baseUrl = llmCfg.base_url;
     }
@@ -173,7 +181,9 @@ strategy = "random"
 # Agent LLM endpoint (optional): OpenAI-compatible chat completions.
 # CLI flags --llm / --model / --llm-base-url override these values.
 # [agent.llm]
-# provider = "openai"
-# model = "gpt-4o"
-# base_url = "https://api.openai.com/v1"
+# provider = "isoquant"
+# model = "glm-5.3-flash"
+# base_url = "https://api.isoquant.ai/v1"
+# reasoning_effort = "medium"
+# key_ref = "doppler:ISOQUANT_API_KEY"
 `;

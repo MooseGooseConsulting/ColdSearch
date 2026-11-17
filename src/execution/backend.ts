@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { effectiveJinaReturnFormat } from "../adapters/jina.js";
 import { loadConfig } from "../config.js";
 import {
   AllProvidersFailedError,
@@ -8,7 +9,13 @@ import {
 } from "../engine/fanout.js";
 import { CacheStore, type CacheEntryMeta } from "../cache/cache.js";
 import { cacheKey, parseDuration } from "../cache/key.js";
-import { resolveCapabilityProviders } from "../providers.js";
+import { capabilityCacheIdentity } from "../contracts/endpoint-identity.js";
+import { NoEligibleProviderFeatureError, resolveCapabilityProviders } from "../providers.js";
+import {
+  IntentRejectionError,
+  resolveOptionsForIntent,
+} from "../dispatch/intents.js";
+import { UnsupportedCommonOptionsError } from "../dispatch/translate.js";
 import { HistoryStore } from "../history/store.js";
 import { redactForPersistence, redactSensitive } from "../history/redact.js";
 import {
@@ -20,31 +27,221 @@ import type {
   CapabilityName,
   Config,
   CrawlResult,
+  PendingCrawlJob,
   ExtractResult,
   NormalizedResult,
 } from "../types.js";
 
-type SearchResult = {
+// Exported: these outcome types ARE the ExecutionBackend contract — the seam
+// a remote/hybrid backend must implement against (docs/architecture.md).
+export type SearchResult = {
   results: NormalizedResult[];
   providersUsed: string[];
   errors: Record<string, string>;
+  /** Providers excluded before dispatch because they could not honor filters. */
+  skippedProviders?: Record<string, string>;
   /** Non-secret warnings (e.g. the execution could not be recorded in history). */
   warnings?: string[];
 };
 
-type ExtractOutcome = {
+export type ExtractOutcome = {
   result: ExtractResult | null;
   provider: string;
   errors?: Record<string, string>;
+  skippedProviders?: Record<string, string>;
   warnings?: string[];
 };
 
-type CrawlOutcome = {
+export type CrawlOutcome = {
   results: CrawlResult[];
+  pendingJobs: PendingCrawlJob[];
   provider: string;
+  status: "completed" | "pending";
+  fallbackCompleted?: boolean;
+  fallbackProvider?: string;
   errors?: Record<string, string>;
+  skippedProviders?: Record<string, string>;
   warnings?: string[];
 };
+
+const SEARCH_PROVIDER_LIMIT_OPTIONS = [
+  "numResults",
+  "max_results",
+  "count",
+  "num",
+  "limit",
+] as const;
+
+/** Cache identity for provider-defined search counts when the CLI limit is implicit. */
+function searchProviderLimitIdentity(
+  config: Config,
+  includeConfiguredLimits: boolean
+): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return {
+    providers,
+    ...(includeConfiguredLimits
+      ? {
+          configuredLimits: Object.fromEntries(
+            providers.map((provider) => {
+              const options = config.providers[provider]?.options ?? {};
+              const configured = Object.fromEntries(
+                SEARCH_PROVIDER_LIMIT_OPTIONS
+                  .filter((key) => options[key] !== undefined)
+                  .map((key) => [key, options[key]])
+              );
+              return [provider, configured];
+            })
+          ),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Non-secret search filters that reach the provider wire and therefore shape
+ * the returned payload. Mirrors the read sites in each search adapter:
+ * serper (location), brave (safesearch), firecrawl (sources), tavily
+ * (search_depth/topic/time_range), searxng (categories/engines/language/pageno/
+ * time_range/safesearch/theme), exa (type/category/highlights/maxCharacters/
+ * maxAgeHours/includeDomains/excludeDomains), brightdata (zone/searchEngine/
+ * country). Values are normalized the way the adapters normalize them
+ * (trimmed, validated) so the key matches effective requests, not raw config.
+ */
+const SEARCH_FILTER_OPTIONS: Record<string, readonly string[]> = {
+  serper: ["location"],
+  brave: ["safesearch"],
+  firecrawl: ["sources"],
+  tavily: ["search_depth", "topic", "time_range"],
+  searxng: ["categories", "engines", "language", "pageno", "time_range", "safesearch", "theme"],
+  exa: ["searchType", "category", "highlights", "maxCharacters", "maxAgeHours", "includeDomains", "excludeDomains"],
+  brightdata: ["zone", "serpZone", "searchEngine", "searchCountry", "country"],
+};
+
+function normalizeFilterValue(
+  provider: string,
+  key: string,
+  value: unknown,
+  allOptions: Record<string, unknown> = {}
+): unknown {
+  // Mirror the adapter: highlights mode ignores maxCharacters entirely.
+  if (provider === "exa" && key === "maxCharacters" && allOptions.highlights === true) {
+    return undefined;
+  }
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (provider === "brave" && key === "safesearch") {
+      // Match the adapter exactly: only the lowercase enum reaches the wire
+      // (BraveAdapter checks BRAVE_SAFESEARCH_VALUES without case folding).
+      // A case-variant config omits the param, so it must key identically
+      // to an absent value rather than to the corrected lowercase form.
+      return ["off", "moderate", "strict"].includes(trimmed) ? trimmed : undefined;
+    }
+    if (provider === "firecrawl" && key === "sources") {
+      // Key the raw config value, not the sanitized subset: sanitizeSources
+      // throws on invalid entries while a filtered key would silently map
+      // distinct invalid configs to the same entry.
+      if (!Array.isArray(value)) return undefined;
+      return value.length > 0 ? value : undefined;
+    }
+    if (provider === "tavily" && key === "search_depth") {
+      return ["basic", "advanced", "fast", "ultra-fast"].includes(trimmed) ? trimmed : undefined;
+    }
+    return trimmed;
+  }
+  if (typeof value === "number") {
+    if (key === "pageno" || key === "maxCharacters" || key === "maxAgeHours") return value;
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    if (key === "highlights") return value;
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    if (provider === "firecrawl" && key === "sources") {
+      return value.length > 0 ? value : undefined;
+    }
+    if (
+      (provider === "exa" && (key === "includeDomains" || key === "excludeDomains")) ||
+      (provider === "searxng" && (key === "categories" || key === "engines"))
+    ) {
+      return value.length > 0 ? value : undefined;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Cache identity for effective provider search filters (Codex P2 on #83). */
+function searchFilterIdentity(config: Config): Record<string, unknown> {
+  const providers = config.capabilities.search?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const keys = SEARCH_FILTER_OPTIONS[provider] ?? [];
+      const options = config.providers[provider]?.options ?? {};
+      const filters = Object.fromEntries(
+        keys
+          .map((key) => [key, normalizeFilterValue(provider, key, options[key], options)] as const)
+          .filter(([, v]) => v !== undefined)
+      );
+      return [provider, filters];
+    })
+  );
+}
+
+/** Effective content format for each provider in the default extract pool. */
+function extractProviderFormatIdentity(
+  config: Config,
+  options: FanoutOptions
+): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers.map((provider) => {
+      const providerOptions = config.providers[provider]?.options ?? {};
+      const configuredValue = (name: string): unknown =>
+        Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+      let format: unknown = options.format;
+      if (format === undefined) {
+        if (provider === "jina") {
+          format = effectiveJinaReturnFormat({ providerOptions });
+        } else if (provider === "brightdata") {
+          format = configuredValue("data_format") ?? "markdown";
+        } else if (provider === "tavily") {
+          format = configuredValue("format") ?? "markdown";
+        } else {
+          // Exa and Firecrawl normalize their extract content to Markdown.
+          format = "markdown";
+        }
+      }
+      return [provider, String(format)];
+    })
+  );
+}
+
+/**
+ * Effective Bright Data extract country per provider in the default extract
+ * pool (Codex on #83: country/searchCountry reach the Unlocker wire via
+ * optionalStringOption but were absent from the extract cache key).
+ * Mirrors the adapter precedence: country, then searchCountry, default "us".
+ */
+function brightdataCountryIdentity(config: Config): Record<string, string> {
+  const providers = config.capabilities.extract?.providers ?? [];
+  return Object.fromEntries(
+    providers
+      .filter((provider) => provider === "brightdata")
+      .map((provider) => {
+        const providerOptions = config.providers[provider]?.options ?? {};
+        const pick = (name: string): unknown =>
+          Object.entries(providerOptions).find(([key]) => key.toLowerCase() === name)?.[1];
+        const raw = pick("country") ?? pick("searchcountry");
+        const country =
+          typeof raw === "string" && raw.trim() ? raw.trim() : "us";
+        return [provider, country];
+      })
+  );
+}
 
 /** Shape guards so a malformed cache file is a miss, never a replay crash. */
 const isSearchCachePayload = (p: unknown): p is SearchResult =>
@@ -91,12 +288,32 @@ export class LocalExecutionBackend implements ExecutionBackend {
    * --providers or --single-provider scope is a deliberate per-request choice,
    * so it bypasses the (provider-agnostic) cache rather than risk serving a hit
    * sourced from a different provider set. --no-cache and [cache].enabled=false
-   * disable it too.
+   * disable it too. Requirement-aware routing, non-default intents, and
+   * common filters/content options change provider results without changing
+   * the config-keyed cache identity, so they bypass the cache too.
    */
-  private shouldUseCache(options: FanoutOptions): boolean {
+  private shouldUseCache(capability: CapabilityName, options: FanoutOptions): boolean {
     if (!this.cacheEnabled || options.noCache) return false;
     if (options.singleProvider) return false;
     if (Array.isArray(options.providers) && options.providers.length > 0) return false;
+    if (
+      capability === "search" &&
+      options.limitSet === false &&
+      options.commonOptions?.limit !== undefined
+    ) return false;
+    if (options.requireFeatures && options.requireFeatures.length > 0) return false;
+    const defaultIntent = {
+      search: "web-link-search",
+      extract: "known-url-extraction",
+      crawl: "crawl",
+    }[capability];
+    if (options.intent && options.intent !== defaultIntent) return false;
+    if (
+      options.commonOptions?.timeRange ||
+      options.commonOptions?.includeContent ||
+      options.commonOptions?.includeDomains?.length ||
+      options.commonOptions?.excludeDomains?.length
+    ) return false;
     return true;
   }
 
@@ -104,6 +321,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
     resolveCapabilityProviders(this.config, capability, {
       providers: options.providers,
       singleProvider: options.singleProvider,
+      requireFeatures: options.requireFeatures,
+      intent: options.intent,
     });
   }
 
@@ -176,29 +395,78 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   private requestOptions(options: FanoutOptions): Record<string, unknown> {
+    const requestedProviders = options.requestedProviders ?? options.providers;
     return {
       limit: options.limit,
+      limitSet: options.limitSet !== false,
       ...(options.rerankStrategy ? { rerankStrategy: options.rerankStrategy } : {}),
-      ...(options.providers?.length ? { providers: options.providers } : {}),
+      ...(requestedProviders?.length ? { providers: requestedProviders } : {}),
       ...(options.singleProvider ? { singleProvider: true } : {}),
       ...(options.noCache ? { noCache: true } : {}),
       ...(options.freshness ? { freshness: options.freshness } : {}),
+      ...(options.format ? { format: options.format } : {}),
+      ...(options.depth !== undefined ? { depth: options.depth } : {}),
+      // Intent provenance (issue #79): which intent backed this invocation,
+      // what it required of tools, and all common invocation options.
+      ...(options.intent ? { intent: options.intent } : {}),
+      ...(options.requireFeatures?.length ? { requireFeatures: options.requireFeatures } : {}),
+      ...(options.commonOptions ? { commonOptions: options.commonOptions } : {}),
     };
+  }
+
+  /** Resolve intent options for non-CLI callers and audit preflight rejection. */
+  private resolveIntentOptions(
+    capability: CapabilityName,
+    input: string,
+    options: FanoutOptions
+  ): FanoutOptions {
+    const requestedOptions: FanoutOptions = {
+      ...options,
+      requestedProviders: [...(options.requestedProviders ?? options.providers ?? [])],
+    };
+    try {
+      return resolveOptionsForIntent(capability, this.config, requestedOptions);
+    } catch (error) {
+      if (error instanceof IntentRejectionError) {
+        this.flushWarnings(this.recordIntentRejection(capability, input, requestedOptions, error));
+      }
+      throw error;
+    }
+  }
+
+  /** Record an intent rejected by preflight before normal backend dispatch. */
+  recordIntentRejection(
+    capability: CapabilityName,
+    input: string,
+    options: FanoutOptions,
+    error: unknown
+  ): string[] {
+    const warnings: string[] = [];
+    this.recordExecution(
+      this.failedRecord(capability, input, options, error, performance.now()),
+      warnings
+    );
+    return warnings;
   }
 
   private routingInfo(
     capability: CapabilityName,
     options: FanoutOptions,
     providersAttempted: string[],
-    reranker?: string
+    reranker?: string,
+    providersSkipped?: Record<string, string>
   ): ExecutionRecord["routing"] {
+    const requestedProviders = options.requestedProviders ?? options.providers;
     return {
       strategy: options.singleProvider
         ? "single-provider"
         : this.config.capabilities[capability]?.strategy ?? "all",
-      requested_providers: options.providers?.length ? options.providers : undefined,
+      requested_providers: requestedProviders?.length ? requestedProviders : undefined,
       providers_attempted: providersAttempted,
       ...(reranker ? { reranker } : {}),
+      ...(providersSkipped && Object.keys(providersSkipped).length > 0
+        ? { providers_skipped: providersSkipped }
+        : {}),
     };
   }
 
@@ -220,14 +488,28 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   async search(query: string, options: FanoutOptions): Promise<SearchResult> {
+    options = this.resolveIntentOptions("search", query, options);
     this.validateAndRecord("search", query, options);
-    const useCache = this.shouldUseCache(options);
+    const useCache = this.shouldUseCache("search", options);
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.searchTtl, options);
     const reranker = options.rerankStrategy ?? "rrf";
 
+    // The key carries config identity (pool, strategy, endpoint material) so
+    // editing the configured pool or an endpoint invalidates stale entries;
+    // per-call provider scoping is excluded by shouldUseCache() instead.
     const key = useCache
-      ? cacheKey("search", query, { limit: options.limit, rerankStrategy: reranker })
+      ? cacheKey("search", query, {
+          limit: options.limit,
+          limitSet: options.limitSet !== false,
+          rerankStrategy: reranker,
+          ...capabilityCacheIdentity(this.config, "search"),
+          searchProviderLimitIdentity: searchProviderLimitIdentity(
+            this.config,
+            options.limitSet === false
+          ),
+          searchFilterIdentity: searchFilterIdentity(this.config),
+        })
       : null;
 
     if (key) {
@@ -275,7 +557,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
             "search",
             options,
             result.attempts.map((a) => a.provider),
-            reranker
+            reranker,
+            result.skippedProviders
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -311,6 +594,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
         results: result.results,
         providersUsed: result.providersUsed,
         errors: result.errors,
+        ...(Object.keys(result.skippedProviders).length > 0
+          ? { skippedProviders: result.skippedProviders }
+          : {}),
         warnings,
       };
     } catch (error) {
@@ -321,12 +607,57 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   async extract(url: string, options: FanoutOptions): Promise<ExtractOutcome> {
+    options = this.resolveIntentOptions("extract", url, options);
     this.validateAndRecord("extract", url, options);
-    const useCache = this.shouldUseCache(options);
+    const jinaOptions = this.config.providers.jina?.options ?? {};
+    const jinaIsInDefaultExtractPool =
+      this.config.capabilities.extract?.providers?.includes("jina") ?? false;
+    const hasStatefulJinaHeader = jinaIsInDefaultExtractPool &&
+      Object.entries(jinaOptions).some(([name, value]) => {
+        const normalizedName = name.toLowerCase();
+        if (normalizedName === "x-no-cache") {
+          return value === true ||
+            (typeof value === "string" && value.trim().toLowerCase() === "true");
+        }
+        return normalizedName === "x-set-cookie" &&
+          value !== undefined &&
+          value !== null &&
+          String(value).trim() !== "";
+      });
+    const useCache = this.shouldUseCache("extract", options) && !hasStatefulJinaHeader;
     const warnings: string[] = [];
     const ttl = this.effectiveTtl(this.extractTtl, options);
 
-    const key = useCache ? cacheKey("extract", url, {}) : null;
+    const effectiveReturnFormat = effectiveJinaReturnFormat({
+      format: options.format,
+      providerOptions: jinaOptions,
+    });
+    const jinaCacheHeaders = Object.fromEntries(
+      Object.entries(jinaOptions)
+        .filter(([name, value]) => {
+          const normalizedName = name.toLowerCase();
+          return normalizedName.startsWith("x-") &&
+            ![
+              "x-return-format",
+              "x-proxy",
+              "x-proxy-url",
+              "x-no-cache",
+              "x-set-cookie",
+            ].includes(normalizedName) &&
+            value !== undefined &&
+            value !== null;
+        })
+        .map(([name, value]) => [name.toLowerCase(), String(value)])
+    );
+    const key = useCache
+      ? cacheKey("extract", url, {
+          ...capabilityCacheIdentity(this.config, "extract"),
+          format: effectiveReturnFormat,
+          providerFormats: extractProviderFormatIdentity(this.config, options),
+          providerHeaders: jinaCacheHeaders,
+          brightdataCountry: brightdataCountryIdentity(this.config),
+        })
+      : null;
 
     if (key) {
       const entry = this.cache.getEntry("extract", key, isExtractCachePayload);
@@ -371,7 +702,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
           routing: this.routingInfo(
             "extract",
             options,
-            result.attempts.map((a) => a.provider)
+            result.attempts.map((a) => a.provider),
+            undefined,
+            result.skippedProviders
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
@@ -401,6 +734,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
         result: result.result,
         provider: result.provider,
         errors: result.errors,
+        ...(Object.keys(result.skippedProviders).length > 0
+          ? { skippedProviders: result.skippedProviders }
+          : {}),
         warnings,
       };
     } catch (error) {
@@ -411,6 +747,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
   }
 
   async crawl(url: string, options: FanoutOptions): Promise<CrawlOutcome> {
+    options = this.resolveIntentOptions("crawl", url, options);
     // Exact crawl replay stays disabled in PR 2 (broad site snapshots are
     // sensitive to site state/depth/limit) — but every crawl is recorded.
     this.validateAndRecord("crawl", url, options);
@@ -430,24 +767,38 @@ export class LocalExecutionBackend implements ExecutionBackend {
           routing: this.routingInfo(
             "crawl",
             options,
-            result.attempts.map((a) => a.provider)
+            result.attempts.map((a) => a.provider),
+            undefined,
+            result.skippedProviders
           ),
           source: "live",
           attempts: LocalExecutionBackend.toAttempts(result.attempts, secrets),
           result: redactForPersistence(result.results, secrets) ?? undefined,
           result_count: result.results.length,
+          pending_jobs: redactSensitive(result.pendingJobs, secrets),
           raw_available: false,
           errors: result.errors ? redactSensitive(result.errors, secrets) : undefined,
           duration_ms: Math.round(performance.now() - start),
           outcome:
-            result.errors && Object.keys(result.errors).length > 0 ? "partial" : "success",
+            result.status === "pending"
+              ? "pending"
+              : result.errors && Object.keys(result.errors).length > 0
+                ? "partial"
+                : "success",
         },
         warnings
       );
       return {
         results: result.results,
+        pendingJobs: result.pendingJobs,
         provider: result.provider,
+        status: result.status,
+        fallbackCompleted: result.fallbackCompleted,
+        fallbackProvider: result.fallbackProvider,
         errors: result.errors,
+        ...(Object.keys(result.skippedProviders).length > 0
+          ? { skippedProviders: result.skippedProviders }
+          : {}),
         warnings,
       };
     } catch (error) {
@@ -466,6 +817,10 @@ export class LocalExecutionBackend implements ExecutionBackend {
     start: number
   ): ExecutionRecord {
     const allFailed = error instanceof AllProvidersFailedError ? error : null;
+    const skippedProviders = allFailed?.skippedProviders ??
+      (error instanceof UnsupportedCommonOptionsError || error instanceof NoEligibleProviderFeatureError
+        ? error.skippedProviders
+        : undefined);
     const secrets = allFailed?.secretsUsed ?? [];
     const errors = allFailed?.providerErrors ?? {
       error: error instanceof Error ? error.message : String(error),
@@ -479,7 +834,9 @@ export class LocalExecutionBackend implements ExecutionBackend {
       routing: this.routingInfo(
         command,
         options,
-        (allFailed?.attempts ?? []).map((a) => a.provider)
+        (allFailed?.attempts ?? []).map((a) => a.provider),
+        undefined,
+        skippedProviders
       ),
       source: "live",
       attempts: allFailed ? LocalExecutionBackend.toAttempts(allFailed.attempts, secrets) : [],

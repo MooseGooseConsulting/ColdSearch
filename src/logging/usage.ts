@@ -12,8 +12,11 @@ export interface UsageLogEntry {
   runId?: string;
   key: string;
   success: boolean;
+  /** Provider accepted an asynchronous job that is not complete yet. */
+  pending?: boolean;
   response_time_ms: number;
   error?: string;
+  quota_exhausted?: boolean;
   /** Bright Data only: masked zone suffix (never the full zone — embeds customer ID). */
   zone?: string;
   /** Provider-reported cost in USD where the tool summary extracts it. */

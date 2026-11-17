@@ -23,7 +23,7 @@ export const REDACTED = "[REDACTED]";
 
 /** Object field names whose string values are always redacted. */
 const SENSITIVE_FIELD_PATTERN =
-  /(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|authorization|credential|pass(word|phrase)|secret|signature|bearer)/i;
+  /(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|authorization|credential|pass(word|phrase)|secret|signature|bearer|cookie|proxy[_-]?url)/i;
 
 /**
  * Exact field names that are credential material on their own — e.g. a
@@ -62,6 +62,13 @@ const URL_PARAM_PATTERN = new RegExp(
   `([?&](?:${SENSITIVE_URL_PARAMS.join("|")})=)[^&\\s"'\\])}]*`,
   "gi"
 );
+/**
+ * WHATWG URL accepts whitespace/quotes/brackets in userinfo (percent-encoded
+ * into username), so the authority class must not stop at them — otherwise
+ * credential userinfo containing those chars leaks (Codex on #86). The
+ * existing quote-boundary logic below trims field delimiters after capture.
+ */
+const URL_AUTHORITY_PATTERN = /\b([a-z][a-z\d+.-]*:\/\/)([^/?#]*)/gi;
 
 /**
  * Secrets shorter than this are not substring-replaced inside larger strings:
@@ -79,7 +86,61 @@ function redactString(text: string, secrets: string[]): string {
       out = out.split(secret).join(REDACTED);
     }
   }
-  return out.replace(URL_PARAM_PATTERN, `$1${REDACTED}`);
+  return redactUrlUserInfo(out.replace(URL_PARAM_PATTERN, `$1${REDACTED}`));
+}
+
+/** Redact URL authority credentials in arbitrary text, preserving the scheme and host. */
+export function redactUrlUserInfo(text: string, replacement = REDACTED): string {
+  return text.replace(
+    URL_AUTHORITY_PATTERN,
+    (_match, scheme: string, authority: string, offset: number, input: string) => {
+      // Keep apostrophes available inside user-info (passwords commonly
+      // contain them). Treat quote punctuation as a boundary only when the URL
+      // itself is inside a single-quoted field; otherwise `';` may be literal
+      // password data and the final `@` still marks the host boundary.
+      const singleQuotedUrl = input[offset - 1] === "'";
+      // Like the semicolon guard below: a quote-comma pair inside credentials
+      // is data when the eventual `@` has not arrived yet (CodeRabbit on #86).
+      const fieldQuoteCandidate = singleQuotedUrl
+        ? /'\s*,\s*'/.exec(authority)?.index
+        : undefined;
+      const fieldQuoteBoundary = fieldQuoteCandidate !== undefined &&
+        authority.slice(0, fieldQuoteCandidate).includes("@")
+        ? fieldQuoteCandidate
+        : undefined;
+      const semicolonQuoteCandidate = singleQuotedUrl
+        ? /'\s*;/.exec(authority)?.index
+        : undefined;
+      // A quote-semicolon pair inside credentials is data when the eventual
+      // `@` has not arrived yet. A real quoted URL boundary follows its host,
+      // so retain the boundary only after the URL's user-info separator.
+      const semicolonQuoteBoundary = semicolonQuoteCandidate !== undefined &&
+        authority.slice(0, semicolonQuoteCandidate).includes("@")
+        ? semicolonQuoteCandidate
+        : undefined;
+      const terminalQuoteBoundary = singleQuotedUrl
+        ? /'(?=\s*(?:[\]}]|$))/.exec(authority)?.index
+        : undefined;
+      const explicitQuoteBoundaries = [fieldQuoteBoundary, semicolonQuoteBoundary]
+        .filter((boundary): boundary is number => boundary !== undefined)
+        .sort((left, right) => left - right);
+      // A terminal quote/bracket pair is a boundary only when no later `@`
+      // appears in the captured text. Otherwise the quote may be part of
+      // user-info, and the final `@` still marks the host boundary.
+      const quoteBoundary = explicitQuoteBoundaries[0] ?? (
+        terminalQuoteBoundary !== undefined &&
+        !authority.slice(terminalQuoteBoundary + 1).includes("@")
+          ? terminalQuoteBoundary
+          : undefined
+      );
+      const end = quoteBoundary ?? authority.length;
+      const urlAuthority = authority.slice(0, end);
+      const suffix = authority.slice(end);
+      const userInfoEnd = urlAuthority.lastIndexOf("@");
+      if (userInfoEnd < 0) return `${scheme}${authority}`;
+      return `${scheme}${replacement}@${urlAuthority.slice(userInfoEnd + 1)}${suffix}`;
+    }
+  );
 }
 
 /**

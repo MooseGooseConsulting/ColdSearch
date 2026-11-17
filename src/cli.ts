@@ -2,7 +2,7 @@
 
 import { APP_NAME, LEGACY_APP_NAME, formatVersionString } from "./app.js";
 import { SearchAgent } from "./agent/agent.js";
-import { resolveLlmConfig, type LLMProvider } from "./agent/llm.js";
+import { resolveLlmConfig, LLM_PROVIDERS, REASONING_EFFORTS, type ReasoningEffort, type LLMEndpointConfig, type LLMProvider } from "./agent/llm.js";
 import { LocalExecutionBackend } from "./execution/backend.js";
 import {
   DEFAULT_CONFIG_PATH,
@@ -11,15 +11,31 @@ import {
   loadConfig,
   resolveConfigPath,
 } from "./config.js";
-import { resolveCapabilityProviders } from "./providers.js";
+import { resolveCapabilityProviders, validateSelectedProviders } from "./providers.js";
 import {
   getToolProfile,
   listToolProfiles,
   providerToolProfiles,
 } from "./registry/tool-profiles.js";
 import { executeToolCall } from "./tools/substrate.js";
+import {
+  INTENT_DEFS,
+  IntentRejectionError,
+  isSearchIntent,
+  listSearchIntents,
+  rejectIntent,
+  resolveIntent,
+  validateIntentCategory,
+  type IntentResolution,
+  type SearchIntent,
+} from "./dispatch/intents.js";
+import {
+  filterProvidersByCommonOptions,
+  UnsupportedCommonOptionsError,
+} from "./dispatch/translate.js";
 import { runBatch } from "./batch/runner.js";
 import { getKeyReference } from "./logging/usage.js";
+import { flushCaptures } from "./testing/capture.js";
 import { HistoryStore } from "./history/store.js";
 import { searchHistory } from "./history/search.js";
 import { newExecutionId, type ExecutionRecord } from "./history/types.js";
@@ -53,18 +69,29 @@ interface ExtendedCLIOptions extends CLIOptions {
   model?: string;
   /** LLM base URL override */
   llmBaseUrl?: string;
+  /** LLM credential reference override (env:NAME or doppler:NAME) */
+  llmKeyRef?: string;
+  reasoningEffort?: ReasoningEffort;
   /** Maximum agent steps */
   maxSteps?: number;
   /** Maximum sources for agent */
   maxSources?: number;
   /** Resolve plan without making network calls */
   dryRun?: boolean;
+  /** Intent backing the capability command (issue #79); defaults per command */
+  intent?: SearchIntent;
+  /** Provider date filter for search (distinct from --freshness cache TTL) */
+  timeRange?: string;
   /** Bypass the read-through result cache */
   noCache?: boolean;
   /** Per-invocation cache TTL override (e.g. "30m"); wins for this invocation only */
   freshness?: string;
   /** Whether --limit was passed explicitly (history commands default to 20 otherwise) */
   limitSet?: boolean;
+  /** Extract output format. Not a search knob. */
+  format?: "markdown" | "text";
+  /** Crawl depth. Not a cache TTL. */
+  depth?: number;
   /** JSON input string/file for tool calling */
   jsonInput?: string;
   /** `coldsearch tool <sub>` discovery/execution surface */
@@ -90,6 +117,8 @@ interface ExtendedCLIOptions extends CLIOptions {
     sub: "init" | "doctor";
   };
 }
+
+const TIME_RANGE_VALUES = ["day", "week", "month", "year"] as const;
 
 /**
  * Parse command line arguments into CLIOptions.
@@ -185,6 +214,31 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.limitSet = true;
         break;
 
+      case "--format":
+        i++;
+        if (args[i] !== "markdown" && args[i] !== "text") {
+          throw new Error(`Invalid format: ${args[i]}. Use "markdown" or "text".`);
+        }
+        options.format = args[i] as "markdown" | "text";
+        break;
+
+      case "--depth": {
+        const rawDepth = args[i + 1];
+        const depth = Number(rawDepth);
+        if (
+          typeof rawDepth !== "string" ||
+          rawDepth.trim() === "" ||
+          !/^-?\d+$/.test(rawDepth) ||
+          !Number.isInteger(depth) ||
+          depth < 0
+        ) {
+          throw new Error(`Invalid depth: ${rawDepth}`);
+        }
+        i++;
+        options.depth = depth;
+        break;
+      }
+
       case "--pretty":
       case "-p":
         options.pretty = true;
@@ -237,6 +291,35 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
 
       case "--dry-run":
         options.dryRun = true;
+        break;
+
+      case "--intent":
+        i++;
+        const intentId = args[i];
+        if (!intentId || intentId.startsWith("-")) {
+          throw new Error(`--intent requires an intent id. Supported: ${listSearchIntents().join(", ")}`);
+        }
+        if (!isSearchIntent(intentId)) {
+          throw new Error(
+            `Invalid intent: ${intentId}. Supported: ${listSearchIntents().join(", ")}`
+          );
+        }
+        options.intent = intentId;
+        break;
+
+      case "--time-range":
+        i++;
+        if (!args[i] || args[i].startsWith("-")) {
+          throw new Error(
+            `--time-range requires a value (provider date filter, e.g. day|week|month|year), got ${args[i] ?? "(none)"}`
+          );
+        }
+        if (!(TIME_RANGE_VALUES as readonly string[]).includes(args[i])) {
+          throw new Error(
+            `Invalid time range: ${args[i]}. Supported values: ${TIME_RANGE_VALUES.join(", ")}.`
+          );
+        }
+        options.timeRange = args[i];
         break;
 
       case "--no-cache":
@@ -322,9 +405,9 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
       case "--llm":
         i++;
         const llm = args[i];
-        if (!["openai", "groq", "openrouter", "cerebras", "xai"].includes(llm)) {
+        if (!(LLM_PROVIDERS as readonly string[]).includes(llm)) {
           throw new Error(
-            `Invalid LLM provider: ${llm}. Supported: openai, groq, openrouter, cerebras, xai (Anthropic API is not used).`
+            `Invalid LLM provider: ${llm}. Supported: ${LLM_PROVIDERS.join(", ")}.`
           );
         }
         options.llmProvider = llm as LLMProvider;
@@ -335,9 +418,25 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
         options.model = args[i];
         break;
 
+      case "--reasoning-effort":
+        i++;
+        if (!(REASONING_EFFORTS as readonly string[]).includes(args[i])) {
+          throw new Error(`Invalid reasoning effort. Supported: ${REASONING_EFFORTS.join(", ")}`);
+        }
+        options.reasoningEffort = args[i] as ReasoningEffort;
+        break;
+
       case "--llm-base-url":
         i++;
         options.llmBaseUrl = args[i];
+        break;
+
+      case "--llm-key-ref":
+        i++;
+        if (!args[i] || args[i].startsWith("-")) {
+          throw new Error("--llm-key-ref requires an env:NAME or doppler:NAME reference");
+        }
+        options.llmKeyRef = args[i];
         break;
 
       case "--max-steps":
@@ -413,6 +512,20 @@ function parseArgs(args: string[]): ExtendedCLIOptions {
     }
   }
 
+  const nonCapabilitySurface =
+    options.toolCommand || options.historyCommand || options.cacheCommand ||
+    options.configCommand || options.batch || options.status || options.agent;
+  if (options.intent && nonCapabilitySurface) {
+    throw new Error("--intent is only valid with search, extract, or crawl");
+  }
+  if (options.timeRange) {
+    // The provider date filter is search-only and distinct from --freshness
+    // (which is a cache TTL override, not an upstream filter).
+    if (nonCapabilitySurface || options.command !== "search") {
+      throw new Error("--time-range is only valid with search");
+    }
+  }
+
   return options;
 }
 
@@ -447,22 +560,33 @@ Commands:
 Options:
   Mode Selection:
     -a, --agent          Use search agent mode (multi-step research)
-    --single-provider    Use one random provider instead of fanout
+    --single-provider    Use one successful provider (quota failover, no fanout)
     --dry-run            Print execution plan without network calls
     
   Fanout Options (default mode):
     --providers LIST     Comma-separated providers (default: all configured)
     --rerank STRATEGY    Reranker: rrf|score|none (default: rrf)
+    --intent ID          Intent behind the command; unroutable intents are
+                         rejected before any provider call.
+                         search: web-link-search|content-backed-retrieval|url-similarity
+                         extract: known-url-extraction|structured-extraction
+                         crawl: crawl
+    --time-range VALUE   Provider date filter for search, e.g. day|week|month|year
+                         (honored by tavily/searxng; distinct from --freshness)
     
   Agent Options (requires --agent):
-    --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai (default: openai)
+    --llm PROVIDER       LLM: openai|groq|openrouter|cerebras|xai|isoquant (default: isoquant)
     --model MODEL        LLM model name
+    --reasoning-effort N none|minimal|low|medium|high|xhigh|max (Isoquant default: medium)
     --llm-base-url URL   Override OpenAI-compatible API base URL
+    --llm-key-ref REF    Override credential reference (env:NAME or doppler:NAME)
     --max-steps N        Maximum research steps (default: 5)
     --max-sources N      Maximum sources to collect (default: 5)
     
   General Options:
     -l, --limit N        Return at most N results (default: 10; history: 20)
+    --format markdown|text  Extract format sent to the provider (default: markdown)
+    --depth N            Crawl depth sent to the provider when it has a depth field
     -p, --pretty         Pretty print JSON output
     -j, --json           Force JSON output
     -c, --config PATH    Use custom config file
@@ -523,6 +647,51 @@ Examples:
 `);
 }
 
+/** Default intent behind each capability command when --intent is absent. */
+const DEFAULT_COMMAND_INTENTS: Record<"search" | "extract" | "crawl", SearchIntent> = {
+  search: "web-link-search",
+  extract: "known-url-extraction",
+  crawl: "crawl",
+};
+
+/**
+ * Resolve the intent behind a capability command and reject unroutable ones
+ * BEFORE any network call. An explicit --intent must back the command's
+ * category (e.g. `extract --intent web-link-search` is a config error).
+ */
+function resolveCommandIntent(
+  command: "search" | "extract" | "crawl",
+  options: ExtendedCLIOptions,
+  config: Config
+): IntentResolution {
+  const intent = options.intent ?? DEFAULT_COMMAND_INTENTS[command];
+  validateIntentCategory(command, intent);
+  const selectedProviders = options.providers?.length
+    ? options.providers
+    : config.capabilities[command]?.providers ?? [];
+  validateSelectedProviders(config, command, selectedProviders);
+  return rejectIntent(resolveIntent(intent, config, options.providers));
+}
+
+/** Render intent-level notices: upstream deprecations; eligibility on debug. */
+function renderIntentNotes(resolution: IntentResolution): void {
+  for (const entry of resolution.eligible) {
+    if (entry.deprecation) {
+      console.error(
+        `Note: intent '${resolution.intent}' resolves to ${entry.id} (${entry.nativeName}) — ${entry.deprecation}`
+      );
+    }
+  }
+  if (process.env.COLDSEARCH_DEBUG) {
+    console.error(
+      `Debug: intent '${resolution.intent}' eligible tools: ` +
+        (resolution.eligible
+          .map((entry) => `${entry.id} (${entry.semanticFit ?? "no-view"}, ${entry.executionMode})`)
+          .join(", ") || "(none)")
+    );
+  }
+}
+
 /**
  * Label CLI JSON mode field from what actually ran (not just --single-provider flag).
  */
@@ -563,14 +732,51 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  // Intent-aware dispatch (issue #79): resolve + reject before any dispatch.
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("search", options, config);
+  } catch (error) {
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.search;
+    const warnings = backend.recordIntentRejection("search", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      rerankStrategy: options.rerank,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+      commonOptions: {
+        ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+        ...(intent === "content-backed-retrieval" ? { includeContent: true } : {}),
+      },
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.search(options.query, {
     limit: options.limit,
+    limitSet: options.limitSet === true,
     providers: options.providers,
     rerankStrategy: options.rerank,
     singleProvider: options.singleProvider,
     noCache: options.noCache,
     freshness: options.freshness,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
+    ...(options.timeRange || intentResolution.intent === "content-backed-retrieval"
+      ? {
+          commonOptions: {
+            ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+            ...(intentResolution.intent === "content-backed-retrieval"
+              ? { includeContent: true }
+              : {}),
+          },
+        }
+      : {}),
   });
 
   for (const warning of result.warnings ?? []) {
@@ -586,10 +792,14 @@ async function runFanoutMode(options: ExtendedCLIOptions): Promise<void> {
     ),
     command: "search",
     query: options.query,
+    intent: intentResolution.intent,
     results: result.results,
     providers_used: result.providersUsed,
     total: result.results.length,
     errors: Object.keys(result.errors).length > 0 ? result.errors : undefined,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
   };
 
@@ -608,6 +818,24 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("extract", options, config);
+  } catch (error) {
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.extract;
+    const warnings = backend.recordIntentRejection("extract", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.extract(options.query, {
     limit: options.limit,
@@ -615,6 +843,9 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     singleProvider: options.singleProvider,
     noCache: options.noCache,
     freshness: options.freshness,
+    format: options.format,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
   });
 
   for (const warning of result.warnings ?? []) {
@@ -625,8 +856,12 @@ async function runExtractMode(options: ExtendedCLIOptions): Promise<void> {
     mode: describeCliOutputMode(config, "extract", options, 1),
     command: "extract",
     url: options.query,
+    intent: intentResolution.intent,
     result: result.result,
     provider: result.provider,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
     errors: result.errors ? result.errors : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
   };
@@ -656,23 +891,57 @@ async function runCrawlMode(options: ExtendedCLIOptions): Promise<void> {
 
   const config = loadConfig(options.config);
   const backend = new LocalExecutionBackend(options.config);
+  let intentResolution: IntentResolution;
+  try {
+    intentResolution = resolveCommandIntent("crawl", options, config);
+  } catch (error) {
+    const intent = options.intent ?? DEFAULT_COMMAND_INTENTS.crawl;
+    const warnings = backend.recordIntentRejection("crawl", options.query, {
+      limit: options.limit,
+      providers: options.providers,
+      singleProvider: options.singleProvider,
+      noCache: options.noCache,
+      freshness: options.freshness,
+      intent,
+      requireFeatures: INTENT_DEFS[intent].requireFeatures,
+    }, error);
+    for (const warning of warnings) console.error(`Warning: ${warning}`);
+    throw error;
+  }
+  renderIntentNotes(intentResolution);
 
   const result = await backend.crawl(options.query, {
     limit: options.limit,
+    depth: options.depth,
     providers: options.providers,
     singleProvider: options.singleProvider,
+    intent: intentResolution.intent,
+    requireFeatures: intentResolution.requireFeatures,
   });
 
   for (const warning of result.warnings ?? []) {
     console.error(`Warning: ${warning}`);
   }
 
+  if (result.pendingJobs.length > 0) {
+    const jobIds = [...new Set(result.pendingJobs.map((job) => job.jobId))];
+    console.error(
+      `Warning: crawl is still pending${jobIds.length ? ` (job ${jobIds.join(", ")})` : ""}; results are not complete.`
+    );
+  }
+
   const output = {
     mode: describeCliOutputMode(config, "crawl", options, 1),
     command: "crawl",
     url: options.query,
+    intent: intentResolution.intent,
     results: result.results,
+    pendingJobs: result.pendingJobs,
     provider: result.provider,
+    skipped_providers: result.skippedProviders && Object.keys(result.skippedProviders).length > 0
+      ? result.skippedProviders
+      : undefined,
+    status: result.status,
     total: result.results.length,
     errors: result.errors ? result.errors : undefined,
     history_warnings: result.warnings && result.warnings.length > 0 ? result.warnings : undefined,
@@ -690,9 +959,9 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   // inside createLLMClient).
   const config = loadConfig(options.config);
   const llm = resolveLlmConfig(
-    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl },
+    { provider: options.llmProvider, model: options.model, baseUrl: options.llmBaseUrl, keyRef: options.llmKeyRef, reasoningEffort: options.reasoningEffort },
     config.agent?.llm as
-      | { provider?: LLMProvider; model?: string; baseUrl?: string }
+      | LLMEndpointConfig
       | undefined
   );
 
@@ -701,6 +970,7 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
     llmProvider: llm.provider,
     model: llm.model,
     llmBaseUrl: llm.baseUrl,
+    llmSettings: llm,
     maxSteps: options.maxSteps,
     maxSources: options.maxSources,
     noCache: options.noCache,
@@ -722,18 +992,73 @@ async function runAgentMode(options: ExtendedCLIOptions): Promise<void> {
   console.log(formatOutput(output, options));
 }
 
-function resolveProviderList(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
+function resolveProviderList(
+  capability: "search" | "extract" | "crawl",
+  options: ExtendedCLIOptions,
+  requireFeatures?: string[],
+  commonOptions?: { timeRange?: string; includeContent?: boolean },
+  intent?: SearchIntent
+) {
   const config = loadConfig(options.config);
-  const { providers: selected } = resolveCapabilityProviders(
-    config,
-    capability,
-    { providers: options.providers, singleProvider: options.singleProvider }
-  );
-  return { config, providers: selected };
+  if (capability === "search" && commonOptions) {
+    // Validate the entire caller-selected pool before filtering, just like
+    // live fanout does, then apply the shared common-filter eligibility rule
+    // before single-provider selection and quota-fallback planning.
+    resolveCapabilityProviders(config, capability, { providers: options.providers });
+    const selected = options.providers?.length
+      ? options.providers
+      : config.capabilities.search?.providers ?? [];
+    const filtered = filterProvidersByCommonOptions(capability, selected, commonOptions);
+    if (filtered.providers.length === 0 && Object.keys(filtered.issuesByProvider).length > 0) {
+      throw new UnsupportedCommonOptionsError(capability, filtered.issuesByProvider);
+    }
+    const plan = resolveCapabilityProviders(config, capability, {
+      providers: filtered.providers,
+      singleProvider: options.singleProvider,
+      requireFeatures,
+      intent,
+    });
+    return {
+      config,
+      ...plan,
+      skippedProviders: { ...filtered.skippedProviders, ...plan.skippedProviders },
+    };
+  }
+
+  const plan = resolveCapabilityProviders(config, capability, {
+    providers: options.providers,
+    singleProvider: options.singleProvider,
+    requireFeatures,
+    intent,
+  });
+  return { config, ...plan, skippedProviders: plan.skippedProviders };
 }
 
 function buildExecutionPlan(capability: "search" | "extract" | "crawl", options: ExtendedCLIOptions) {
-  const { config, providers } = resolveProviderList(capability, options);
+  // Resolve (and reject) the intent first so a dry run reflects routing
+  // exactly, including requirement-aware provider filtering.
+  const probeConfig = loadConfig(options.config);
+  const intentResolution = resolveCommandIntent(capability, options, probeConfig);
+  renderIntentNotes(intentResolution);
+  const routedOptions = intentResolution.nativeOnlyProvider
+    ? { ...options, providers: intentResolution.routedProviders }
+    : options;
+  const commonOptions =
+    options.timeRange || intentResolution.intent === "content-backed-retrieval"
+      ? {
+          ...(options.timeRange ? { timeRange: options.timeRange } : {}),
+          ...(intentResolution.intent === "content-backed-retrieval"
+            ? { includeContent: true }
+            : {}),
+        }
+      : undefined;
+  const { config, providers, quotaFallbackProviders, skippedProviders } = resolveProviderList(
+    capability,
+    routedOptions,
+    intentResolution.requireFeatures,
+    commonOptions,
+    intentResolution.intent
+  );
 
   const plannedProviders = providers.map((provider) => {
     const pool = config.providers[provider]?.keyPool;
@@ -761,9 +1086,26 @@ function buildExecutionPlan(capability: "search" | "extract" | "crawl", options:
   return {
     mode: "dry-run",
     capability,
+    intent: intentResolution.intent,
+    ...(intentResolution.requireFeatures?.length
+      ? { require_features: intentResolution.requireFeatures }
+      : {}),
+    ...(commonOptions
+      ? {
+          common_options: {
+            ...(commonOptions.timeRange ? { time_range: commonOptions.timeRange } : {}),
+            ...(commonOptions.includeContent ? { include_content: true } : {}),
+          },
+        }
+      : {}),
     query_or_url: options.query,
     providers: plannedProviders,
-    estimated_api_calls: plannedProviders.length,
+    ...(Object.keys(skippedProviders).length > 0
+      ? { skipped_providers: skippedProviders }
+      : {}),
+    ...(quotaFallbackProviders?.length ? { quota_fallback_providers: quotaFallbackProviders } : {}),
+    estimated_provider_attempts: plannedProviders.length,
+    max_provider_attempts: plannedProviders.length + (quotaFallbackProviders?.length ?? 0),
   };
 }
 
@@ -1084,6 +1426,7 @@ async function runToolCall(options: ExtendedCLIOptions): Promise<void> {
   console.log(formatOutput(result, options));
 
   if (!result.ok) {
+    await flushCaptures();
     process.exit(1);
   }
 }
@@ -1167,6 +1510,7 @@ function summarizeExecution(record: ExecutionRecord) {
     source: record.source,
     outcome: record.outcome,
     result_count: record.result_count ?? null,
+    pending_jobs: record.pending_jobs?.length ? record.pending_jobs : undefined,
     duration_ms: record.duration_ms,
     origin_execution_id: record.origin_execution_id ?? undefined,
   };
@@ -1184,9 +1528,12 @@ function printData(data: unknown, human: string, options: ExtendedCLIOptions): v
 function formatRecentRow(record: ExecutionRecord): string {
   const providers = (record.routing?.providers_attempted ?? []).join(",") || "-";
   const count = record.result_count !== undefined ? ` results=${record.result_count}` : "";
+  const pending = record.pending_jobs?.length
+    ? ` pending_jobs=${record.pending_jobs.map((job) => `${job.provider}:${job.jobId}`).join(",")}`
+    : "";
   return (
     `${record.timestamp}  ${record.id}  ${record.command.padEnd(7)} ` +
-    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}  ` +
+    `${record.source.padEnd(5)} ${record.outcome.padEnd(8)} providers=${providers}${count}${pending}  ` +
     `"${abbrev(record.input, 60)}"`
   );
 }
@@ -1271,6 +1618,11 @@ function formatShowHuman(record: ExecutionRecord): string {
       `  Cache:     exact replay of ${record.origin_execution_id ?? "unknown origin"} ` +
         `(created=${record.cache?.created_at ?? "unknown"}, age=${record.cache?.age_seconds ?? "?"}s, ` +
         `zero provider calls)`
+    );
+  }
+  if (record.pending_jobs?.length) {
+    lines.push(
+      `  Pending:   ${record.pending_jobs.map((job) => `${job.provider} job ${job.jobId} (${job.url})`).join(", ")}`
     );
   }
   for (const attempt of record.attempts) {
@@ -1429,7 +1781,24 @@ function runCacheStats(options: ExtendedCLIOptions): void {
   if (stats.oldest_created_at) {
     lines.push(`  Oldest: ${stats.oldest_created_at}  Newest: ${stats.newest_created_at}`);
   }
+  if (stats.corrupt_entries > 0) {
+    lines.push(
+      `  Corrupt: ${stats.corrupt_entries} entr${stats.corrupt_entries === 1 ? "y" : "ies"} ` +
+        `unreadable or with invalid metadata`
+    );
+  }
   printData(data, lines.join("\n"), options);
+  reportCacheProblems("skipped (not cache-owned)", stats.skipped, options);
+}
+
+/**
+ * Human mode only: list non-secret cache maintenance problems on stderr so a
+ * count is never the sole signal. `--json`/`--pretty` stdout stays pure JSON
+ * (the same details are in the payload).
+ */
+function reportCacheProblems(label: string, items: string[], options: ExtendedCLIOptions): void {
+  if (options.json || options.pretty) return;
+  for (const item of items) console.error(`  ${label}: ${item}`);
 }
 
 /**
@@ -1445,11 +1814,17 @@ function runCacheClear(options: ExtendedCLIOptions): void {
       command: "cache clear",
       removed: result.removed,
       errors: result.errors.length > 0 ? result.errors : undefined,
+      skipped: result.skipped.length > 0 ? result.skipped : undefined,
     },
     `Removed ${result.removed} replay-cache entr${result.removed === 1 ? "y" : "ies"}.` +
-      (result.errors.length > 0 ? ` (${result.errors.length} removal error(s))` : ""),
+      (result.errors.length > 0 ? ` (${result.errors.length} removal error(s))` : "") +
+      (result.skipped.length > 0
+        ? ` (${result.skipped.length} non-owned path(s) left untouched)`
+        : ""),
     options
   );
+  reportCacheProblems("error", result.errors, options);
+  reportCacheProblems("left untouched", result.skipped, options);
 }
 
 function runCacheCommand(options: ExtendedCLIOptions): void {
@@ -1482,14 +1857,17 @@ async function runBatchMode(options: ExtendedCLIOptions): Promise<void> {
             `  ${r.action === "execute" ? "execute" : r.action === "conflict" ? "conflict" : `skip (${r.reason})`}  ${r.id}  ${r.capability ?? r.tool}`
         ),
       ].join("\n")
-    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
+    : `Batch complete: ${summary.executed} executed (${summary.succeeded} succeeded, ${summary.pending ?? 0} pending, ${summary.failed} failed), ${summary.skipped} skipped, ${summary.conflicts} conflict(s); output: ${summary.output}`;
   printData({ command: "batch", ...summary }, human, options);
 
-  // A batch that finished but had failing items or newly emitted duplicate-ID
-  // conflicts still signals failure to scripts, without ever aborting sibling
-  // items. Conflicts from prior runs are skipped on resume (resume-conflict)
-  // and do not re-flag, so reruns stay deterministic.
-  if (!summary.dry_run && ((summary.failed ?? 0) > 0 || summary.conflicts > 0)) {
+  // A batch with failures, pending work, or newly emitted duplicate-ID
+  // conflicts signals an incomplete run to scripts, without ever aborting
+  // sibling items. Conflicts from prior runs are skipped on resume
+  // (resume-conflict) and do not re-flag, so reruns stay deterministic.
+  if (
+    !summary.dry_run &&
+    ((summary.failed ?? 0) > 0 || (summary.pending ?? 0) > 0 || summary.conflicts > 0)
+  ) {
     process.exitCode = 1;
   }
 }
@@ -1565,10 +1943,17 @@ async function main(): Promise<void> {
       await runFanoutMode(options);
     }
   } catch (error) {
+    // Intent rejections are pre-dispatch routing failures: render the
+    // machine-readable reason and any documented-but-unwired alternatives.
+    if (error instanceof IntentRejectionError) {
+      console.error(`Error (${error.category}): ${error.message}`);
+      process.exit(1);
+    }
     // Classify the error next to (never replacing) the original message so
     // operators and scripts get a machine-readable category on stderr.
     const { category, message } = classifyError(error);
     console.error(`Error (${category}): ${message}`);
+    await flushCaptures();
     process.exit(1);
   }
 }

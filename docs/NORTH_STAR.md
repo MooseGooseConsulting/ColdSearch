@@ -25,7 +25,7 @@ ColdSearch exists so a user or agent can ask for web/search/extract/crawl-style 
 - **Not blind model-directed routing.** The model or caller may request a provider tool when that is intentional, but default routing should be controlled, observable, and comparable.
 - **Not obligated to expose every niche vertical.** Broadly useful provider tools should be available. Narrow surfaces such as specialized academic/legal verticals can stay deferred until there is a real workflow.
 - **Not lossy normalization.** Common views are convenience layers. ColdSearch must preserve raw provider details needed for evaluation, debugging, advanced use, or provider-specific workflows.
-- **Not calling Anthropic APIs.** When ColdSearch needs LLM synthesis, it uses OpenAI-compatible shaped endpoints. It must never call Anthropic APIs directly.
+- **Not paying per token for Anthropic.** When ColdSearch needs LLM synthesis, it calls a configured OpenAI-compatible endpoint; which model sits behind it is configuration. Claude is allowed only when it bills to the Claude subscription or its included monthly API credit, never pay-per-token, including Claude through OpenRouter, Kilo, Bedrock or Vertex.
 
 ## Goals
 

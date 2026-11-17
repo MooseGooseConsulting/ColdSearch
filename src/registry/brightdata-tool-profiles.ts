@@ -1,7 +1,10 @@
 import type { ProviderToolProfile } from "../types.js";
 import { providerToolProfiles } from "./tool-profiles.js";
 
-const VERIFIED = "2026-08-10";
+/** Re-inspected against current provider docs on 2026-10-11
+ * (see docs/reviews/2026-10-11-provider-contract-audit.md). Doc-reinspection
+ * date, not live verification. */
+const VERIFIED = "2026-10-11";
 
 const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
   "brightdata.serp": {
@@ -26,7 +29,8 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         unsupportedCommonOptions: ["includeDomains", "excludeDomains"],
         nativeOptionsWithoutCommonEquivalent: ["zone", "searchEngine", "country"],
         notes:
-          "Normalized search consumes organic results only. Shopping/local/other SERP blocks remain provider-native detail.",
+          "Normalized search consumes organic results only. Shopping/local/other SERP blocks remain provider-native detail. " +
+          "`zone` and `country` are canonical; deprecated legacy options `serpZone` and `searchCountry` are also accepted.",
       },
     ],
     features: {
@@ -53,7 +57,7 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
       "Bright Data Web Unlocker known-URL retrieval for blocked/dynamic public pages. Backs normalized extract without changing agent fetch semantics.",
     docsUrl: "https://docs.brightdata.com/scraping-automation/web-unlocker/introduction",
     requiredParams: ["url"],
-    optionalParams: ["zone", "format", "method", "country", "data_format"],
+    optionalParams: ["zone", "format", "method", "country", "data_format", "unlockerTimeoutMs"],
     commonViews: [
       {
         category: "extract",
@@ -61,6 +65,9 @@ const brightDataToolProfiles: Record<string, ProviderToolProfile> = {
         mapsCommonOptions: { url: "url", format: "data_format" },
         unsupportedCommonOptions: ["javascriptActions", "screenshots"],
         nativeOptionsWithoutCommonEquivalent: ["zone", "country"],
+        notes:
+          "unlockerTimeoutMs (milliseconds) raises the extract fetch timeout for JS-rendered pages. " +
+          "The adapter also accepts the legacy option keys unlockerZone (for zone) and searchCountry (for country).",
       },
     ],
     features: {

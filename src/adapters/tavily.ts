@@ -13,6 +13,7 @@ interface TavilySearchResponse {
     title?: string;
     url?: string;
     content?: string;
+    raw_content?: string;
     score?: number;
   }>;
 }
@@ -24,6 +25,8 @@ interface TavilyExtractResponse {
     rawContent?: string;
     raw_content?: string;
   }>;
+  failed_results?: Array<{ error?: string; reason?: string }>;
+  failedResults?: Array<{ error?: string; reason?: string }>;
 }
 
 interface TavilyCrawlResponse {
@@ -45,19 +48,74 @@ export class TavilyAdapter implements SearchAdapter {
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
   private readonly baseUrl = "https://api.tavily.com";
 
-  private sanitizeLimit(limit?: number): number {
+  private sanitizeCrawlLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
       return 10;
     }
 
+    // Tavily's crawl `limit` is a link-processing budget, not search's
+    // `max_results` field; do not apply the search endpoint's 20-result cap.
     return Math.max(1, Math.floor(limit));
+  }
+
+  /** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+  private clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(value)));
   }
 
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
+    const providerOptions = options?.providerOptions ?? {};
+    const requestedIncludeAnswer = providerOptions.include_answer;
+    const includeAnswerRequested =
+      requestedIncludeAnswer === true ||
+      requestedIncludeAnswer === "basic" ||
+      requestedIncludeAnswer === "advanced";
+    if (includeAnswerRequested) {
+      throw new Error(
+        "Tavily search synthesis cannot be represented in normalized search results; " +
+          "use the Tavily answer tool for include_answer output."
+      );
+    }
+
+    const requestedDepth = providerOptions.search_depth;
+    const searchDepth = ["basic", "advanced", "fast", "ultra-fast"].includes(
+      String(requestedDepth)
+    )
+      ? String(requestedDepth)
+      : "basic";
+
+    const body: Record<string, unknown> = {
+      query,
+      max_results: this.clampIntegerOption(
+        options?.limit ?? providerOptions.max_results,
+        0,
+        20,
+        10
+      ),
+      search_depth: searchDepth,
+      include_answer: false,
+    };
+    if (options?.commonOptions?.includeContent) {
+      body.include_raw_content = "markdown";
+    }
+    if (Array.isArray(providerOptions.include_domains) && providerOptions.include_domains.length) {
+      body.include_domains = providerOptions.include_domains;
+    }
+    if (Array.isArray(providerOptions.exclude_domains) && providerOptions.exclude_domains.length) {
+      body.exclude_domains = providerOptions.exclude_domains;
+    }
+    if (typeof providerOptions.topic === "string" && providerOptions.topic.trim()) {
+      body.topic = providerOptions.topic.trim();
+    }
+    if (typeof providerOptions.time_range === "string" && providerOptions.time_range.trim()) {
+      body.time_range = providerOptions.time_range.trim();
+    }
+
     const response = await fetchJson<TavilySearchResponse>(
       `${this.baseUrl}/search`,
       {
@@ -66,31 +124,52 @@ export class TavilyAdapter implements SearchAdapter {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          query,
-          search_depth: "basic",
-          include_answer: false,
-        }),
+        body: JSON.stringify(body),
       },
-      { label: "Tavily search" }
+      { label: "Tavily search", secrets: apiKey ? [apiKey] : [] }
     );
 
-    // Normalize Tavily results to the shared schema
-    return (response.results || []).map((result, index) => ({
-      title: result.title || "",
-      url: result.url || "",
-      snippet: result.content || "",
-      // Tavily scores are 0-1, higher is better
-      score: result.score ?? Math.max(0.1, 1 - index * 0.1),
-      source: this.name,
-    }));
+    // Normalize Tavily results to the shared schema. Content-backed retrieval
+    // promises page text; a summary in `content` is not an acceptable fallback.
+    const results = response.results || [];
+    const includeContent = options?.commonOptions?.includeContent === true;
+    const normalized = results.flatMap((result, index) => {
+      const rawContent = result.raw_content;
+      if (includeContent && !rawContent?.trim()) return [];
+      return [{
+        title: result.title || "",
+        url: result.url || "",
+        snippet: includeContent ? rawContent! : rawContent || result.content || "",
+        // Tavily scores are 0-1, higher is better
+        score: result.score ?? Math.max(0.1, 1 - index * 0.1),
+        source: this.name,
+      }];
+    });
+    if (includeContent && results.length > 0 && normalized.length === 0) {
+      throw new Error("Tavily returned no page raw content for content-backed retrieval");
+    }
+    return normalized;
   }
 
   async extract(
     url: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<ExtractResult> {
+    const providerOptions = options?.providerOptions ?? {};
+
+    const body: Record<string, unknown> = {
+      urls: [url],
+      include_images: false,
+    };
+    const format = options?.format ?? providerOptions.format;
+    if (format === "markdown" || format === "text") {
+      body.format = format;
+    }
+    if (providerOptions.extract_depth === "basic" || providerOptions.extract_depth === "advanced") {
+      body.extract_depth = providerOptions.extract_depth;
+    }
+
     const response = await fetchJson<TavilyExtractResponse>(
       `${this.baseUrl}/extract`,
       {
@@ -100,16 +179,27 @@ export class TavilyAdapter implements SearchAdapter {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          urls: [url],
-          include_images: false,
+          ...body,
+          format:
+            options?.format === "text" || options?.format === "markdown"
+              ? options.format
+              : providerOptions.format === "text"
+                ? "text"
+                : "markdown",
         }),
       },
-      { label: "Tavily extract" }
+      { label: "Tavily extract", secrets: apiKey ? [apiKey] : [] }
     );
 
     const result = response.results?.[0];
     if (!result) {
-      throw new Error(`Failed to extract content from ${url}`);
+      const failed = response.failed_results?.[0] ?? response.failedResults?.[0];
+      const reason = failed?.error ?? failed?.reason;
+      throw new Error(
+        reason
+          ? `Failed to extract content from ${url}: ${reason}`
+          : `Failed to extract content from ${url}`
+      );
     }
 
     return {
@@ -130,7 +220,8 @@ export class TavilyAdapter implements SearchAdapter {
       throw new Error("URL is required");
     }
 
-    const limit = this.sanitizeLimit(options?.limit);
+    const limit = this.sanitizeCrawlLimit(options?.limit);
+    const depth = options?.depth;
     const normalizedUrl = url.trim();
 
     const response = await fetchJson<TavilyCrawlResponse>(
@@ -143,11 +234,16 @@ export class TavilyAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          max_results: limit,
+          // Tavily's crawl cap is `limit` (total links processed); the legacy
+          // `max_results` name is silently ignored upstream.
+          limit,
           extract_depth: "basic",
+          ...(depth !== undefined
+            ? { max_depth: this.clampIntegerOption(depth, 1, 5, 1) }
+            : {}),
         }),
       },
-      { label: "Tavily crawl", timeoutMs: 120_000 }
+      { label: "Tavily crawl", timeoutMs: 120_000, secrets: apiKey ? [apiKey] : [] }
     );
 
     return (response.results || []).map((result) => ({

@@ -10,12 +10,16 @@ import { installFetchMock, jsonResponse, textResponse } from "./adapters/_fetch-
  * Write a temp config.toml that backs `search` with brave + serper and points
  * the result cache at a temp dir (so the test never touches ~/.config).
  */
-function writeTempConfig({ cacheDir, cacheEnabled = true }) {
+function writeTempConfig({ cacheDir, cacheEnabled = true, searchProvider, exaNumResults }) {
   const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-"));
   const configPath = join(dir, "config.toml");
+  const searchProviders = searchProvider === "exa" ? '["exa"]' : '["brave", "serper"]';
+  const exaOptions = exaNumResults === undefined
+    ? ""
+    : `[providers.exa.options]\nnumResults = ${exaNumResults}\n`;
   const toml = `
 [capabilities.search]
-providers = ["brave", "serper"]
+providers = ${searchProviders}
 strategy = "all"
 
 [capabilities.extract]
@@ -39,6 +43,7 @@ keys = ["k"]
 keys = []
 
 [providers.exa]
+${exaOptions}
 [providers.exa.keyPool]
 keys = ["k"]
 
@@ -116,6 +121,43 @@ test("cache ON: two identical searches hit the network once (second served from 
     // Cached payload has errors:{} stripped; compare the payload fields that matter.
     assert.deepEqual(second.results, first.results);
     assert.deepEqual(second.providersUsed, first.providersUsed);
+  } finally {
+    restore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("implicit and explicit default-valued limits use distinct cache entries", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-set-"));
+  const { dir, configPath } = writeTempConfig({
+    cacheDir,
+    searchProvider: "exa",
+    exaNumResults: 4,
+  });
+  const requestedCounts = [];
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async ({ init }) => {
+      const numResults = JSON.parse(init.body).numResults;
+      requestedCounts.push(numResults);
+      return jsonResponse({
+        results: Array.from({ length: numResults }, (_, index) => ({
+          title: `Result ${index}`,
+          url: `https://exa.example/${index}`,
+          text: "content",
+        })),
+      });
+    },
+  });
+
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    const implicit = await backend.search("same query", { limit: 10, limitSet: false });
+    const explicit = await backend.search("same query", { limit: 10, limitSet: true });
+
+    assert.deepEqual(requestedCounts, [4, 10]);
+    assert.equal(implicit.results.length, 4);
+    assert.equal(explicit.results.length, 10);
   } finally {
     restore();
     rmSync(dir, { recursive: true, force: true });
@@ -237,7 +279,7 @@ test("extract hit-once: two identical extracts with cache on hit the network onc
 
   let fetchCalls = 0;
   const restore = installFetchMock({
-    // Jina reader: strips scheme and prefixes with https://r.jina.ai/http://
+    // Jina reader keeps the caller scheme: https://r.jina.ai/https://...
     "*": async ({ url }) => {
       fetchCalls++;
       if (url.includes("r.jina.ai")) {
@@ -324,6 +366,178 @@ test("extract all-fail: a failed extract throws and writes nothing to the cache 
       existsSync(extractCacheDir),
       false,
       "cache dir for extract must not exist after a total failure"
+    );
+  } finally {
+    restore();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+function writeTempBraveCountConfig({ cacheDir }) {
+  const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-"));
+  const configPath = join(dir, "config.toml");
+  const toml = `
+[capabilities.search]
+providers = ["brave"]
+strategy = "all"
+
+[capabilities.extract]
+providers = ["jina"]
+strategy = "all"
+
+[capabilities.crawl]
+providers = ["exa"]
+strategy = "all"
+
+[providers.brave]
+[providers.brave.keyPool]
+keys = ["k"]
+[providers.brave.options]
+count = 3
+
+[providers.jina]
+[providers.jina.keyPool]
+keys = []
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["k"]
+
+[cache]
+enabled = true
+search_ttl = "6h"
+path = ${JSON.stringify(cacheDir)}
+
+[history]
+path = ${JSON.stringify(join(dir, "history.jsonl"))}
+`;
+  writeFileSync(configPath, toml, "utf8");
+  return { dir, configPath };
+}
+
+
+test("search cache distinguishes provider filter changes (Codex P2 on #83)", async () => {
+  // Same query, same pool, different Brave safesearch must not replay.
+  const writeFilterConfig = (safesearch) => {
+    const dir = mkdtempSync(join(tmpdir(), "coldsearch-rc-filter-"));
+    const configPath = join(dir, "config.toml");
+    const toml = `
+[capabilities.search]
+providers = ["brave"]
+strategy = "all"
+
+[capabilities.extract]
+providers = ["jina"]
+strategy = "all"
+
+[capabilities.crawl]
+providers = ["exa"]
+strategy = "all"
+
+[providers.brave]
+[providers.brave.keyPool]
+keys = ["k"]
+[providers.brave.options]
+safesearch = "${safesearch}"
+
+[providers.jina]
+[providers.jina.keyPool]
+keys = []
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["k"]
+
+[cache]
+enabled = true
+search_ttl = "6h"
+path = ${JSON.stringify(cacheDir)}
+
+[history]
+path = ${JSON.stringify(join(dir, "history.jsonl"))}
+`;
+    writeFileSync(configPath, toml, "utf8");
+    return { dir, configPath };
+  };
+
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-filter-cache-"));
+  const seenSafesearch = [];
+  const restore = installFetchMock({
+    "*": async ({ url }) => {
+      const parsed = new URL(url);
+      seenSafesearch.push(parsed.searchParams.get("safesearch"));
+      return jsonResponse({
+        web: {
+          results: [
+            {
+              title: "Brave result",
+              url: "https://brave.example",
+              description: "result",
+              relevance_score: 0.9,
+            },
+          ],
+        },
+      });
+    },
+  });
+
+  try {
+    const strict = writeFilterConfig("strict");
+    const moderate = writeFilterConfig("moderate");
+    try {
+      const first = new LocalExecutionBackend(strict.configPath);
+      await first.search("filter query", { limit: 10, rerankStrategy: "rrf" });
+      const second = new LocalExecutionBackend(moderate.configPath);
+      await second.search("filter query", { limit: 10, rerankStrategy: "rrf" });
+    } finally {
+      rmSync(strict.dir, { recursive: true, force: true });
+      rmSync(moderate.dir, { recursive: true, force: true });
+    }
+
+    assert.deepEqual(
+      seenSafesearch,
+      ["strict", "moderate"],
+      "changing safesearch must invalidate the search cache entry"
+    );
+  } finally {
+    restore();
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("search cache distinguishes implicit and explicit equal limits", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "coldsearch-rc-limit-cache-"));
+  const { dir, configPath } = writeTempBraveCountConfig({ cacheDir });
+  const requestedCounts = [];
+  const restore = installFetchMock({
+    "*": async ({ url }) => {
+      const parsed = new URL(url);
+      requestedCounts.push(parsed.searchParams.get("count"));
+      return jsonResponse({
+        web: {
+          results: [
+            {
+              title: "Brave result",
+              url: "https://brave.example",
+              description: "result",
+              relevance_score: 0.9,
+            },
+          ],
+        },
+      });
+    },
+  });
+
+  try {
+    const backend = new LocalExecutionBackend(configPath);
+    await backend.search("same query", { limit: 10, limitSet: false });
+    await backend.search("same query", { limit: 10, limitSet: true });
+
+    assert.deepEqual(
+      requestedCounts,
+      ["3", "10"],
+      "the explicit limit must not replay the implicit configured-count result"
     );
   } finally {
     restore();

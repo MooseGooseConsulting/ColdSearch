@@ -11,7 +11,11 @@ test("exa crawl discovers then fetches contents", async () => {
     "POST https://api.exa.ai/search": async ({ init }) => {
       searchCalled++;
       const body = JSON.parse(init.body);
-      assert.match(body.query, /^site:/);
+      // Domain scoping comes from includeDomains; no redundant `site:` operator.
+      assert.equal(body.query, "x.example");
+      assert.deepEqual(body.includeDomains, ["x.example"]);
+      // `useAutoprompt` was retired upstream; `type` selects the mode.
+      assert.equal("useAutoprompt" in body, false);
       return jsonResponse({
         results: [{ url: "https://x.example/a", title: "A" }],
       });
@@ -20,6 +24,12 @@ test("exa crawl discovers then fetches contents", async () => {
       contentsCalled++;
       const body = JSON.parse(init.body);
       assert.ok(Array.isArray(body.urls));
+      // The deprecated `livecrawl` flag must never be sent, and
+      // `livecrawlTimeout` is only meaningful alongside maxAgeHours — without
+      // maxAgeHours both stay out of the body.
+      assert.equal("livecrawl" in body, false);
+      assert.equal("livecrawlTimeout" in body, false);
+      assert.equal("livecrawl_timeout" in body, false);
       return jsonResponse({
         results: [
           { url: "https://x.example", title: "Root", text: "r" },
@@ -35,7 +45,23 @@ test("exa crawl discovers then fetches contents", async () => {
     assert.equal(searchCalled, 1);
     assert.equal(contentsCalled, 1);
     assert.equal(results.length, 2);
-    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "title", "url"]);
+    assert.deepEqual(Object.keys(results[0]).sort(), ["content", "derived", "status", "title", "url"]);
+    assert.equal(results[0].derived, true);
+    assert.equal(results[0].status, "completed");
+  } finally {
+    restore();
+  }
+});
+
+test("exa findSimilar maps common limit to numResults", async () => {
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/findSimilar": async ({ init }) => {
+      assert.equal(JSON.parse(init.body).numResults, 7);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    await new ExaAdapter().findSimilar("https://example.com", "k", { limit: 7 });
   } finally {
     restore();
   }
@@ -73,3 +99,81 @@ test("exa search highlights mode sets contents.highlights and joins highlights i
   }
 });
 
+test("exa search rejects an invalid searchType before calling upstream", async () => {
+  let fetchCalled = 0;
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async () => {
+      fetchCalled++;
+      return jsonResponse({ results: [] });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await assert.rejects(
+      adapter.search("q", "k", { providerOptions: { searchType: "neurl" } }),
+      /Invalid Exa searchType "neurl"/
+    );
+    assert.equal(fetchCalled, 0, "must fail fast before any upstream call");
+  } finally {
+    restore();
+  }
+});
+
+test("exa extract never sends livecrawl; sends top-level maxAgeHours only when configured", async () => {
+  const bodies = [];
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/contents": async ({ init }) => {
+      bodies.push(JSON.parse(init.body));
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "T", text: "body" }],
+      });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await adapter.extract("https://x.example", "k");
+    await adapter.extract("https://x.example", "k", {
+      providerOptions: { maxAgeHours: 24 },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.equal("livecrawl" in bodies[0], false);
+  assert.equal("maxAgeHours" in bodies[0], false);
+  assert.equal("livecrawl" in bodies[1], false);
+  assert.equal(bodies[1].maxAgeHours, 24);
+});
+
+test("exa crawl sends livecrawlTimeout only alongside maxAgeHours", async () => {
+  let contentsBody;
+  const restore = installFetchMock({
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://x.example/a", title: "A" }] }),
+    "POST https://api.exa.ai/contents": async ({ init }) => {
+      contentsBody = JSON.parse(init.body);
+      return jsonResponse({
+        results: [{ url: "https://x.example", title: "Root", text: "r" }],
+      });
+    },
+  });
+
+  try {
+    const adapter = new ExaAdapter();
+    await adapter.crawl("https://x.example", "k", {
+      limit: 1,
+      providerOptions: { maxAgeHours: 0 },
+    });
+  } finally {
+    restore();
+  }
+
+  assert.equal("livecrawl" in contentsBody, false);
+  assert.equal(contentsBody.maxAgeHours, 0);
+  // camelCase `livecrawlTimeout`; the snake_case spelling is silently ignored
+  // upstream and must not come back.
+  assert.equal(contentsBody.livecrawlTimeout, 10000);
+  assert.equal("livecrawl_timeout" in contentsBody, false);
+});

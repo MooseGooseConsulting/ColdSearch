@@ -17,21 +17,24 @@ interface ExaProviderOptions {
   /** Max characters for text content. Default: 15000 */
   maxCharacters?: number;
   /**
-   * Category filter. Exa's first-class categories are space-separated:
-   * "company", "people", "research paper", "news", "personal site",
-   * "financial report". Other strings are accepted as category hints.
+   * Category filter. Exa's first-class categories include "company", "people",
+   * "publication" (formerly "research paper"), "news", "personal site", and
+   * "financial report"; the pdf/github/tweet categories are deprecated.
+   * Other strings are accepted as category hints (pass-through, not validated).
    */
   category?: string;
-  /** Search type: auto (default), keyword, neural, fast, instant, deep-lite, deep */
-  searchType?: "auto" | "keyword" | "neural" | "fast" | "instant" | "deep-lite" | "deep";
+  /**
+   * Search type. Current upstream enum is
+   * auto (default) | fast | instant | deep-lite | deep | deep-reasoning;
+   * the retired keyword/neural modes were removed from the API.
+   */
+  searchType?: "auto" | "fast" | "instant" | "deep-lite" | "deep" | "deep-reasoning";
   /** Max age of indexed content in hours. 0 = always livecrawl, -1 = never livecrawl */
   maxAgeHours?: number;
   /** Domains to include in search results */
   includeDomains?: string[];
   /** Domains to exclude from search results */
   excludeDomains?: string[];
-  /** Use autoprompt (query enhancement). Default: true */
-  useAutoprompt?: boolean;
   /** Number of results. Default: 10 */
   numResults?: number;
 }
@@ -93,6 +96,21 @@ interface ExaFindSimilarResponse {
  * maxAgeHours = 24         # Cache freshness
  * ```
  */
+const EXA_SEARCH_TYPES: readonly string[] = [
+  "auto",
+  "fast",
+  "instant",
+  "deep-lite",
+  "deep",
+  "deep-reasoning",
+];
+const EXA_MAX_RESULTS = 100;
+
+function normalizeResultCount(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 10;
+  return Math.min(EXA_MAX_RESULTS, Math.max(1, Math.floor(value)));
+}
+
 export class ExaAdapter implements SearchAdapter {
   name = "exa";
   capabilities: SearchAdapter["capabilities"] = ["search", "extract", "crawl"];
@@ -109,13 +127,24 @@ export class ExaAdapter implements SearchAdapter {
    */
   private buildSearchBody(
     query: string,
-    opts: ExaProviderOptions
+    opts: ExaProviderOptions,
+    limit?: number
   ): Record<string, unknown> {
+    // `useAutoprompt` was retired upstream; `type` selects the search mode.
+    // searchType arrives from TOML options untyped, so validate it here —
+    // an invalid value would otherwise reach Exa as a rejected request.
+    const searchType = opts.searchType ?? "auto";
+    if (!EXA_SEARCH_TYPES.includes(searchType)) {
+      throw new Error(
+        `Invalid Exa searchType "${String(opts.searchType)}". ` +
+          `Supported values: ${EXA_SEARCH_TYPES.join(", ")}.`
+      );
+    }
+
     const body: Record<string, unknown> = {
       query,
-      numResults: opts.numResults ?? 10,
-      useAutoprompt: opts.useAutoprompt ?? true,
-      type: opts.searchType ?? "auto",
+      numResults: normalizeResultCount(limit ?? opts.numResults),
+      type: searchType,
     };
 
     // Category filter
@@ -153,7 +182,11 @@ export class ExaAdapter implements SearchAdapter {
     options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const opts = this.getExaOptions(options);
-    const body = this.buildSearchBody(query, opts);
+    const searchOptions = options?.commonOptions?.includeContent
+      ? { ...opts, highlights: false }
+      : opts;
+    const requirePageContent = options?.commonOptions?.includeContent === true;
+    const body = this.buildSearchBody(query, searchOptions, options?.limit);
 
     const data = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -165,25 +198,33 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Exa search" }
+      { label: "Exa search", secrets: apiKey ? [apiKey] : [] }
     );
 
-    // Normalize Exa results to shared schema
-    return (data.results || []).map((result, index) => {
+    // Normalize Exa results to shared schema. Content-backed retrieval must
+    // not silently succeed with link-only hits when page retrieval failed.
+    const rawResults = data.results || [];
+    const normalized = rawResults.flatMap((result, index) => {
+      const pageText = result.text?.trim();
+      if (requirePageContent && !pageText) return [];
       // If highlights mode, join highlights into snippet; otherwise use text
-      const snippet = opts.highlights && result.highlights?.length
+      const snippet = searchOptions.highlights && result.highlights?.length
         ? result.highlights.join(" ... ")
-        : (result.text || "");
+        : (requirePageContent ? pageText! : result.text || "");
 
-      return {
+      return [{
         title: result.title || "",
         url: result.url || "",
         snippet,
         // Exa scores are 0-1, higher is better; clamp fallback to [0, 1]
         score: result.score ?? Math.max(0, 1 - index * 0.1),
         source: this.name,
-      };
+      }];
     });
+    if (requirePageContent && rawResults.length > 0 && normalized.length === 0) {
+      throw new Error("Exa returned no page content for content-backed retrieval");
+    }
+    return normalized;
   }
 
   async extract(
@@ -195,16 +236,24 @@ export class ExaAdapter implements SearchAdapter {
       throw new Error("URL is required");
     }
 
+    if (options?.format === "text") {
+      throw new Error(
+        'Exa does not support plain-text extract output; use format "markdown" or select another provider'
+      );
+    }
+
     const normalizedUrl = url.trim();
     const opts = this.getExaOptions(options);
 
     const extractBody: Record<string, unknown> = {
       urls: [normalizedUrl],
       text: { maxCharacters: opts.maxCharacters ?? 15000 },
-      livecrawl: "preferred",
     };
     // Freshness control. On /contents, maxAgeHours is a top-level field
-    // (0 = always livecrawl, -1 = never livecrawl). See https://exa.ai/docs/reference/get-contents.
+    // (0 = always livecrawl, -1 = never livecrawl). The deprecated `livecrawl`
+    // flag must NOT be co-sent with maxAgeHours, so it is omitted entirely;
+    // "use cache when fresh" is now the Exa server default.
+    // See https://exa.ai/docs/reference/get-contents.
     if (opts.maxAgeHours !== undefined) {
       extractBody.maxAgeHours = opts.maxAgeHours;
     }
@@ -219,7 +268,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(extractBody),
       },
-      { label: "Exa extract" }
+      { label: "Exa extract", secrets: apiKey ? [apiKey] : [] }
     );
 
     const result = data.results?.[0];
@@ -265,11 +314,12 @@ export class ExaAdapter implements SearchAdapter {
     const searchOpts: ExaProviderOptions = {
       ...opts,
       numResults: limit,
-      useAutoprompt: false,
       includeDomains: [domain],
       excludeDomains: undefined,
     };
-    const body = this.buildSearchBody(`site:${domain}`, searchOpts);
+    // Domain scoping is handled by includeDomains; repeating it as a `site:`
+    // query operator is redundant and not recommended upstream.
+    const body = this.buildSearchBody(domain, searchOpts);
 
     const searchData = await fetchJson<ExaSearchResponse>(
       "https://api.exa.ai/search",
@@ -281,7 +331,7 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify(body),
       },
-      { label: "Exa crawl discover" }
+      { label: "Exa crawl discover", secrets: apiKey ? [apiKey] : [] }
     );
 
     const candidateUrls = [
@@ -304,32 +354,37 @@ export class ExaAdapter implements SearchAdapter {
         body: JSON.stringify({
           urls: candidateUrls,
           text: { maxCharacters: opts.maxCharacters ?? 12000 },
-          livecrawl: "preferred",
-          livecrawl_timeout: 10000,
+          // The deprecated `livecrawl` flag must not be co-sent with
+          // maxAgeHours, so it is omitted entirely; "preferred" semantics are
+          // now the Exa server default. `livecrawlTimeout` (camelCase — the
+          // snake_case spelling is silently ignored upstream) is only
+          // meaningful alongside maxAgeHours.
           ...(opts.maxAgeHours !== undefined
-            ? { maxAgeHours: opts.maxAgeHours }
+            ? { maxAgeHours: opts.maxAgeHours, livecrawlTimeout: 10000 }
             : {}),
         }),
       },
-      { label: "Exa crawl contents" }
+      { label: "Exa crawl contents", secrets: apiKey ? [apiKey] : [] }
     );
 
     return (contents.results || []).map((result) => ({
       url: result.url || "",
       title: result.title || "",
       content: result.text || "",
+      derived: true,
+      status: "completed" as const,
     }));
   }
 
   /**
    * Find similar URLs (Exa-unique capability).
-   * Not exposed via the standard adapter interface yet, but available for future use.
+   * Exposed for the URL-similarity search intent.
    * @see https://docs.exa.ai/reference/find-similar
    */
   async findSimilar(
     url: string,
     apiKey: string,
-    options?: AdapterCallOptions & { numResults?: number }
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     if (!url || !url.trim()) {
       throw new Error("URL is required");
@@ -337,6 +392,7 @@ export class ExaAdapter implements SearchAdapter {
 
     const normalizedUrl = url.trim();
     const opts = this.getExaOptions(options);
+    const useHighlights = opts.highlights === true && options?.commonOptions?.includeContent !== true;
 
     const data = await fetchJson<ExaFindSimilarResponse>(
       "https://api.exa.ai/findSimilar",
@@ -348,26 +404,40 @@ export class ExaAdapter implements SearchAdapter {
         },
         body: JSON.stringify({
           url: normalizedUrl,
-          numResults: options?.numResults ?? opts.numResults ?? 10,
-          contents: opts.highlights
+          numResults: normalizeResultCount(
+            options?.limit ?? options?.commonOptions?.limit ?? opts.numResults
+          ),
+          contents: useHighlights
             ? { highlights: true }
             : { text: { maxCharacters: opts.maxCharacters ?? 15000 } },
+          ...(opts.includeDomains?.length ? { includeDomains: opts.includeDomains } : {}),
+          ...(opts.excludeDomains?.length ? { excludeDomains: opts.excludeDomains } : {}),
         }),
       },
-      { label: "Exa findSimilar" }
+      { label: "Exa findSimilar", secrets: apiKey ? [apiKey] : [] }
     );
 
-    return (data.results || []).map((result, index) => {
-      const snippet = opts.highlights && result.highlights?.length
+    // Mirror search: content-backed similarity must not silently succeed
+    // with link-only hits when page retrieval failed (Codex on #85).
+    const requirePageContent = options?.commonOptions?.includeContent === true;
+    const rawResults = data.results || [];
+    const normalized = rawResults.flatMap((result, index) => {
+      const pageText = result.text?.trim();
+      if (requirePageContent && !pageText) return [];
+      const snippet = useHighlights && result.highlights?.length
         ? result.highlights.join(" ... ")
-        : (result.text || "");
-      return {
+        : (requirePageContent ? pageText! : result.text || "");
+      return [{
         title: result.title || "",
         url: result.url || "",
         snippet,
         score: result.score ?? Math.max(0, 1 - index * 0.1),
         source: this.name,
-      };
+      }];
     });
+    if (requirePageContent && rawResults.length > 0 && normalized.length === 0) {
+      throw new Error("Exa returned no page content for content-backed similarity");
+    }
+    return normalized;
   }
 }

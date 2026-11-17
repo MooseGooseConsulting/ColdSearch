@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "provider": "exa",
+  "ts": "2026-10-12T09:21:55.706Z",
+  "label": "Exa search",
+  "method": "POST",
+  "url": "https://api.exa.ai/search",
+  "requestHeaders": {
+    "content-type": "application/json",
+    "x-api-key": "REDACTED"
+  },
+  "requestBody": "{\"query\":\"coldsearch contract probe\",\"numResults\":10}",
+  "status": 402,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBodyText": "{\"requestId\":\"c2f1d4a8b6e04f9db3a7c5e1f8d2b4a6\",\"error\":\"Payment required to access this resource\",\"tag\":\"X402_PAYMENT_REQUIRED\"}",
+  "durationMs": 264,
+  "notes": "Verified 2026-10-12 live keyless probe: Exa POST /search without a valid key answers 402. The live x402 payload is truncated here to its first three fields (requestId, error, tag); the remainder is an x402 payment-instruction object irrelevant to classification."
+}

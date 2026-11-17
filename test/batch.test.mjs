@@ -10,8 +10,9 @@ import {
   conflictRecord,
   loadResumeIndex,
 } from "../dist/batch/resume.js";
-import { runBatch, runWithConcurrency } from "../dist/batch/runner.js";
+import { LocalBatchExecutor, runBatch, runWithConcurrency } from "../dist/batch/runner.js";
 import { DUPLICATE_ID_CONFLICT } from "../dist/batch/types.js";
+import { installFetchMock, jsonResponse } from "./adapters/_fetch-mock.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -102,7 +103,12 @@ test("accepts valid search records", () => {
 
 test("accepts valid extract records", () => {
   assert.doesNotThrow(() =>
-    validateBatchInput({ id: "example-extract", capability: "extract", url: "https://example.com" })
+    validateBatchInput({
+      id: "example-extract",
+      capability: "extract",
+      url: "https://example.com",
+      format: "text",
+    })
   );
 });
 
@@ -113,8 +119,87 @@ test("accepts valid crawl records", () => {
       capability: "crawl",
       url: "https://example.com",
       limit: 10,
+      depth: 2,
     })
   );
+});
+
+test("validates batch format and depth options", () => {
+  assert.throws(
+    () => validateBatchInput({ id: "bad-format", capability: "extract", url: "https://example.com", format: "html" }),
+    /'format' must be 'markdown' or 'text'/
+  );
+  for (const depth of [-1, 1.5, "2"]) {
+    assert.throws(
+      () => validateBatchInput({ id: "bad-depth", capability: "crawl", url: "https://example.com", depth }),
+      /'depth' must be a non-negative integer/
+    );
+  }
+  assert.throws(
+    () => validateBatchInput({ id: "wrong-depth", capability: "extract", url: "https://example.com", depth: 2 }),
+    /'depth' is only valid for 'crawl'/
+  );
+  assert.throws(
+    () => validateBatchInput({ id: "wrong-format", capability: "crawl", url: "https://example.com", format: "text" }),
+    /'format' is only valid for 'extract'/
+  );
+});
+
+test("LocalBatchExecutor forwards extract format and crawl depth", async () => {
+  const dir = makeDir("coldsearch-batch-options-");
+  const configPath = path.join(dir, "config.toml");
+  const previousKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "test-tavily-key";
+  fs.writeFileSync(
+    configPath,
+    `[capabilities.extract]\nproviders = ["tavily"]\nstrategy = "all"\n\n` +
+      `[capabilities.crawl]\nproviders = ["tavily"]\nstrategy = "all"\n\n` +
+      `[providers.tavily]\n[providers.tavily.keyPool]\nkeys = ["env:TAVILY_API_KEY"]\n\n` +
+      `[cache]\nenabled = false\n\n` +
+      `[history]\npath = ${JSON.stringify(path.join(dir, "history.jsonl"))}\n\n` +
+      `[logging.usage]\npath = ${JSON.stringify(path.join(dir, "usage.jsonl"))}\n`,
+    "utf8"
+  );
+  const seen = {};
+  const restore = installFetchMock({
+    "POST https://api.tavily.com/extract": async ({ init }) => {
+      seen.extract = JSON.parse(init.body);
+      return jsonResponse({ results: [{ url: "https://example.com", raw_content: "body" }] });
+    },
+    "POST https://api.tavily.com/crawl": async ({ init }) => {
+      seen.crawl = JSON.parse(init.body);
+      return jsonResponse({ results: [] });
+    },
+  });
+  try {
+    const executor = new LocalBatchExecutor(configPath);
+    const extractRecord = {
+      id: "extract-text",
+      capability: "extract",
+      url: "https://example.com",
+      format: "text",
+    };
+    validateBatchInput(extractRecord);
+    assert.equal((await executor.execute(extractRecord, {})).status, "success");
+
+    const crawlRecord = {
+      id: "crawl-depth",
+      capability: "crawl",
+      url: "https://example.com",
+      limit: 50,
+      depth: 2,
+    };
+    validateBatchInput(crawlRecord);
+    assert.equal((await executor.execute(crawlRecord, {})).status, "success");
+    assert.equal(seen.extract.format, "text");
+    assert.equal(seen.crawl.limit, 50);
+    assert.equal(seen.crawl.max_depth, 2);
+  } finally {
+    restore();
+    if (previousKey === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = previousKey;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("accepts valid provider-tool records", () => {
@@ -687,6 +772,100 @@ test("contract-invalid output lines do not count as completed outcomes", async (
     assert.equal(summary.skipped, 0);
     assert.equal(outputRecords(outputPath).length, 2, "invalid line kept verbatim; valid record appended");
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pending crawl batch resumes the existing job without losing fallback pages", async () => {
+  const dir = makeDir();
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _delay, ...args) => originalSetTimeout(fn, 0, ...args);
+  let nextJob = 0;
+  let pollCount = 0;
+  const restore = installFetchMock({
+    "POST https://api.firecrawl.dev/v2/crawl": async () =>
+      jsonResponse({ success: true, id: `batch-job-${++nextJob}`, url: "https://example.com" }),
+    "GET https://api.firecrawl.dev/v2/crawl/batch-job-1": async () => {
+      pollCount++;
+      if (pollCount <= 30) return jsonResponse({ success: true, status: "scraping" });
+      return jsonResponse({
+        success: true,
+        status: "completed",
+        data: [{ markdown: "# Done", metadata: { title: "Done", sourceURL: "https://example.com" } }],
+      });
+    },
+    "POST https://api.exa.ai/search": async () =>
+      jsonResponse({ results: [{ url: "https://example.com/fallback" }] }),
+    "POST https://api.exa.ai/contents": async () =>
+      jsonResponse({ results: [{ url: "https://example.com", title: "Fallback", text: "Fallback page" }] }),
+    "*": async ({ url, method }) => {
+      assert.equal(method, "GET");
+      assert.match(url, /\/v2\/crawl\/batch-job-\d+$/);
+      return jsonResponse({ success: true, status: "scraping" });
+    },
+  });
+
+  try {
+    const configPath = path.join(dir, "config.toml");
+    fs.writeFileSync(
+      configPath,
+      `
+[capabilities.crawl]
+providers = ["firecrawl", "exa"]
+strategy = "all"
+
+[providers.firecrawl]
+[providers.firecrawl.keyPool]
+keys = ["firecrawl-test-key"]
+
+[providers.exa]
+[providers.exa.keyPool]
+keys = ["exa-test-key"]
+
+[cache]
+enabled = false
+
+[logging.usage]
+path = ${JSON.stringify(path.join(dir, "usage.jsonl"))}
+
+[history]
+path = ${JSON.stringify(path.join(dir, "history.jsonl"))}
+`,
+      "utf8"
+    );
+    const inputPath = writeInput(dir, [
+      { id: "crawl-pending", capability: "crawl", url: "  https://example.com  " },
+    ]);
+    const outputPath = path.join(dir, "out.jsonl");
+    const options = {
+      input: inputPath,
+      output: outputPath,
+      concurrency: 1,
+      retryErrors: false,
+      configPath,
+    };
+
+    const first = await runBatch(options);
+    assert.equal(first.succeeded, 0);
+    assert.equal(first.pending, 1);
+    assert.equal(first.failed, 0);
+    assert.equal(outputRecords(outputPath)[0].status, "pending");
+    assert.equal(outputRecords(outputPath)[0].result.results.length, 1);
+    assert.equal(outputRecords(outputPath)[0].result.pendingJobs[0].jobId, "batch-job-1");
+    assert.equal(outputRecords(outputPath)[0].result.status, "pending");
+
+    const second = await runBatch(options);
+    assert.equal(second.executed, 1, "pending output is not treated as completed on resume");
+    assert.equal(second.pending, 0);
+    assert.equal(second.succeeded, 1);
+    assert.equal(nextJob, 1, "resume polls the stored job instead of starting a duplicate");
+    assert.equal(pollCount, 31);
+    assert.deepEqual(outputRecords(outputPath).map((record) => record.status), ["pending", "success"]);
+    assert.equal(outputRecords(outputPath)[1].result.pendingJobs.length, 0);
+    assert.equal(outputRecords(outputPath)[1].result.results[0].content, "# Done");
+  } finally {
+    restore();
+    globalThis.setTimeout = originalSetTimeout;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

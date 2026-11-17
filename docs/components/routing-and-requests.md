@@ -5,9 +5,23 @@
 Operators configure provider pools per capability in `config.toml`. The runtime:
 
 1. Validates the capability and configured providers.
-2. Resolves API keys (Doppler-injected env vars, explicit env refs, optional BWS refs, or keyless providers).
-3. Selects from the pool (random or fanout per config).
-4. Does not silently hop to another provider after selection.
+2. Selects from the eligible capability pool (or the caller's `--providers`
+   override), using random or all mode per config.
+3. Resolves keys for attempted providers (`doppler:` / `env:` refs, literal
+   keys, or keyless providers).
+4. Random/`--single-provider` normally executes one provider. Account-quota
+   exhaustion enables recovery through the remaining eligible providers in
+   pool order, once each, until one succeeds. Recovery is visible in errors,
+   usage logs, and history; it never rewrites pools or key configuration.
+5. In `all` mode, search isolates errors across parallel calls; extract/crawl
+   try providers in order until one succeeds. If none succeeds, all attempted
+   provider errors remain available.
+
+Only account exhaustion (HTTP 402, 432, or 433) initiates random-mode recovery.
+Other initial failures remain visible. Explicit singleton scopes and
+provider-native tool calls have no cross-provider alternative. No preflight
+balance probe or persistent quota gate is implemented. See
+[quota recovery](../CONFIGURATION.md#quota-recovery) for detection and scope details.
 
 See `docs/ADRs/001-fanout-architecture.md` and `docs/CONFIGURATION.md`.
 
@@ -20,4 +34,4 @@ All networked operations use shared request handling:
 - bounded transient retries
 - normalized error reporting
 
-Applies to provider adapters and agent LLM calls. Agent LLM uses OpenAI-compatible endpoints only; ColdSearch does not call Anthropic APIs.
+Applies to provider adapters and agent LLM calls. Agent LLM calls go to a configured OpenAI-compatible endpoint, whatever model is behind it. Claude only on the Claude subscription or its included API credit, never pay-per-token (see the North Star).

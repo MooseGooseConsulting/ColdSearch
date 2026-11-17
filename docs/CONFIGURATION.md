@@ -67,6 +67,9 @@ structurally valid config). Categories follow the error classification:
 - `config` — TOML / schema / structure
 - `credentials` — key references and env-var presence
 - `network` — transport problems (never triggered by doctor)
+- `quota` — provider account credits or quota are exhausted (HTTP 402, 432, or 433)
+- `rate_limit` — the provider rejected the request for rate limiting (HTTP 429)
+- `validation` — the provider rejected request input (HTTP 400 or 422)
 - `provider` — provider-level configuration (e.g. SearXNG base URL)
 - `unsupported_capability` — a capability no configured provider can back
 - `unsupported_tool` — provider-tool surface gaps (reported by status)
@@ -82,7 +85,7 @@ provider calls. JSON fields:
 - `cache` — `enabled` flag and on-disk replay-cache path
 - `usage_log` — usage JSONL path (see Operational logging)
 - `recent_usage_summary_7d` — last-7-days per-provider call/success summary
-- `missing_env_vars` — `env:` key references whose variable is not set
+- `missing_env_vars` — `env:` key references whose variable is not set, including `[agent.llm].key_ref`
 - `provider_capabilities` — adapter-backed capability surface per registered
   provider, with a `configured` flag
 - `tool_coverage` — provider-tool registry state: counts of tool profiles by
@@ -111,8 +114,48 @@ strategy = "random"
 
 - `providers`: ordered list of providers eligible for the capability
 - `strategy`:
-  - `random`: pick exactly one provider per request
-  - `all`: fan out to all configured providers
+  - `random`: pick one provider initially; account-quota exhaustion enables
+    bounded recovery through the remaining eligible pool
+  - `all`: search fans out in parallel; extract/crawl try providers in order
+    until one succeeds
+
+### Quota recovery
+
+For `random` and `--single-provider`, a successful first attempt makes no calls
+to other providers. If that attempt reports exhausted account credits/quota,
+the runtime tries the remaining eligible providers in configured order, once
+per provider, until one succeeds. Once recovery starts, a failed alternative
+does not prevent trying the next one. If none succeeds, `AllProvidersFailedError`
+retains every attempt and provider error.
+
+Exhaustion detection is the shared HTTP status classifier: 402, 432, and 433,
+including those statuses on a wrapped cause. Generic rate limits (429),
+authentication errors, message text, and other failures do not initiate this
+recovery. Existing `all` error isolation/fallback stays in effect.
+
+Recovery never changes config or disables a provider. It is scoped to the
+eligible capability pool, or the caller's `--providers` override; an explicit
+singleton such as `--providers firecrawl` has no alternative and fails visibly
+if its account is exhausted. Provider-native `tool call firecrawl.*` requests
+remain explicit and are not translated to another vendor's tool.
+
+Usage log entries and execution-history attempts mark detected exhaustion with
+`quota_exhausted: true`; recovered executions preserve their error map and are
+recorded as `partial`. Detection reads the status code, not the response body.
+`--dry-run` lists the initial selection and conditional
+`quota_fallback_providers`, without calling providers or resolving secrets.
+`estimated_provider_attempts` reports the initial provider selection;
+`max_provider_attempts` also counts every conditional fallback if each
+provider is needed. These fields count provider attempts, not HTTP requests:
+some operations, such as Exa and Firecrawl crawls, make multiple upstream
+requests per attempt.
+
+This is recovery after a rejection, not a preflight balance probe or persistent
+quota gate. A new invocation can select that account again and recover again.
+Existing installations need the updated runtime; their provider pools and key
+configuration can remain in place. The effective config remains explicit
+`--config`, then `~/.config/coldsearch/config.toml`, then the legacy
+`~/.config/usearch/config.toml` if the primary file does not exist.
 
 ## Provider configuration
 
@@ -246,6 +289,21 @@ Maintenance:
 - `coldsearch cache stats` describes replay-cache storage
 - `coldsearch cache clear` deletes replay-cache entries (history is kept)
 
+Both commands touch only cache-owned files: real `.json` files directly inside
+real capability directories (`search/`, `extract/`, `tool/`) under the
+configured `path`. A `path` that is itself a symlink is followed, as chosen.
+A symlink/junction capability directory, or a linked or non-regular entry
+inside one, is never read, counted, deleted, or replaced by a cache write (a
+live or dangling link at an entry path makes that write a silent no-op); it is listed in the additive
+`skipped` field (JSON) and on stderr (human mode), and `removed` counts only
+files actually unlinked. Removal failures stay in `errors`. Entries with
+unreadable JSON or invalid timing metadata (non-finite or out-of-range
+`created_at`, negative or non-finite `ttl_seconds`) still count as stored
+material, are reported in the additive `corrupt_entries` field of `cache
+stats`, are treated as misses on lookup (never replayed), and are removed by
+`cache clear`. Exit codes are unchanged. This is a check-then-use guard; it is
+not isolation against a path being swapped while a command runs.
+
 Crawl results are never replay-cached; crawls are recorded in history only.
 
 ## Execution history
@@ -305,6 +363,10 @@ Behavior:
 - Every item executes through the same backend / tool substrate as the
   standalone command, so routing, cache, and execution-history behavior are
   identical; batch does not create a second history model.
+- Capability records may set a matching `intent` and a `commonOptions` object
+  (`limit`, `includeDomains`, `excludeDomains`, `timeRange`, `includeContent`).
+  These options are validated and passed through the same intent-aware routing
+  and per-provider translation used by standalone execution.
 - The output file is append-only. Reruns resume by stable `id`: existing
   success records are skipped, existing error records are retried only with
   `--retry-errors`.
@@ -323,21 +385,119 @@ Behavior:
 Agent mode (`--agent`) uses an OpenAI-compatible chat completions endpoint.
 The endpoint can be configured in three layers, in precedence order:
 
-1. CLI flags: `--llm` / `--model` / `--llm-base-url`
+1. CLI flags: `--llm` / `--model` / `--llm-base-url` / `--llm-key-ref` / `--reasoning-effort`
 2. TOML `[agent.llm]`
 3. Environment fallback and code defaults
 
+Provider selection keeps endpoint settings isolated. When `--llm` selects a
+provider different from `[agent.llm].provider`, that TOML provider's model,
+base URL, key reference, and reasoning effort are discarded. An omitted TOML
+provider is treated as the default Isoquant provider. Explicit CLI values still
+apply to the selected provider; for example, `--llm openrouter --llm-base-url
+http://localhost:9000/v1 --llm-key-ref env:OPENROUTER_API_KEY` uses that endpoint
+and credential while ignoring Isoquant-specific TOML settings. When the
+provider matches, unset CLI fields continue to inherit field by field from
+TOML.
+
 ```toml
 [agent.llm]
-provider = "openai"
-model = "gpt-4o"
-base_url = "https://api.openai.com/v1"
+provider = "isoquant"
+model = "glm-5.3-flash"
+base_url = "https://api.isoquant.ai/v1"
+reasoning_effort = "medium"
+key_ref = "doppler:ISOQUANT_API_KEY"
 ```
 
 Environment fallbacks: `OPENAI_API_KEY` (and provider-specific keys such as
 `GROQ_API_KEY`). `OPENAI_BASE_URL` overrides the base URL for
-`provider = "openai"` only — the alias providers (groq, openrouter, cerebras,
-xai) always use their own fixed base URLs, and a TOML/CLI `base_url` takes
-precedence over the environment fallback.
+`provider = "openai"`; a TOML/CLI `base_url` can override an alias provider's
+base URL when needed for a compatible gateway.
 
-This is separate from provider key resolution in `config.toml`.
+This is separate from provider key resolution in `config.toml`. Use
+`--llm-key-ref env:NAME` or `--llm-key-ref doppler:NAME` when an invocation
+needs to supply an explicit credential reference.
+
+
+### Isoquant production and free-router testing
+
+Agent mode now defaults to Isoquant `glm-5.3-flash` with `medium` reasoning.
+The client sends `reasoning_effort: "medium"` to Isoquant on every completion,
+including synthesis; `--reasoning-effort` overrides the TOML setting. Isoquant's
+accessible API sample confirms the endpoint/model but does not document effort
+semantics. The paid conformance check verifies an actual request completes;
+confirm effective medium behavior from the provider rather than equating HTTP
+success with proof the setting was honored.
+
+ColdSearch accepts `none`, `low`, `medium`, `high`, and `max` for Isoquant. OpenRouter's
+current [`reasoning.effort` documentation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+lists `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, and `none`. ColdSearch
+passes these values through unchanged; model-specific support can still vary.
+
+`key_ref` accepts `env:NAME` with a shell-compatible variable name, or
+`doppler:NAME`. Doppler references accept its documented [Permissive secret
+names](https://docs.doppler.com/docs/secrets#permissive-naming):
+characters (`A-Z`, `a-z`, digits, `_`, `/`, `:`, `.`, and `-`; up to 200
+characters), subject to Doppler's reserved-name restrictions. This permits
+references such as `doppler:project/isoquant.api-key` without allowing a
+literal credential. `ISOQUANT_API_KEY` is the
+proposed standard name, not a discovered secret in the operator's Doppler.
+Set `key_ref` to the actual name once located. Doppler references first use the
+matching injected environment variable, otherwise the existing Doppler CLI
+resolver. No secret values belong in TOML.
+
+For routine live tests use a separate test config with:
+
+```toml
+[agent.llm]
+provider = "openrouter"
+model = "openrouter/free"
+key_ref = "env:OPENROUTER_API_KEY"
+```
+
+OpenRouter uses `reasoning: { effort: ... }` when effort is explicitly set;
+free-router tests leave effort unset because available free models differ.
+The search/extract/crawl pools remain independent of the synthesis LLM.
+
+Two full, ready-to-copy configurations preserve the standard search/extract/
+crawl pools and differ only in their active agent endpoint:
+
+- [`config.isoquant.example.toml`](../config.isoquant.example.toml) selects Isoquant
+  GLM 5.3 Flash at medium reasoning and references `doppler:ISOQUANT_API_KEY`.
+  That is a proposed secret name; replace it if the existing Doppler secret uses
+  another name.
+- [`config.openrouter-free.example.toml`](../config.openrouter-free.example.toml)
+  selects `openrouter/free` and reads `OPENROUTER_API_KEY` from the environment.
+
+Copy exactly one preset to the normal config path. The Isoquant preset can use a
+Doppler login or a Doppler service token; the OpenRouter preset works with
+`OPENROUTER_API_KEY` directly or injected by Doppler under that same environment
+name:
+
+```sh
+mkdir -p ~/.config/coldsearch
+cp config.isoquant.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+
+# For a test run, replace the config with the separate free-router preset:
+cp config.openrouter-free.example.toml ~/.config/coldsearch/config.toml
+doppler run -- coldsearch --agent "Compare recent browser automation tools"
+```
+
+Do not paste credentials into either TOML file. Use a local environment
+variable, Doppler injection, or a scoped GitHub Actions secret.
+
+The scheduled canary uses OpenRouter free. Manual dispatch can additionally
+select `isoquant_conformance` to test the paid production endpoint. CI may use
+either a scoped GitHub Actions `DOPPLER_TOKEN` secret (Doppler injects API keys),
+or direct Actions secrets `OPENROUTER_API_KEY` and `ISOQUANT_API_KEY`. The
+Doppler token is exposed only to the live smoke step, never dependency
+installation or builds. Both credential options may
+coexist; Doppler values take precedence when injected. These are Actions
+secrets, not GitHub App credentials. Never install real provider secrets into
+pull-request workflows that execute untrusted code.
+
+Update deployed TOML/CLI wrappers that set `xai` or a Grok model to the Isoquant
+production config above; editing this repository alone cannot modify existing
+operator config files. The supported xAI compatibility path now selects the
+documented `grok-4.3` model when explicitly requested; agent mode's default and
+the routine test path use Isoquant and OpenRouter free, respectively.

@@ -41,6 +41,14 @@ Rejected. Still single-provider per query. Weighting adds config complexity with
 
 ## Implementation
 
+**2026-10-02 amendment — account-quota recovery:** Random/single-provider
+capability requests keep their one-provider success path. An account-exhaustion
+rejection enables bounded sequential recovery within the remaining eligible
+pool, with errors/attempts retained. This targeted exception prevents an empty
+provider balance from randomly failing work when another configured provider
+can serve it. It does not change `all` search fanout, remove providers, or add a
+preflight quota-aware selector. See `docs/CONFIGURATION.md` for scope/detection.
+
 - `src/engine/fanout.ts` — parallel dispatch with `Promise.allSettled`
 - `src/execution/backend.ts` — `LocalExecutionBackend.search()` orchestrates fanout
 - Errors captured per-provider in a `Record<string, string>` map

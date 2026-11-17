@@ -21,6 +21,11 @@ appear in the agent-facing interface — callers ask for a capability, not a ven
 | `extract` | retrieve page content from a single URL |
 | `crawl` | gather multi-page site content |
 
+Random/single-provider capability routing recovers from exhausted account
+credits through the remaining eligible pool, with failed attempts preserved.
+Providers stay configured, including Firecrawl; explicit provider-native tools
+retain their vendor identity. See [quota recovery](CONFIGURATION.md#quota-recovery).
+
 ## Category views over provider tools
 
 These capabilities are **category views**, not apples-to-apples provider
@@ -87,6 +92,10 @@ ColdSearch columns = what the adapter actually implements today.
 The legacy provider set was last broadly verified **2026-05-28** against real
 provider APIs via `scripts/smoke.mjs` and ad-hoc probes. `✅⚡` = live-verified
 end-to-end · `✅` = implemented but not yet live-checked · `—` = not applicable.
+Provider surfaces were reviewed against official docs on **2026-10-11**
+(`docs/reviews/2026-10-11-provider-contract-audit.md`). `schemaLastVerified`
+remains per-profile and advances only where that native schema was reconciled;
+doc inspection does not advance live-verification status.
 
 | Provider | search | extract | crawl |
 |----------|:------:|:-------:|:-----:|
@@ -98,6 +107,19 @@ end-to-end · `✅` = implemented but not yet live-checked · `—` = not applic
 | Jina | — | ✅⚡ | — |
 | Serper | ✅ (no key in test env) | — | — |
 | SearXNG | ✅ (needs an endpoint) | — | — |
+
+**2026-10-12 keyless re-probe** (bounded, no credentials; full detail in
+`docs/reviews/2026-10-12-live-probe-ledger.md`): direct Firecrawl API probes
+confirmed its upstream anonymous keyless tier and search/extract response
+envelopes. They do not establish a keyless ColdSearch configuration because
+ColdSearch resolves a configured or built-in key before the adapter request.
+Tavily, Exa, and Serper error envelopes confirmed live (401/402/403). Exa
+keyless now returns HTTP 402 with an x402 payment payload — keyless is no
+longer an anonymous free tier. The probe network could not reach Jina, Brave,
+or Bright Data.
+Brave and Jina retain earlier live evidence where the table marks it; Bright
+Data has no earlier live verification and remains based on implementation
+and documentation inspection only.
 
 Bright Data is intentionally **not** considered live-verified merely because its
 adapter and direct-tool mappers exist. Its first live proof must be an explicit,
@@ -119,8 +141,8 @@ quality, cost, and usage observability justify broader routing.
 | Dataset/scraper discovery + metadata | Provider-native tools | Catalogued; lets agents discover account-available scraper IDs/schemas |
 | Web Scraper synchronous scrape | Provider-native tool | Structured records; never flattened into generic `extract` |
 | Web Scraper async trigger + snapshot results | Provider-native tools | Explicit lifecycle for discovery/batch/longer collection |
-| Crawl API | Provider-native candidate | Do not claim normalized `crawl` until polling/output/spend mapping is proven |
-| Discover API | Provider-native candidate | Keep distinct from ordinary `search` |
+| Crawl API | Provider-native candidate | Triggering is `POST /datasets/v3/trigger` with a crawl `dataset_id` (no separate REST namespace); do not claim normalized `crawl` until polling/output/spend mapping is proven |
+| Discover API | Provider-native candidate | `POST /discover` → `task_id` → poll; keep distinct from ordinary `search` |
 | Browser/proxy and marketplace purchase workflows | High-cost/stateful surfaces | Not part of the initial implementation |
 
 The dated account/adoption assessment remains in
@@ -155,16 +177,22 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅ (a `topic:"news"` variant exists but is not separately exposed)
 - `POST /extract` → **extract** ✅
 - `POST /crawl` → **crawl** ✅
-- `POST /map` (URL discovery) ❌
-- `POST /answer` (one-shot answer + citations) ❌
-- `POST /research` (multi-search report) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`tavily.map`); not a normalized router
+- Answers are the `include_answer` parameter on `POST /search` (bool or `basic`/`advanced`); no standalone `/answer` endpoint exists (verified 2026-10-11) ❌
+- `POST /research` (async multi-search report; `request_id` + GET poll) ❌
 
 ### Firecrawl — `src/adapters/firecrawl.ts` · [docs](https://docs.firecrawl.dev)
 - `POST /search` → **search** ✅
-- `POST /scrape` → **extract** ✅
+- `POST /scrape` → **extract** ✅ — an anonymous keyless tier exists and was
+  verified live 2026-10-12 by direct upstream API probes: both `/search` and
+  `/scrape` succeed without a key (per-IP free credits, `creditsUsed`
+  accounting in the response); the `formats` param is honored keyless
+  (verified with `["html"]`). This is upstream evidence, not end-to-end
+  keyless ColdSearch support: its key pool resolves a configured or built-in
+  Firecrawl key before the adapter makes a request.
 - `POST /crawl` (async job, polled) → **crawl** ✅
-- `POST /map` (URL discovery) ❌
-- `POST /extract` (schema / LLM structured extraction) ❌
+- `POST /map` (URL discovery) 🧰 direct `tool call` (`firecrawl.map`); not a normalized router
+- `POST /extract` (schema / LLM structured extraction) ❌ not the extract router (`scrape` is)
 - `/scrape` actions (interact: click/scroll/type) ❌
 - `POST /agent` (autonomous browser agent) ❌
 - `POST /batch/scrape` (bulk) ❌
@@ -173,36 +201,42 @@ they go stale fast and are intentionally not mirrored here.
 - `POST /search` → **search** ✅
   - **Config-driven options** (set in `config.toml` under `[providers.exa.options]`):
     - `highlights` — token-efficient excerpts (~10x reduction for agents)
-    - `category` — specialized indexes: `company`, `people`, `research paper`, `news`, `personal site`, `financial report`
-    - `searchType` — `auto`, `keyword`, `neural`, `fast`, `instant`, `deep-lite`, `deep`
+    - `category` — specialized indexes: `company`, `people`, `publication` (replaced `research paper`), `news`, `personal site`, `financial report`; `pdf`/`github`/`tweet` deprecated
+    - `searchType` — `auto`, `fast`, `instant`, `deep-lite`, `deep`, `deep-reasoning`
     - `maxAgeHours` — `0` = always livecrawl, `-1` = never livecrawl
     - `includeDomains` / `excludeDomains` — domain filters
     - `numResults` — result count (default: 10)
-    - `useAutoprompt` — query enhancement (default: true)
     - `maxCharacters` — text length cap (default: 15000)
-- `POST /contents` (with livecrawl) → **extract** ✅ and backs synthesized **crawl** ✅
-- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method, not CLI)
+- `POST /contents` → **extract** ✅ and backs synthesized **crawl** ✅ (`livecrawl` is deprecated upstream — `maxAgeHours` + `livecrawlTimeout` are the migration path)
+- `POST /findSimilar` (semantic neighbors — unique to Exa) ✅ (available via adapter method and `search --intent url-similarity`; **deprecated upstream** as of 2026 — still callable)
 - `POST /answer` ❌
-- `POST /research` (async) ❌
+- Keyless access (no `x-api-key`) returns **HTTP 402** with an x402 payment
+  payload — verified live 2026-10-12: pay-per-call in USDC (Base/Solana/
+  WorldChain/Arc, capped at `numResults` 10) or an agent-verified free trial
+  (100 uses). Keyless is **not** an anonymous free tier.
+- `POST /research` — **retired 2026-05-01**; use `/search` with `type: deep-reasoning` (or the Agent API `/agent/runs`) instead
 - `POST /chat/completions` (web-grounded chat) ❌
 
 ### Brave — `src/adapters/brave.ts` · [docs](https://api.search.brave.com/app/documentation/)
-- `GET /res/v1/web/search` → **search** ✅
-- `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` ❌
-- `/suggest` (autocomplete), `/spellcheck` ❌
-- Data-for-AI LLM context (paid) ❌
+- `GET /res/v1/web/search` → **search** ✅ (rate-limit headers `X-RateLimit-*` on every response)
+- `/res/v1/news/search`, `/res/v1/images/search`, `/res/v1/videos/search` are catalogued as deferred candidates; their direct-call schemas are not verified.
+- `/suggest` (autocomplete), `/spellcheck` ❌ (separate prepaid add-on plans)
+- LLM Context `GET/POST /res/v1/llm/context` — direct `brave.llmContext` profile; route recorded in the 2026-10-11 provider-contract audit.
+- Answers `POST /res/v1/chat/completions` (OpenAI-compatible, models `brave-pro`/`brave`) — separate Answers plan; catalogued as `brave.answers`, not wired to normalized routing ❌
 
-### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev/docs)
-- `POST /search` (Google web) → **search** ✅
-- `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews` ❌ — **10 Google verticals unused**
+### Serper — `src/adapters/serper.ts` · [docs](https://serper.dev) (`serper.dev/docs` now 404s — docs live on the homepage demo + login-gated playground)
+- `POST /search` (Google web) → **search** ✅ (also accepts a `location` parameter)
+- Candidate verticals `/images`, `/news`, `/videos`, `/shopping`, `/maps`, `/places`, `/scholar`, `/patents`, `/autocomplete`, `/reviews`, and `/lens`, plus `scrape.serper.dev` `/webpage` and `/shots` and `api.serper.dev/locations`, are catalogued as **deferred**. Unauthenticated 403 responses do not confirm route existence or parameter schemas; verify with authoritative documentation or authenticated requests before implementation.
 
 ### Jina — `src/adapters/jina.ts` · [docs](https://jina.ai)
-- `r.jina.ai` Reader → **extract** ✅ (keyless)
-- `s.jina.ai` search ❌
-- deep-search, `/v1/embeddings`, `/v1/rerank`, summarize ❌
+- `r.jina.ai` Reader → **extract** ✅ (keyless: 20 RPM no key / 500 RPM free key; rich `X-*` header surface — see registry profile)
+- `s.jina.ai` search is catalogued as a deferred candidate; its schema and direct dispatch are not verified.
+- `/v1/embeddings` (v5) and `/v1/rerank` (v3.5) remain callable as direct JSON pass-throughs; ColdSearch preserves provider-native responses but does not validate their request schemas or normalize results
+- Prior unauthenticated probes to Reader and `s.jina.ai` returned `401 AuthenticationRequiredError`; no `JINA_API_KEY` is in the credential set. DeepSearch (`deepsearch.jina.ai`) remains deferred; no standalone `summarize` endpoint exists.
+- The 20 RPM keyless claim is doc-inspected 2026-10-12; live re-probe was blocked by network egress, not by Jina.
 
 ### SearXNG — `src/adapters/searxng.ts` · [docs](https://docs.searxng.org)
-- `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`)
+- `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
 - category variants (news / images / …) ❌
 
 ## Unexposed surface worth considering
@@ -210,10 +244,10 @@ they go stale fast and are intentionally not mirrored here.
 These are design choices, not bugs — the adapters expose the common denominator and
 skip vendor specialties. Highest-leverage gaps:
 
-- **Serper** — 10 Google verticals (news, scholar, images, shopping, maps, patents…); only plain web is wired.
-- **Jina** — `embeddings` + `rerank` could back ColdSearch's own reranking step; plus a free `search`.
-- **Tavily `answer`/`research`** and **Exa `answer`/`research`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`).
-- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`).
+- **Serper** — candidate verticals are catalogued as deferred until routes and schemas are validated with authoritative or authenticated evidence.
+- **Jina** — `embeddings` (v5) and `rerank` (v3.5) are callable as direct JSON pass-throughs without request-schema validation or normalized output; search and DeepSearch remain deferred pending reconciliation.
+- **Tavily `answer`/`research`** and **Exa `answer`** — one-call research that overlaps the hand-rolled ReAct agent (`docs/ADRs/003-react-agent.md`); Exa's standalone `/research` was retired 2026-05-01 (deep modes live on `/search`).
+- **Firecrawl** `map`, schema `extract`, and `batch` — directly useful for the planned batch mode (`plans/2026-06-22-pr3-batch-runner.md`); newer `/interact`, `/parse`, and `/monitor` surfaces are catalogued in the 2026-10-11 audit.
 - **Bright Data** Crawl/Discover/Browser/Marketplace expansion should be driven by concrete workflows and spend controls, not by surface-area completion.
 
 ## Adding a provider
@@ -223,3 +257,14 @@ See `docs/contributing/adding-a-provider.md`. In short: implement the
 per tool, add a row to the **Dual Matrix** above, and add tests. `npm run test:docs`
 enforces that the Dual Matrix stays in sync with the registry and adapter method
 surfaces.
+
+## Agent synthesis LLMs
+
+These endpoints power `--agent`; they are separate from the search provider matrix.
+The default is Isoquant `glm-5.3-flash`, `reasoning_effort = "medium"`, with
+`doppler:ISOQUANT_API_KEY` (rename the reference to match the actual secret).
+OpenRouter defaults to `openrouter/free` and powers the routine live LLM canary.
+OpenAI, Groq, Cerebras and explicit xAI overrides remain available. Explicit
+`--llm xai` currently defaults to `grok-4.3`; it is never selected by the agent
+or canary defaults.
+See `docs/CONFIGURATION.md` for secret injection and migration details.

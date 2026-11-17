@@ -23,7 +23,7 @@ The intended product shape is:
 - **Raw detail plus auditability.** Normalized outputs are conveniences, not permission to discard provider detail. Networked work must leave safe, useful traces.
 - **Fail-visible operation.** Errors should distinguish configuration, credentials, reachability, quota, unsupported capabilities, and provider failures.
 
-ColdSearch is not a pile of disconnected wrappers, a lossy lowest-common-denominator API, or a reason to call Anthropic APIs. The North Star remains the authority for these boundaries.
+ColdSearch is not a pile of disconnected wrappers, a lossy lowest-common-denominator API, or a reason to pay per token for Anthropic. The North Star remains the authority for these boundaries.
 
 ## Current Project State
 

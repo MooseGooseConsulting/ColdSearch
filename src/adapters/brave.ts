@@ -21,6 +21,14 @@ interface BraveSearchResponse {
   };
 }
 
+const BRAVE_SAFESEARCH_VALUES: readonly string[] = ["off", "moderate", "strict"];
+
+/** Clamp a configured integer option into [min, max], defaulting when absent/invalid. */
+function clampIntegerOption(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 /**
  * Brave Search adapter.
  * Uses Brave's Web Search API directly.
@@ -33,12 +41,24 @@ export class BraveAdapter implements SearchAdapter {
   async search(
     query: string,
     apiKey: string,
-    _options?: AdapterCallOptions
+    options?: AdapterCallOptions
   ): Promise<NormalizedResult[]> {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
+    const count = typeof options?.limit === "number" && Number.isFinite(options.limit)
+      ? Math.min(20, Math.max(1, Math.floor(options.limit)))
+      : clampIntegerOption(options?.providerOptions?.count, 1, 20, 10);
     url.searchParams.set("q", query);
-    url.searchParams.set("count", "10");
+    // Brave caps `count` at 20 results per request.
+    url.searchParams.set("count", String(count));
     url.searchParams.set("offset", "0");
+
+    const safesearch = options?.providerOptions?.safesearch;
+    if (
+      typeof safesearch === "string" &&
+      BRAVE_SAFESEARCH_VALUES.includes(safesearch)
+    ) {
+      url.searchParams.set("safesearch", safesearch);
+    }
 
     const data = await fetchJson<BraveSearchResponse>(url.toString(), {
       headers: {
@@ -48,6 +68,7 @@ export class BraveAdapter implements SearchAdapter {
       },
     }, {
       label: "Brave search",
+      secrets: apiKey ? [apiKey] : [],
     });
 
     // Normalize Brave results to shared schema
@@ -55,8 +76,9 @@ export class BraveAdapter implements SearchAdapter {
       title: result.title || "",
       url: result.url || "",
       snippet: result.description || "",
-      // Brave scores are 0-1 when available, otherwise fall back to position-based
-      score: result.relevance_score ?? (1 - index * 0.1),
+      // Brave scores are 0-1 when available, otherwise fall back to
+      // position-based with a 0.1 floor so deep ranks never go negative.
+      score: result.relevance_score ?? Math.max(0.1, 1 - index * 0.1),
       source: this.name,
     }));
   }
