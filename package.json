@@ -27,13 +27,13 @@
   "author": "Patrick MacLyman",
   "license": "MIT",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.13.1"
   },
   "dependencies": {
     "smol-toml": "^1.9.0"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
-    "typescript": "^5.9.3"
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }
