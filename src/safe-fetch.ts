@@ -56,27 +56,43 @@ function isIPv4InCidr(ip: string, network: string, prefixBits: number): boolean 
   return (ipValue & mask) === (networkValue & mask);
 }
 
-function extractIPv4FromMapped(address: string): string | null {
-  const normalized = address.toLowerCase();
+/**
+ * The eight 16-bit groups of an IPv6 address in any of its written forms
+ * ("::" shorthand, a dotted IPv4 tail, a zone suffix), or null when the text
+ * is not one. Ranges are then compared as numbers, so a reserved address
+ * cannot slip past by being written another way.
+ */
+function ipv6Groups(address: string): number[] | null {
+  let text = address.split("%")[0].toLowerCase();
+  const tail = text.slice(text.lastIndexOf(":") + 1);
+  if (tail.includes(".")) {
+    const octets = tail.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+    const hex = (hi: number, lo: number): string => ((hi << 8) | lo).toString(16);
+    text = `${text.slice(0, text.length - tail.length)}${hex(octets[0], octets[1])}:${hex(octets[2], octets[3])}`;
+  }
 
-  // Dotted form: ::ffff:127.0.0.1
-  const dotted = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (dotted) return dotted[1];
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - rest.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
 
-  // Hex form: ::ffff:7f00:1 (127.0.0.1)
-  if (!normalized.startsWith("::ffff:")) return null;
-  const suffix = normalized.slice("::ffff:".length);
-  const parts = suffix.split(":");
-  if (parts.length !== 2) return null;
-
-  const hi = Number.parseInt(parts[0], 16);
-  const lo = Number.parseInt(parts[1], 16);
-  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
-
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  const groups = [...head, ...Array<string>(missing).fill("0"), ...rest].map((group) =>
+    /^[0-9a-f]{1,4}$/.test(group) ? Number.parseInt(group, 16) : Number.NaN
+  );
+  return groups.some(Number.isNaN) ? null : groups;
 }
 
-/** True for loopback, private, link-local and unspecified addresses (the ranges in ADR 004). */
+const ipv4FromGroups = (hi: number, lo: number): string => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+
+/**
+ * True for an address that is not on the public internet: loopback, private,
+ * carrier-grade NAT, link-local and unspecified addresses, and an IPv6
+ * address that carries one of those IPv4 addresses inside it (the ranges in
+ * ADR 004).
+ */
 export function isBlockedIpAddress(address: string): boolean {
   const version = isIP(address);
 
@@ -88,6 +104,10 @@ export function isBlockedIpAddress(address: string): boolean {
       ["192.168.0.0", 16],
       ["169.254.0.0", 16],
       ["0.0.0.0", 8],
+      // Shared address space (RFC 6598): carrier-grade NAT, and the range
+      // overlay networks such as Tailscale hand out, so on a machine in one
+      // it is the internal network.
+      ["100.64.0.0", 10],
     ];
 
     return blockedCidrs.some(([network, prefixBits]) =>
@@ -96,23 +116,25 @@ export function isBlockedIpAddress(address: string): boolean {
   }
 
   if (version === 6) {
-    // Check for IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1)
-    const mappedV4 = extractIPv4FromMapped(address);
-    if (mappedV4 && isBlockedIpAddress(mappedV4)) {
-      return true;
-    }
+    const groups = ipv6Groups(address);
+    // Node accepted it and this parser did not: refuse rather than guess.
+    if (!groups) return true;
+    const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+    const leadingZeros = (count: number): boolean => groups.slice(0, count).every((group) => group === 0);
 
-    const normalized = address.toLowerCase();
-    return (
-      normalized === "::1" ||
-      normalized === "::" ||
-      normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      normalized.startsWith("fe8") ||
-      normalized.startsWith("fe9") ||
-      normalized.startsWith("fea") ||
-      normalized.startsWith("feb")
-    );
+    // :: (unspecified), ::1 (loopback) and the retired IPv4-compatible ::a.b.c.d.
+    if (leadingZeros(6)) return true;
+    // IPv4-mapped, ::ffff:a.b.c.d in any spelling: judged as the IPv4 address it is.
+    if (leadingZeros(5) && g5 === 0xffff) return isBlockedIpAddress(ipv4FromGroups(g6, g7));
+    // NAT64 (RFC 6052), 64:ff9b::/96: a gateway on the network forwards it to
+    // the IPv4 address in the last 32 bits, so that address decides.
+    if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+      return isBlockedIpAddress(ipv4FromGroups(g6, g7));
+    }
+    // Local-use NAT64 (RFC 8215), 64:ff9b:1::/48: internal by definition.
+    if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true;
+    // Unique local fc00::/7, link-local fe80::/10.
+    return (g0 & 0xfe00) === 0xfc00 || (g0 & 0xffc0) === 0xfe80;
   }
 
   return false;
@@ -211,6 +233,8 @@ export interface PinnedRequestOptions {
   inspect?: (status: number, headers: IncomingHttpHeaders) => void | false;
   /** Starts limit and timeout messages, e.g. "Agent fetch". */
   label: string;
+  /** Drops the request when it fires, whether or not an answer has started; the promise then rejects. */
+  signal?: AbortSignal;
 }
 
 export interface PinnedResponse {
@@ -246,6 +270,7 @@ export function requestValidated(target: ValidatedFetchTarget, options: PinnedRe
         path: `${target.url.pathname}${target.url.search}`,
         headers: options.headers,
         servername: target.url.hostname,
+        signal: options.signal,
         // Pin the connection to the validated address. Node asks for a list
         // (`all`) when it may try several addresses, and a single one otherwise.
         lookup: (_hostname, lookupOptions, callback) => {

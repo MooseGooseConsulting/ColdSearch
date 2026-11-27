@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { FALLBACK_URL_PLACEHOLDER, type NativeConfig } from "../config.js";
 import type { CallContext, GatewayCore } from "../core.js";
+import { pageUrl } from "./urls.js";
 
 /** A page read through the configured paid tool, or why that did not work. */
 export type PaidRead = { ok: true; markdown: string; title?: string; tool: string } | { ok: false; error: string };
@@ -69,4 +70,39 @@ export async function readThroughFallback(
     return { ok: false, error: `${tool} returned no page content: ${text.slice(0, 500)}` };
   }
   return { ok: true, markdown, title: findString(parsed, ["title"]), tool };
+}
+
+/**
+ * The targets of the inline links (`[words](target)`) in markdown a paid tool
+ * returned, as absolute http(s) URLs without fragments, once each, in order.
+ * A crawl follows these from a page it had to buy, as it follows the <a>
+ * elements of a page it read itself. Image targets come back too; the crawl
+ * drops those that end like a file. Reference-style links and bare URLs are
+ * not read.
+ */
+export function markdownLinks(markdown: string, base: string): string[] {
+  const links: string[] = [];
+  const seen = new Set<string>();
+  let at = markdown.indexOf("](");
+  while (at !== -1) {
+    // The target runs to its closing bracket, a space (a title follows) or the end of the line.
+    let end = at + 2;
+    let open = 0;
+    for (; end < markdown.length; end++) {
+      const char = markdown[end];
+      if (char === " " || char === "\n" || char === "\t" || char === "\r") break;
+      if (char === "(") open++;
+      else if (char === ")" && open-- === 0) break;
+    }
+    let target = markdown.slice(at + 2, end);
+    if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1);
+    const url = target ? pageUrl(target, base) : undefined;
+    if (url && !seen.has(url.href)) {
+      seen.add(url.href);
+      links.push(url.href);
+    }
+    // Search on from where this target ended, so no character is read twice.
+    at = markdown.indexOf("](", end);
+  }
+  return links;
 }

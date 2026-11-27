@@ -30,10 +30,11 @@ export interface DirectRead {
 /**
  * Fetch one URL and judge the answer. Returns a `problem` for anything short
  * of a readable page; throws only when no HTTP answer was obtained (the SSRF
- * guard refused the URL, DNS failed, the connection failed or timed out).
+ * guard refused the URL, DNS failed, the connection failed or timed out, or
+ * `signal` fired).
  */
-export async function readPage(net: NativeNet, url: string): Promise<DirectRead> {
-  const fetched = await fetchUrl(net, url);
+export async function readPage(net: NativeNet, url: string, signal?: AbortSignal): Promise<DirectRead> {
+  const fetched = await fetchUrl(net, url, { signal });
   const read: DirectRead = {
     finalUrl: fetched.finalUrl,
     status: fetched.status,

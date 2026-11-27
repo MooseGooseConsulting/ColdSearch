@@ -50,6 +50,13 @@ const BLOCK = new Set([
 const APP_ROOT_IDS = new Set(["root", "__next", "app", "__nuxt"]);
 /** Nesting past this is flattened to text instead of recursed into. */
 const MAX_DEPTH = 256;
+/**
+ * Lists and block quotes nested deeper than this are read as plain blocks,
+ * without a further marker or indent. Each level rewrites every line inside
+ * it, so the cap bounds the work and the output a page of nothing but nested
+ * quotes can ask for.
+ */
+const MAX_NEST = 16;
 
 function attr(element: Element, name: string): string | undefined {
   return element.attrs.find((entry) => entry.name === name)?.value;
@@ -91,15 +98,26 @@ function rawText(root: ParentNode, skip?: (element: Element) => boolean): string
 
 const collapse = (text: string): string => text.replace(/\s+/g, " ").trim();
 
+/*
+ * The patterns in this file run on text the page chose, on the gateway's one
+ * thread. Each is written so that a failed attempt cannot be retried from the
+ * next character over the same run: a run is consumed whole by one match, or
+ * the pattern is anchored. Where that could not be done with a pattern, the
+ * string methods (trim, indexOf) are used instead.
+ */
+
 /** Tidy an assembled run of inline text: no spaces around line breaks, no runs of spaces. */
 function tidyInline(run: string): string {
-  return run.replace(/[ \t]*\n[ \t]*/g, "\n").replace(/[ \t]{2,}/g, " ").replace(/\n{2,}/g, "\n").trim();
+  // Runs of spaces first, so that at most one space is left on each side of a line break.
+  return run.replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{2,}/g, "\n").trim();
 }
 
 /** Put markers around the non-blank core of `inner`, keeping its outer spaces outside them. */
 function wrap(inner: string, around: (core: string) => string): string {
-  const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(inner)!;
-  return match[2] ? `${match[1]}${around(match[2])}${match[3]}` : inner;
+  const core = inner.trim();
+  if (!core) return inner;
+  const lead = inner.length - inner.trimStart().length;
+  return `${inner.slice(0, lead)}${around(core)}${inner.slice(lead + core.length)}`;
 }
 
 function fence(code: string, language: string): string {
@@ -110,6 +128,8 @@ function fence(code: string, language: string): string {
 
 class Renderer {
   private depth = 0;
+  /** How many lists and block quotes enclose the element being rendered. */
+  private nest = 0;
 
   constructor(
     private readonly base: URL,
@@ -236,7 +256,7 @@ class Renderer {
     }
     switch (tag) {
       case "pre": {
-        const code = rawText(element).replace(/^\n/, "").replace(/\s+$/, "");
+        const code = rawText(element).replace(/^\n/, "").trimEnd();
         if (!code.trim()) return [];
         if (this.plain) return [code];
         const classes = [element, ...descendants(element)].map((node) => attr(node, "class") ?? "").join(" ");
@@ -245,10 +265,18 @@ class Renderer {
       }
       case "ul":
       case "menu":
-      case "ol":
-        return this.list(element, tag === "ol");
+      case "ol": {
+        if (this.nest >= MAX_NEST) return this.blocks(element);
+        this.nest++;
+        const list = this.list(element, tag === "ol");
+        this.nest--;
+        return list;
+      }
       case "blockquote": {
+        if (this.nest >= MAX_NEST) return this.blocks(element);
+        this.nest++;
         const inner = this.blocks(element).join("\n\n");
+        this.nest--;
         if (!inner) return [];
         return [this.plain ? inner : inner.split("\n").map((line) => (line ? `> ${line}` : ">")).join("\n")];
       }
@@ -289,6 +317,10 @@ class Renderer {
 
   private table(element: Element): string[] {
     const isNested = (node: Element) => node.tagName === "table";
+    // Tables inside tables are page layout: read the cells as ordinary content.
+    // Checked before any cell is rendered, so nested layout tables are each rendered once.
+    for (const node of descendants(element)) if (isNested(node)) return this.blocks(element);
+
     const rows = [...descendants(element, isNested)].filter((node) => node.tagName === "tr");
     const grid = rows.map((row) => {
       const cells: string[] = [];
@@ -302,9 +334,8 @@ class Renderer {
       return cells;
     }).filter((cells) => cells.length > 0);
     const width = Math.max(0, ...grid.map((cells) => cells.length));
-    const hasNestedTable = [...descendants(element)].some(isNested);
-    // One column, or tables inside tables, is page layout: read the cells as ordinary content.
-    if (width < 2 || hasNestedTable) return this.blocks(element);
+    // One column is page layout too.
+    if (width < 2) return this.blocks(element);
 
     const caption = element.childNodes.find((node): node is Element => isElement(node) && node.tagName === "caption");
     const lead = caption ? this.blocks(caption) : [];
@@ -365,7 +396,7 @@ export function readHtml(html: string, pageUrl: string): HtmlPage {
       if (/javascript/i.test(rawText(element))) noscriptAsksForJavascript = true;
     } else if (element.tagName === "meta" && attr(element, "property") === "og:title") {
       ogTitle ||= collapse(attr(element, "content") ?? "");
-    } else if (APP_ROOT_IDS.has(attr(element, "id") ?? "") && !collapse(rawText(element)) && !element.childNodes.some(isElement)) {
+    } else if (APP_ROOT_IDS.has(attr(element, "id") ?? "") && !element.childNodes.some(isElement) && !collapse(rawText(element))) {
       emptyAppRoot = true;
     }
   }

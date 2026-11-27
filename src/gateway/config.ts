@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG_DIR_NAME } from "../app.js";
+import { globMatch } from "./glob.js";
 
 /** How the gateway presents upstream tools to the connecting agent. */
 export type GatewayMode = "all" | "lazy";
@@ -39,7 +40,7 @@ export interface NativeConfig {
   enabled: boolean;
   /** Gateway tool name (`<upstream>__<tool>`) that reads a page the gateway could not; undefined means no paid fallback. */
   fallback?: string;
-  /** Arguments for the fallback tool. Every string "{url}" in it is replaced with the page's URL. */
+  /** Arguments for the fallback tool. Every "{url}" in a string of it, alone or inside longer text, is replaced with the page's URL. */
   fallbackArguments: Record<string, unknown>;
   /** Pause between the end of one request to a host and the start of the next. */
   delayMs: number;
@@ -161,8 +162,7 @@ function patternList(value: unknown, field: string): string[] {
 
 /** True when `tool` matches a pattern; `*` matches any run of characters. */
 export function matchesPattern(tool: string, pattern: string): boolean {
-  const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
-  return new RegExp(`^${source}$`).test(tool);
+  return globMatch(tool, pattern);
 }
 
 /** Whether an upstream's include/exclude lists let this tool through. */
@@ -175,7 +175,7 @@ export function toolAllowed(upstream: Pick<UpstreamConfig, "include" | "exclude"
 export const FALLBACK_URL_PLACEHOLDER = "{url}";
 
 function containsPlaceholder(value: unknown): boolean {
-  if (value === FALLBACK_URL_PLACEHOLDER) return true;
+  if (typeof value === "string") return value.includes(FALLBACK_URL_PLACEHOLDER);
   if (Array.isArray(value)) return value.some(containsPlaceholder);
   if (value && typeof value === "object") return Object.values(value).some(containsPlaceholder);
   return false;

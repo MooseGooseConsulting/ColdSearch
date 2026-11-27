@@ -31,7 +31,7 @@ export const runFetch: NativeHandler = async (runtime, args, context) => {
   const maxChars = intArg(args, "max_chars", { min: 1, max: 5_000_000, fallback: DEFAULT_MAX_CHARS });
   const allowPaid = boolArg(args, "allow_paid_fallback");
 
-  const read = await readPage(runtime.net, url);
+  const read = await readPage(runtime.net, url, context.signal);
   const base = {
     url,
     ...(read.finalUrl !== url ? { final_url: read.finalUrl } : {}),

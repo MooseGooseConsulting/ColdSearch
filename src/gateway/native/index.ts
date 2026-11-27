@@ -4,6 +4,7 @@ import type { CallContext, GatewayCore } from "../core.js";
 import type { LedgerEntry } from "../ledger.js";
 import type { SafeFetchHooks } from "../../safe-fetch.js";
 import { ArgumentError } from "./args.js";
+import { CANCELLED } from "./cancel.js";
 import { CRAWL_TOOL, crawlTool, runCrawl } from "./crawl.js";
 import { FETCH_TOOL, fetchTool, runFetch } from "./fetch.js";
 import { MAP_TOOL, mapTool, runMap } from "./map.js";
@@ -58,7 +59,16 @@ export class NativeTools {
     return Object.hasOwn(HANDLERS, name);
   }
 
-  /** Run one native tool. Never throws: a failure is an error result, and is in the ledger either way. */
+  /**
+   * Run one native tool. Never throws: a failure is an error result, and is in
+   * the ledger either way. A call the agent cancelled ends at its next step
+   * and is recorded as `cancelled by the client`.
+   *
+   * A paid-fallback page and a paid-fallback error are text an upstream
+   * returned, and an upstream can repeat the key it was sent. So the ledger
+   * line and the payload file are redacted with every key value the gateway
+   * knows, exactly as an upstream call's are.
+   */
   async call(name: string, args: Record<string, unknown>, context: CallContext): Promise<CallToolResult> {
     if (!this.has(name)) {
       return { content: [{ type: "text", text: `No native tool named "${name}". Available: ${Object.keys(HANDLERS).join(", ")}.` }], isError: true };
@@ -75,30 +85,39 @@ export class NativeTools {
       attempt: 1,
       ok: false,
       duration_ms: 0,
-      args: ledger.formatArgs(args, []),
+      // Filled in below, once any key the call used is known.
+      args: undefined,
     };
 
     let result: CallToolResult;
+    let error: string | undefined;
     try {
       const outcome = await HANDLERS[name].run(this.runtime, args, context);
       result = outcome.result;
       entry.ok = outcome.ok;
       entry.pages = outcome.pages;
-      if (!outcome.ok) {
-        entry.error_class = "gateway";
-        entry.error = ledger.formatError(outcome.error ?? "failed", []);
-      }
-    } catch (error) {
-      const message = (error as Error).message ?? String(error);
-      const text = error instanceof ArgumentError ? `${name}: ${message}` : `${name} could not fetch: ${message}`;
+      if (!outcome.ok) error = outcome.error ?? "failed";
+    } catch (thrown) {
+      const cancelled = context.signal?.aborted === true;
+      error = cancelled ? CANCELLED : ((thrown as Error).message ?? String(thrown));
+      const text = cancelled || thrown instanceof ArgumentError ? `${name}: ${error}` : `${name} could not fetch: ${error}`;
       result = { content: [{ type: "text", text }], isError: true };
-      entry.error_class = "gateway";
-      entry.error = ledger.formatError(message, []);
+    }
+    // A crawl cut short still returns the pages it read; nobody is waiting for them, and the line says so.
+    if (context.signal?.aborted) {
+      entry.ok = false;
+      error = CANCELLED;
     }
 
+    const secrets = this.core.knownSecrets();
+    entry.args = ledger.formatArgs(args, secrets);
+    if (error !== undefined) {
+      entry.error_class = "gateway";
+      entry.error = ledger.formatError(error, secrets);
+    }
     entry.duration_ms = this.now() - started;
     entry.result_bytes = JSON.stringify(result).length;
-    entry.payload = ledger.writePayload(entry, { name, arguments: args }, result, []);
+    entry.payload = ledger.writePayload(entry, { name, arguments: args }, result, secrets);
     ledger.append(entry);
     return result;
   }

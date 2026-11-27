@@ -1,5 +1,6 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { boolArg, intArg, urlArg } from "./args.js";
+import { throwIfCancelled } from "./cancel.js";
 import { decodeBody, fetchUrl } from "./http.js";
 import { readPage } from "./read.js";
 import { jsonResult, type NativeHandler } from "./runtime.js";
@@ -29,7 +30,8 @@ export const mapTool: Tool = {
   annotations: { readOnlyHint: true, openWorldHint: true },
 };
 
-export const runMap: NativeHandler = async (runtime, args) => {
+export const runMap: NativeHandler = async (runtime, args, context) => {
+  const { signal } = context;
   const site = urlArg(args, "url");
   const limit = intArg(args, "limit", { min: 1, max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
   const includeSubdomains = boolArg(args, "include_subdomains");
@@ -44,11 +46,12 @@ export const runMap: NativeHandler = async (runtime, args) => {
     else urls.add(url.href);
   };
 
-  const robots = await runtime.robots(site.origin);
+  const robots = await runtime.robots(site.origin, signal);
   const queue = robots.rules.sitemaps.length > 0 ? [...robots.rules.sitemaps] : [`${site.origin}/sitemap.xml`];
   const read: string[] = [];
   const visited = new Set<string>();
   while (queue.length > 0 && !truncated) {
+    throwIfCancelled(signal);
     const location = pageUrl(queue.shift()!, site)?.href;
     if (!location || visited.has(location)) continue;
     if (visited.size >= MAX_SITEMAP_FILES) {
@@ -58,7 +61,7 @@ export const runMap: NativeHandler = async (runtime, args) => {
     }
     visited.add(location);
     try {
-      const fetched = await fetchUrl(runtime.net, location, { maxBytes: SITEMAP_MAX_BYTES, wantBody: () => true });
+      const fetched = await fetchUrl(runtime.net, location, { maxBytes: SITEMAP_MAX_BYTES, wantBody: () => true, signal });
       if (fetched.status < 200 || fetched.status >= 300) {
         // A site with no sitemap answers 404 here; that is the ordinary case, not a note.
         if (fetched.status !== 404) notes.push(`${location}: HTTP ${fetched.status}`);
@@ -77,7 +80,8 @@ export const runMap: NativeHandler = async (runtime, args) => {
   let source: "sitemap" | "links" = "sitemap";
   if (urls.size === 0) {
     source = "links";
-    const page = await readPage(runtime.net, site.href);
+    throwIfCancelled(signal);
+    const page = await readPage(runtime.net, site.href, signal);
     if (page.problem) {
       const { reason, detail } = page.problem;
       return {

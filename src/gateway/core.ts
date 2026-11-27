@@ -39,6 +39,12 @@ export interface GatewayTool {
 export interface CallContext {
   session: string;
   client?: string;
+  /**
+   * Fires when the agent cancels the call or its connection closes. The
+   * gateway's own tools stop at their next step; a call already forwarded to
+   * an upstream is not recalled.
+   */
+  signal?: AbortSignal;
 }
 
 type KeyFault = "quota" | "auth";
@@ -169,6 +175,16 @@ export class GatewayCore {
     this.now = options.now ?? Date.now;
     this.keyStates = this.loadState();
     if (config.native.enabled) this.native = new NativeTools(this, config.native, this.now, options.native);
+  }
+
+  /**
+   * Every key value resolved so far, for redaction only. Text an upstream
+   * returned can repeat the key it was sent, so anything built from such text
+   * is passed through `redact` with these before it reaches the ledger or a
+   * payload file.
+   */
+  knownSecrets(): ReadonlySet<string> {
+    return this.secrets;
   }
 
   // --- key state -----------------------------------------------------------

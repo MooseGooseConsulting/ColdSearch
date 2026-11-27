@@ -1,7 +1,8 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { validateFetchUrl } from "../../safe-fetch.js";
 import { boolArg, intArg, patternsArg, urlArg } from "./args.js";
-import { readThroughFallback } from "./fallback.js";
+import { throwIfCancelled } from "./cancel.js";
+import { markdownLinks, readThroughFallback } from "./fallback.js";
 import { clip, readPage, type DirectRead } from "./read.js";
 import { jsonResult, type NativeHandler } from "./runtime.js";
 import { looksLikePage, pageUrl, pathAllowed, sameSite } from "./urls.js";
@@ -18,7 +19,7 @@ const BLOCKED_IN_A_ROW = 3;
 export const crawlTool: Tool = {
   name: CRAWL_TOOL,
   description:
-    `Read many pages of one site, following same-site links breadth-first from a start URL, and return each as markdown. The gateway fetches the pages itself, so they cost no provider credit: use this before any provider crawl tool. It obeys the site's robots.txt, makes one request at a time with a pause between them (about a second a page, all inside this one call), does not run JavaScript, and cannot get past bot protection. Pages it cannot read are listed under skipped with the reason; with allow_paid_fallback: true, pages that need JavaScript or are blocked go through the operator's configured paid tool, up to a per-crawl cap. It stops early with stopped: "site_protected" after ${BLOCKED_IN_A_ROW} refusals in a row. To pick pages yourself, call coldsearch_map and then coldsearch_fetch. Returns JSON: pages [{url, title, markdown, source "direct" or "paid"}], skipped [{url, reason}], stats.`,
+    `Read many pages of one site, following same-site links breadth-first from a start URL, and return each as markdown. The gateway fetches the pages itself, so they cost no provider credit: use this before any provider crawl tool. It obeys the site's robots.txt, makes one request at a time with a pause between them (about a second a page, all inside this one call), does not run JavaScript, and cannot get past bot protection. Pages it cannot read are listed under skipped with the reason; with allow_paid_fallback: true, pages that need JavaScript or are blocked go through the operator's configured paid tool, up to a per-crawl cap, and the crawl goes on through the links in what that tool returns. It stops early with stopped: "site_protected" after ${BLOCKED_IN_A_ROW} refusals in a row. To pick pages yourself, call coldsearch_map and then coldsearch_fetch. Returns JSON: pages [{url, title, markdown, source "direct" or "paid"}], skipped [{url, reason}], stats.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -52,6 +53,7 @@ interface Skipped {
 const REFUSALS = new Set(["http_401", "http_403", "http_429", "challenge_page"]);
 
 export const runCrawl: NativeHandler = async (runtime, args, context) => {
+  const { signal } = context;
   const start = urlArg(args, "url");
   const limit = intArg(args, "limit", { min: 1, max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
   const maxDepth = intArg(args, "max_depth", { min: 0, max: MAX_DEPTH, fallback: DEFAULT_DEPTH });
@@ -75,85 +77,17 @@ export const runCrawl: NativeHandler = async (runtime, args, context) => {
   let filtered = 0;
   let deepest = 0;
   let refusalsInARow = 0;
-  let stopped: "done" | "limit" | "site_protected" = "done";
+  let stopped: "done" | "limit" | "site_protected" | "cancelled" = "done";
 
   const keep = (url: string, title: string, markdown: string, source: CrawledPage["source"]): void => {
     const cut = clip(markdown, pageChars);
     pages.push({ url, title, markdown: cut.text, source, ...(cut.truncated ? { truncated: true as const } : {}) });
   };
 
-  for (let next = 0; next < queue.length; next++) {
-    if (requested >= limit) {
-      stopped = "limit";
-      break;
-    }
-    if (refusalsInARow >= BLOCKED_IN_A_ROW) {
-      stopped = "site_protected";
-      break;
-    }
-    const { url, depth } = queue[next];
-
-    const robots = await runtime.robots(url.origin);
-    if (!robots.rules.allowed(url)) {
-      skipped.push({ url: url.href, reason: robots.state === "unreachable" ? "robots_unreachable" : "robots_disallowed" });
-      continue;
-    }
-
-    requested++;
-    let read: DirectRead;
-    try {
-      read = await readPage(runtime.net, url.href);
-    } catch (error) {
-      skipped.push({ url: url.href, reason: "fetch_failed", detail: (error as Error).message });
-      continue;
-    }
-
-    const landed = pageUrl(read.finalUrl)!;
-    if (next === 0) site = landed;
-    if (landed.href !== url.href) {
-      if (!sameSite(landed, site)) {
-        skipped.push({ url: url.href, reason: "redirected_off_site", detail: landed.href });
-        continue;
-      }
-      // Two links that redirect to one page are one page.
-      if (seen.has(landed.href)) continue;
-      seen.add(landed.href);
-      // The rules that count are those of the place the redirect led to.
-      if (!(await runtime.robots(landed.origin)).rules.allowed(landed)) {
-        skipped.push({ url: landed.href, reason: "robots_disallowed", detail: `redirected from ${url.href}` });
-        continue;
-      }
-    }
-    deepest = Math.max(deepest, depth);
-
-    if (read.problem) {
-      const { reason, detail, fallback } = read.problem;
-      // Any other answer, a 404 included, shows the site is still talking to us.
-      refusalsInARow = REFUSALS.has(reason) ? refusalsInARow + 1 : 0;
-      if (!fallback) {
-        skipped.push({ url: landed.href, reason, detail });
-      } else if (!allowPaid || !runtime.config.fallback) {
-        skipped.push({ url: landed.href, reason: "needs_fallback", detail: `${reason}: ${detail}` });
-      } else if (paid >= runtime.config.maxPaidPages) {
-        skipped.push({
-          url: landed.href,
-          reason: "paid_cap_reached",
-          detail: `${reason}: ${detail} This crawl already sent ${paid} pages to the paid tool (max_paid_pages).`,
-        });
-      } else {
-        paid++;
-        const bought = await readThroughFallback(runtime.core, runtime.config, landed.href, context);
-        if (bought.ok) keep(landed.href, bought.title ?? "", bought.markdown, "paid");
-        else skipped.push({ url: landed.href, reason: "paid_fallback_failed", detail: `${reason}; ${bought.error}` });
-      }
-      continue;
-    }
-
-    refusalsInARow = 0;
-    keep(landed.href, read.html?.title ?? "", read.html ? read.html.markdown() : read.body, "direct");
-
-    if (depth >= maxDepth) continue;
-    for (const link of read.html?.links ?? []) {
+  // Queue the same-site links of a page that was read, whichever way it was read.
+  const follow = (links: string[], depth: number): void => {
+    if (depth >= maxDepth) return;
+    for (const link of links) {
       const target = pageUrl(link);
       if (!target || seen.has(target.href) || !sameSite(target, site)) continue;
       seen.add(target.href);
@@ -163,6 +97,93 @@ export const runCrawl: NativeHandler = async (runtime, args, context) => {
       }
       queue.push({ url: target, depth: depth + 1 });
     }
+  };
+
+  try {
+    for (let next = 0; next < queue.length; next++) {
+      // Nobody is waiting any more: make no further request and buy no further page.
+      throwIfCancelled(signal);
+      if (requested >= limit) {
+        stopped = "limit";
+        break;
+      }
+      if (refusalsInARow >= BLOCKED_IN_A_ROW) {
+        stopped = "site_protected";
+        break;
+      }
+      const { url, depth } = queue[next];
+
+      const robots = await runtime.robots(url.origin, signal);
+      if (!robots.rules.allowed(url)) {
+        skipped.push({ url: url.href, reason: robots.state === "unreachable" ? "robots_unreachable" : "robots_disallowed" });
+        continue;
+      }
+
+      requested++;
+      let read: DirectRead;
+      try {
+        read = await readPage(runtime.net, url.href, signal);
+      } catch (error) {
+        throwIfCancelled(signal);
+        skipped.push({ url: url.href, reason: "fetch_failed", detail: (error as Error).message });
+        continue;
+      }
+
+      const landed = pageUrl(read.finalUrl)!;
+      if (next === 0) site = landed;
+      if (landed.href !== url.href) {
+        if (!sameSite(landed, site)) {
+          skipped.push({ url: url.href, reason: "redirected_off_site", detail: landed.href });
+          continue;
+        }
+        // Two links that redirect to one page are one page.
+        if (seen.has(landed.href)) continue;
+        seen.add(landed.href);
+        // The rules that count are those of the place the redirect led to.
+        if (!(await runtime.robots(landed.origin, signal)).rules.allowed(landed)) {
+          skipped.push({ url: landed.href, reason: "robots_disallowed", detail: `redirected from ${url.href}` });
+          continue;
+        }
+      }
+      deepest = Math.max(deepest, depth);
+
+      if (read.problem) {
+        const { reason, detail, fallback } = read.problem;
+        // Any other answer, a 404 included, shows the site is still talking to us.
+        refusalsInARow = REFUSALS.has(reason) ? refusalsInARow + 1 : 0;
+        if (!fallback) {
+          skipped.push({ url: landed.href, reason, detail });
+        } else if (!allowPaid || !runtime.config.fallback) {
+          skipped.push({ url: landed.href, reason: "needs_fallback", detail: `${reason}: ${detail}` });
+        } else if (paid >= runtime.config.maxPaidPages) {
+          skipped.push({
+            url: landed.href,
+            reason: "paid_cap_reached",
+            detail: `${reason}: ${detail} This crawl already sent ${paid} pages to the paid tool (max_paid_pages).`,
+          });
+        } else {
+          throwIfCancelled(signal);
+          paid++;
+          const bought = await readThroughFallback(runtime.core, runtime.config, landed.href, context);
+          if (bought.ok) {
+            keep(landed.href, bought.title ?? "", bought.markdown, "paid");
+            // The page the gateway could not read is still part of the site: go on through its links.
+            follow(markdownLinks(bought.markdown, landed.href), depth);
+          } else {
+            skipped.push({ url: landed.href, reason: "paid_fallback_failed", detail: `${reason}; ${bought.error}` });
+          }
+        }
+        continue;
+      }
+
+      refusalsInARow = 0;
+      keep(landed.href, read.html?.title ?? "", read.html ? read.html.markdown() : read.body, "direct");
+      follow(read.html?.links ?? [], depth);
+    }
+  } catch (error) {
+    if (!signal?.aborted) throw error;
+    // What was read so far still goes to the ledger's payload file.
+    stopped = "cancelled";
   }
 
   const direct = pages.filter((page) => page.source === "direct").length;

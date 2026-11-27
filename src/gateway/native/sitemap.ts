@@ -19,6 +19,45 @@ function decodeXml(text: string): string {
   });
 }
 
+const CDATA_OPEN = "<![CDATA[";
+const CDATA_CLOSE = "]]>";
+
+/**
+ * The text of every <loc>…</loc> element, in document order. One pass over
+ * the text, with no pattern that can back up: a sitemap is whatever the site
+ * sends, and a search that backs up can be made to take hours by a body of a
+ * few hundred bytes.
+ */
+function locValues(text: string): string[] {
+  const values: string[] = [];
+  const open = /<loc>/gi;
+  while (open.exec(text)) {
+    const start = open.lastIndex;
+    const tag = text.indexOf("<", start);
+    if (tag === -1) break;
+
+    let value: string;
+    let close = tag;
+    if (text.startsWith(CDATA_OPEN, tag) && !text.slice(start, tag).trim()) {
+      const end = text.indexOf(CDATA_CLOSE, tag + CDATA_OPEN.length);
+      // An unclosed CDATA section swallows the rest of the document.
+      if (end === -1) break;
+      value = text.slice(tag + CDATA_OPEN.length, end);
+      // Whatever sits inside the section is its text, a "<loc>" included: search on from its end.
+      open.lastIndex = end + CDATA_CLOSE.length;
+      close = text.indexOf("<", open.lastIndex);
+      if (close === -1) break;
+      if (text.slice(open.lastIndex, close).trim()) continue;
+    } else {
+      value = text.slice(start, tag);
+    }
+    if (text.slice(close, close + "</loc>".length).toLowerCase() !== "</loc>") continue;
+    value = value.trim();
+    if (value) values.push(value);
+  }
+  return values;
+}
+
 /**
  * Read the <loc> entries of a sitemap or sitemap index. Extension elements
  * such as <image:loc> are not page locations and are left out. A body with no
@@ -28,11 +67,7 @@ export function parseSitemap(text: string): SitemapFile {
   if (!text.includes("<")) {
     return { kind: "urlset", locs: text.split(/\s+/).filter((line) => /^https?:\/\//i.test(line)) };
   }
-  const locs: string[] = [];
-  for (const match of text.matchAll(/<loc>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/loc>/gi)) {
-    locs.push(decodeXml(match[1]));
-  }
-  return { kind: /<sitemapindex[\s>]/i.test(text) ? "index" : "urlset", locs };
+  return { kind: /<sitemapindex[\s>]/i.test(text) ? "index" : "urlset", locs: locValues(text).map(decodeXml) };
 }
 
 /**

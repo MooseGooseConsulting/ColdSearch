@@ -151,9 +151,9 @@ export function createGatewayServer(core: GatewayCore, skills: GatewaySkill[]): 
     }
   );
 
-  const context = () => {
+  const context = (signal?: AbortSignal) => {
     const client = server.getClientVersion();
-    return { session, client: client ? `${client.name}/${client.version}` : undefined };
+    return { session, client: client ? `${client.name}/${client.version}` : undefined, signal };
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -163,7 +163,7 @@ export function createGatewayServer(core: GatewayCore, skills: GatewaySkill[]): 
     return { tools: [...own, ...upstream.map((entry) => ({ ...entry.tool, name: entry.name }))] };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
     const { name } = request.params;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
 
@@ -176,8 +176,9 @@ export function createGatewayServer(core: GatewayCore, skills: GatewaySkill[]): 
         ? text(skill.body)
         : text(`No skill named "${String(args.name)}". Available: ${skills.map((candidate) => candidate.name).join(", ")}.`, true);
     }
+    // `extra.signal` fires when the agent cancels this call or disconnects; the native tools stop on it.
     if (core.native?.has(name)) {
-      return core.native.call(name, args, context());
+      return core.native.call(name, args, context(extra.signal));
     }
     if (core.config.mode === "lazy") {
       if (name === FIND_TOOL) {
@@ -199,7 +200,7 @@ export function createGatewayServer(core: GatewayCore, skills: GatewaySkill[]): 
         if (typeof args.name !== "string") return text(`${CALL_TOOL} needs a tool name.`, true);
         const inner = args.arguments;
         const innerArgs = inner && typeof inner === "object" && !Array.isArray(inner) ? (inner as Record<string, unknown>) : {};
-        if (core.native?.has(args.name)) return core.native.call(args.name, innerArgs, context());
+        if (core.native?.has(args.name)) return core.native.call(args.name, innerArgs, context(extra.signal));
         return core.callTool(args.name, innerArgs, context());
       }
     }

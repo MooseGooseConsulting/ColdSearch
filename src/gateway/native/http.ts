@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders } from "node:http";
 import { APP_USER_AGENT } from "../../app.js";
 import { requestValidated, validateFetchUrl, type SafeFetchHooks } from "../../safe-fetch.js";
+import { throwIfCancelled } from "./cancel.js";
 import type { HostGate } from "./politeness.js";
 
 /** What the native tools need to reach the network. One instance per gateway process. */
@@ -58,16 +59,19 @@ export function isHtmlType(contentType: string): boolean {
  * GET one URL. Every hop, the first and each redirect, goes through the SSRF
  * guard and connects to the address it approved, and waits its turn at the
  * host gate. Up to five redirects are followed; a sixth comes back as the 3xx
- * it is. Throws when the guard refuses a hop or the connection fails.
+ * it is. Throws when the guard refuses a hop or the connection fails, and
+ * when `signal` fires: a request in flight is dropped and no further hop is
+ * made.
  */
 export async function fetchUrl(
   net: NativeNet,
   url: string,
-  options: { maxBytes?: number; wantBody?: (contentType: string) => boolean } = {}
+  options: { maxBytes?: number; wantBody?: (contentType: string) => boolean; signal?: AbortSignal } = {}
 ): Promise<FetchedUrl> {
   const wantBody = options.wantBody ?? isTextType;
   let current = url;
   for (let hop = 0; ; hop++) {
+    throwIfCancelled(options.signal);
     const target = await validateFetchUrl(current, net.hooks);
     let bodySkipped = false;
     const response = await net.gate.run(target.url.host, () =>
@@ -83,6 +87,7 @@ export async function fetchUrl(
         maxBytes: options.maxBytes ?? PAGE_MAX_BYTES,
         overflow: "truncate",
         decompress: true,
+        signal: options.signal,
         inspect: (status, headers) => {
           const redirect = status >= 300 && status < 400 && headers.location !== undefined;
           if (redirect || !wantBody(mediaType(headers))) {
@@ -90,7 +95,8 @@ export async function fetchUrl(
             return false;
           }
         },
-      })
+      }),
+      options.signal
     );
 
     const location = response.headers.location;

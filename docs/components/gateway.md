@@ -145,14 +145,26 @@ A plain GET, with gzip, deflate and brotli accepted, as
 `Mozilla/5.0 (compatible; coldsearch/<version>)`. Every URL passes the SSRF
 guard of [ADR 004](../ADRs/004-ssrf-protection.md) before a connection is
 opened, and the connection goes to the address that passed. Up to five
-redirects are followed, and each hop passes the guard again. A body is read up
-to 5 MiB after decompression; a longer one is cut and marked `truncated`.
+redirects are followed, and each hop passes the guard again. Each hop may take
+45 seconds, and 15 seconds without a byte ends it. A body is read up to 5 MiB
+after decompression; a longer one is cut and marked `truncated`.
 
 HTML is parsed with `parse5` and converted here. Headings, paragraphs, links
 (made absolute), lists, code blocks with their language, block quotes and data
 tables are kept. Scripts, styles, `<nav>`, form controls and hidden elements
 are dropped. When the document has exactly one `<main>`, only it is converted.
 A link to another spot on the same page keeps its words and loses its target.
+Lists and block quotes nested more than 16 deep are read as plain paragraphs
+from there down.
+
+The page, its robots.txt and its sitemaps are text the site chose, and they
+are read on the gateway's one thread, so while one is being parsed no other
+call moves. Their parsers are written to take time in proportion to the size
+of the input. The slowest 5 MiB page found while testing (misnested formatting
+tags) converted in about four seconds on a desktop machine, and an ordinary
+page of that size in about one; robots.txt and sitemap parsing took
+milliseconds at their size caps. A URL whose path and query pass 4,096 characters is not
+checked against robots.txt rules; a crawl skips it when the site has any rules.
 A response that is not HTML but is text (plain text, JSON, XML, markdown) is
 returned as it is. PDFs and other files are not converted; the result says
 `unsupported_content_type`.
@@ -165,7 +177,7 @@ It recognizes when a page needs one of those and says so:
 | `reason` | What was seen |
 |----------|---------------|
 | `http_401`, `http_403`, `http_429`, `http_500` and above | The site refused or failed |
-| `challenge_page` | A `cf-mitigated` or `x-vercel-mitigated` challenge header; or a page with under 1,500 characters of text that carries a Cloudflare, Turnstile, DataDome, PerimeterX, Imperva, Akamai, Anubis or CAPTCHA marker |
+| `challenge_page` | A `cf-mitigated` or `x-vercel-mitigated` challenge header; or a page with under 1,500 characters of text that carries markup only a wall has (a Cloudflare challenge, a DataDome, PerimeterX or Akamai block page, an Anubis challenge); or a script that ordinary pages load too (Cloudflare's `/cdn-cgi/challenge-platform/`, Turnstile, a CAPTCHA, Imperva's or PerimeterX's) together with a 401, 403, 429 or 5xx status, or on a 2xx page with under 200 characters of text |
 | `no_text` | A 2xx HTML page with under 200 characters of text that is over 5 KB, or has an empty `#root`, `#__next`, `#app` or `#__nuxt`, or has a `<noscript>` asking for JavaScript |
 
 A 404, a 410 or another 4xx is reported as an error and is not a reason to
@@ -185,9 +197,11 @@ fallback_arguments = { url = "{url}", formats = ["markdown"] }
 
 `fallback` names one gateway tool. With `allow_paid_fallback: true`, a page
 that needs fallback is read through it: the gateway calls the tool with
-`fallback_arguments`, where every `{url}` is replaced by the page's URL
+`fallback_arguments`, where every `{url}` is replaced by the page's URL,
+whether it is a whole value or part of a longer string
 (default `{ url = "{url}" }`; a tool that takes a list uses
-`{ urls = ["{url}"] }`). The call takes the same path as an agent's call, so
+`{ urls = ["{url}"] }`, one that takes an instruction
+`{ prompt = "Read {url} and return markdown" }`). The call takes the same path as an agent's call, so
 the upstream's key order applies and the call has its own ledger line under
 the upstream's name. When the answer is JSON, the page is the first `markdown`,
 `raw_content`, `content` or `text` string in it; otherwise the answer's text is
@@ -199,6 +213,18 @@ gateway still uses it; agents still cannot call it.
 A crawl sends at most `max_paid_pages` pages to the fallback (default 10); the
 rest are skipped with reason `paid_cap_reached`. A page that robots.txt
 disallows is never sent.
+
+A crawl goes on through a page it bought: the same-site targets of the inline
+links (`[words](target)`) in the returned markdown are queued like the links
+of a page the gateway read. A fallback tool that returns markdown without
+links, or with reference-style links only, gives the crawl nowhere to go from
+that page; on a site whose start page needs fallback, the crawl then ends
+after one page with `stopped: "done"`.
+
+The ledger line and payload file of a native call are redacted with every key
+value the gateway has resolved, like an upstream call's, because a paid page
+or a paid error is text an upstream returned and may repeat the key it was
+sent.
 
 ### Map
 
@@ -225,13 +251,26 @@ the start page, then the pages it links to in page order, then theirs, down to
 - **Pace.** One request at a time per host, `delay_ms` (default 500) after one
   ends before the next starts. The gate is shared by every native call in the
   process, so two agents on one site do not double the rate.
-- **`limit`** counts requests for pages, so a crawl never costs the site more
-  than that many, whatever comes back.
+- **`limit`** counts pages asked for, whatever comes back. The site also sees
+  one request for robots.txt per hostname, and one more for each redirect a
+  page answers with (at most five a page).
+- **Redirects.** A page that redirects is read where it lands when that is on
+  the same site and robots.txt allows the landing URL. The landing URL has
+  been requested by then: the rules are applied to keeping it, not to asking.
 - **`include`, `exclude`** are matched against a link's whole path; `*` matches
   any characters, slashes included. The start URL is always read. Links to
   images, archives, PDFs and similar files are not followed.
-- **Stopping.** `stats.stopped` is `done`, `limit`, or `site_protected` when
-  three requests in a row were refused (401, 403, 429 or a challenge page).
+- **Stopping.** `stats.stopped` is `done`, `limit`, `site_protected` when
+  three requests in a row were refused (401, 403, 429 or a challenge page), or
+  `cancelled`.
+- **Cancelling.** When the agent cancels a native call (the MCP
+  `notifications/cancelled` message, which a client also sends when its own
+  timeout for the call passes) or its MCP session closes, the call stops at
+  its next step:
+  the request in flight is dropped, no further request is made, and no further
+  page is sent to the paid fallback. A paid call already forwarded is not
+  recalled. The ledger line has `ok: false` and `error: "cancelled by the
+  client"`. `coldsearch_fetch` and `coldsearch_map` stop the same way.
 
 `skipped` reasons: `robots_disallowed`, `robots_unreachable`, `needs_fallback`,
 `paid_cap_reached`, `paid_fallback_failed`, `fetch_failed`,
@@ -321,7 +360,11 @@ descriptions are also sent in the server instructions at connect time.
   requests it twice.
 - `coldsearch_fetch` and `coldsearch_map` do not consult robots.txt rules;
   only a crawl does. `Crawl-delay` is not read: the pause is `delay_ms`.
-- A crawl has no job to poll. If the client gives up on the call, the pages
-  read so far are lost to it, though the requests were made.
+- A crawl has no job to poll. If the client gives up on the call, the crawl
+  stops (see Cancelling) and the pages read so far are lost to the client,
+  though the requests for them were made; they are in the call's payload file.
+  A client that stops waiting without sending a cancellation or closing its
+  session is not noticed (in HTTP mode a dropped connection alone does not
+  close the session), and the crawl runs to its `limit`.
 - The fallback detector is a fixed list of signals. A challenge page it does
   not know is returned as content; check a suspiciously short page.

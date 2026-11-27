@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NativeConfig } from "../config.js";
 import type { CallContext, GatewayCore } from "../core.js";
+import { throwIfCancelled } from "./cancel.js";
 import { fetchUrl, ROBOTS_AGENT, decodeBody, type NativeNet } from "./http.js";
 import { ALLOW_ALL, DISALLOW_ALL, parseRobots, type RobotsRules } from "./robots.js";
 
@@ -38,15 +39,15 @@ export class NativeRuntime {
   /**
    * robots.txt for one origin, kept for ten minutes. A 4xx answer means the
    * site has none and everything is allowed; a 5xx answer or no answer means
-   * the rules are unknown and nothing is.
+   * the rules are unknown and nothing is. Throws only when `signal` fires.
    */
-  async robots(origin: string): Promise<RobotsState> {
+  async robots(origin: string, signal?: AbortSignal): Promise<RobotsState> {
     const cached = this.robotsCache.get(origin);
     if (cached && this.now() - cached.at < ROBOTS_TTL_MS) return cached.state;
 
     let state: RobotsState;
     try {
-      const fetched = await fetchUrl(this.net, `${origin}/robots.txt`, { maxBytes: ROBOTS_MAX_BYTES });
+      const fetched = await fetchUrl(this.net, `${origin}/robots.txt`, { maxBytes: ROBOTS_MAX_BYTES, signal });
       if (fetched.status >= 200 && fetched.status < 300) {
         state = { state: "ok", rules: parseRobots(decodeBody(fetched.body, fetched.headers), ROBOTS_AGENT) };
       } else if (fetched.status >= 500) {
@@ -55,6 +56,8 @@ export class NativeRuntime {
         state = { state: "missing", rules: ALLOW_ALL };
       }
     } catch {
+      // A cancelled call learned nothing about the site: it must not be remembered as unreachable.
+      throwIfCancelled(signal);
       state = { state: "unreachable", rules: DISALLOW_ALL };
     }
     if (this.robotsCache.size >= 200) this.robotsCache.clear();

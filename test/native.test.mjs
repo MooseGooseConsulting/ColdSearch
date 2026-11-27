@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
   GatewayCore,
   HostGate,
   createGatewayServer,
+  isBlockedIpAddress,
   needsFallback,
   parseRobots,
   parseSitemap,
@@ -23,8 +24,8 @@ import {
 
 /**
  * A site on 127.0.0.1. `routes` maps "host/path" (or "/path" for any host) to
- * a reply: a string (an HTML page), or { status, type, body, headers }.
- * `events` records every request in arrival order, and `maxInflight` the most
+ * a reply: a string (an HTML page), or { status, type, body, headers, onServe }.
+ * `onServe` runs when the request arrives, before the reply. `events` records every request in arrival order, and `maxInflight` the most
  * requests the site ever served at once.
  */
 async function startSite(routes) {
@@ -38,6 +39,7 @@ async function startSite(routes) {
     res.on("finish", () => inflight--);
     const found = routes[`${host}${req.url}`] ?? routes[req.url];
     const reply = typeof found === "string" ? { body: found } : found ?? { status: 404, body: "<h1>Not found</h1>" };
+    reply.onServe?.();
     // Answer a little later, so two requests in flight at once would overlap and be counted.
     setTimeout(() => {
       res.writeHead(reply.status ?? 200, { "Content-Type": reply.type ?? "text/html; charset=utf-8", ...reply.headers });
@@ -98,7 +100,32 @@ function makeGateway({ native = {}, upstreams, calls = [], paid, production = fa
     ...(production ? {} : { native: hooks }),
   });
   const ledger = () => readFileSync(path.join(dir, "ledger.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  return { core, dir, ledger, calls, clock };
+  /** Everything the gateway wrote to disk for its calls: the ledger and every payload file, as text. */
+  const written = () => {
+    const payloads = path.join(dir, "gateway-payloads");
+    const files = readdirSync(payloads, { recursive: true }).map((name) => path.join(payloads, name)).filter((file) => statSync(file).isFile());
+    return [path.join(dir, "ledger.jsonl"), ...files].map((file) => readFileSync(file, "utf8")).join("\n");
+  };
+  return { core, dir, ledger, written, calls, clock };
+}
+
+/** Run `work` and fail when it takes longer than `budgetMs`: the gateway has one thread, and this is all of it. */
+function within(budgetMs, label, work) {
+  const started = performance.now();
+  const value = work();
+  const took = performance.now() - started;
+  assert.ok(took < budgetMs, `${label} took ${Math.round(took)} ms; the budget is ${budgetMs} ms`);
+  return value;
+}
+
+/** Poll until `probe` returns something, for work the gateway finishes after its client stopped listening. */
+async function eventually(probe) {
+  for (let tries = 0; tries < 1000; tries++) {
+    const value = probe();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("timed out waiting for the gateway");
 }
 
 const ctx = { session: "s1", client: "test/1.0" };
@@ -276,6 +303,50 @@ test("the fallback detector does not mistake an ordinary page for a wall", () =>
 
   // The header alone is enough, whatever the status and body say.
   assert.equal(needsFallback({ status: 200, headers: { "cf-mitigated": "challenge" }, body: prose, html: html(prose) })?.reason, "challenge_page");
+
+  // A short page is still a page when the only sign is a script that ordinary pages load too:
+  // Cloudflare's monitoring script, Imperva's, a CAPTCHA or Turnstile widget on a contact form.
+  const notice = `<main><h1>Office closed</h1><p>${"We reopen on Monday. ".repeat(30)}</p></main>`;
+  const ordinary = {
+    "Cloudflare JavaScript detections": `<script>(function(){var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.head.appendChild(a);})();</script>`,
+    "Imperva": `<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3" async></script>`,
+    "reCAPTCHA on a form": `<form><script src="https://www.google.com/recaptcha/api.js"></script><button>Send</button></form>`,
+    "Turnstile on a form": `<form><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script><button>Send</button></form>`,
+    "PerimeterX": `<script src="https://client.perimeterx.net/PX12345/main.min.js"></script>`,
+  };
+  for (const [name, script] of Object.entries(ordinary)) {
+    const body = `<html><body>${notice}${script}</body></html>`;
+    const facts = html(body);
+    assert.ok(facts.textChars > 500 && facts.textChars < 1000, "the page is short, but it says something");
+    assert.equal(needsFallback({ status: 200, headers: {}, body, html: facts }), undefined, name);
+    // The same script on a refusal is the wall it looks like.
+    assert.equal(needsFallback({ status: 403, headers: {}, body, html: facts })?.reason, "challenge_page", `${name} on a 403`);
+  }
+  // Served as 200 with next to no text, a CAPTCHA is the whole page.
+  const gate = `<html><body><p>Verify you are human.</p><script src="https://js.hcaptcha.com/1/api.js"></script></body></html>`;
+  assert.equal(needsFallback({ status: 200, headers: {}, body: gate, html: html(gate) })?.reason, "challenge_page");
+  // The challenge itself is recognised whatever the status and however it is dressed.
+  const dressed = `<html><body><p>${"Please wait while we check your browser. ".repeat(20)}</p><script>window._cf_chl_opt={cvId:'3'};</script></body></html>`;
+  assert.equal(needsFallback({ status: 200, headers: {}, body: dressed, html: html(dressed) })?.reason, "challenge_page");
+});
+
+test("a short page on a Cloudflare-fronted site is fetched as a page, and a crawl follows its links", async () => {
+  const jsd = `<script>(function(){var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.head.appendChild(a);})();</script>`;
+  const short = (title, links = []) =>
+    `<html><head><title>${title}</title></head><body><main><h1>${title}</h1><p>${`${title} is short. `.repeat(20)}</p>${links.map((href) => `<a href="${href}">${href}</a>`).join(" ")}</main>${jsd}</body></html>`;
+  const site = await startSite({ "/": short("Home", ["/a", "/b", "/c", "/d"]), "/a": short("A"), "/b": short("B"), "/c": short("C"), "/d": short("D") });
+  try {
+    const { core } = makeGateway({ site, native: { fallback: "paid__scrape" } });
+    const fetched = await core.native.call("coldsearch_fetch", { url: site.url("/") }, ctx);
+    assert.equal(fetched.isError, undefined);
+    assert.match(fetched.content[1].text, /^# Home\n\nHome is short\./);
+
+    const crawl = meta(await core.native.call("coldsearch_crawl", { url: site.url("/") }, ctx));
+    assert.deepEqual(crawl.pages.map((entry) => new URL(entry.url).pathname), ["/", "/a", "/b", "/c", "/d"]);
+    assert.deepEqual({ skipped: crawl.skipped, stopped: crawl.stats.stopped }, { skipped: [], stopped: "done" }, "not five refusals and site_protected");
+  } finally {
+    await site.close();
+  }
 });
 
 test("with allow_paid_fallback the page comes through the configured tool, marked paid, even when that tool is hidden from agents", async () => {
@@ -327,6 +398,42 @@ test("a paid fallback that fails is reported as a failure, not passed off as the
   }
 });
 
+test("a key value an upstream repeats in its answer never reaches the ledger or a payload file through a native call", async () => {
+  const KEY = "paid-key-value-000000"; // what makeGateway's key resolver hands the fake upstream
+  const site = await startSite({ "/forbidden": { status: 403, body: "<h1>Forbidden</h1>" }, "/also": { status: 403, body: "<h1>Forbidden</h1>" } });
+  try {
+    // An upstream that says which token it rejected, as "invalid token <value>" errors do.
+    const failing = makeGateway({
+      site,
+      native: { fallback: "paid__scrape" },
+      paid: async () => ({ isError: true, content: [{ type: "text", text: `HTTP 500: upstream rejected token ${KEY} for this request` }] }),
+    });
+    const failed = await failing.core.native.call("coldsearch_fetch", { url: site.url("/forbidden"), allow_paid_fallback: true }, ctx);
+    assert.equal(failed.isError, true);
+    const [bought, native] = failing.ledger();
+    assert.deepEqual([bought.upstream, native.upstream], ["paid", "coldsearch"]);
+    assert.match(native.error, /paid__scrape failed: HTTP 500: upstream rejected token \[redacted\]/, "the error is kept, without the value");
+    assert.ok(!failing.written().includes(KEY), "neither ledger line nor either payload file holds the key value");
+
+    // An upstream whose page echoes the request it was sent, key included (a query-parameter key in a URL).
+    const echoing = makeGateway({
+      site,
+      native: { fallback: "paid__scrape" },
+      paid: async (args) => ({ content: [{ type: "text", text: JSON.stringify({ markdown: `# Page\n\nFetched ${args.url} via https://paid.example.com/scrape?token=${KEY}` }) }] }),
+    });
+    const read = await echoing.core.native.call("coldsearch_fetch", { url: site.url("/forbidden"), allow_paid_fallback: true }, ctx);
+    assert.equal(read.isError, undefined);
+    const crawled = await echoing.core.native.call("coldsearch_crawl", { url: site.url("/also"), allow_paid_fallback: true }, ctx);
+    assert.equal(meta(crawled).pages[0].source, "paid");
+    const disk = echoing.written();
+    assert.ok(!disk.includes(KEY), "a successful paid page is redacted on disk too");
+    assert.match(disk, /token=\[redacted\]/);
+    assert.equal(echoing.ledger().length, 4, "two upstream lines and two native lines were checked");
+  } finally {
+    await site.close();
+  }
+});
+
 test("a body past the 5 MiB cap is cut and marked truncated, counted after decompression", async () => {
   const huge = `<p>${"word ".repeat(1_300_000)}</p>`;
   const site = await startSite({ "/huge": { body: gzipSync(huge), headers: { "Content-Encoding": "gzip" } } });
@@ -350,11 +457,24 @@ test("in production the SSRF guard refuses private addresses before any request,
     "/landing": "<p>" + "Landed. ".repeat(50) + "</p>",
     "/to-internal": { status: 302, headers: { Location: `http://${INTERNAL_HOST}/admin` } },
     "/to-metadata": { status: 301, headers: { Location: "http://169.254.169.254/latest/meta-data/" } },
+    "/to-tailnet": { status: 302, headers: { Location: "http://100.100.100.100:8123/" } },
   });
   try {
     // No test hooks: this is the gateway as `coldsearch mcp` builds it.
     const production = makeGateway({ production: true });
-    for (const url of [`http://127.0.0.1:${site.port}/`, "http://localhost/", "http://10.0.0.5/", "http://[::1]/", "http://169.254.169.254/latest/meta-data/"]) {
+    const refusedUrls = [
+      `http://127.0.0.1:${site.port}/`,
+      "http://localhost/",
+      "http://10.0.0.5/",
+      "http://[::1]/",
+      "http://169.254.169.254/latest/meta-data/",
+      // The shared range overlay networks assign: on a machine in a tailnet this is the internal network.
+      "http://100.100.100.100:8123/",
+      // 10.0.0.5 and 100.100.100.100 reached through a NAT64 gateway.
+      "http://[64:ff9b::a00:5]/",
+      "http://[64:ff9b::100.100.100.100]/",
+    ];
+    for (const url of refusedUrls) {
       const result = await production.core.native.call("coldsearch_fetch", { url }, ctx);
       assert.equal(result.isError, true, url);
       assert.match(result.content[0].text, /Refusing to fetch/, url);
@@ -365,7 +485,7 @@ test("in production the SSRF guard refuses private addresses before any request,
       }
     }
     assert.deepEqual(site.requests(), [], "nothing reached the loopback server");
-    assert.equal(production.ledger().length, 15, "refused calls are in the ledger too");
+    assert.equal(production.ledger().length, refusedUrls.length * 3, "refused calls are in the ledger too");
     await assert.rejects(validateFetchUrl("file:///etc/passwd"), /Unsupported fetch URL protocol/);
 
     // With the test allowance for 127.0.0.1, the rest of the guard still stands.
@@ -374,7 +494,7 @@ test("in production the SSRF guard refuses private addresses before any request,
     assert.equal(meta(followed).final_url, site.url("/landing"));
     assert.match(followed.content[1].text, /^Landed\./);
 
-    for (const pathname of ["/to-internal", "/to-metadata"]) {
+    for (const pathname of ["/to-internal", "/to-metadata", "/to-tailnet"]) {
       const refused = await core.native.call("coldsearch_fetch", { url: site.url(pathname) }, ctx);
       assert.equal(refused.isError, true, pathname);
       assert.match(refused.content[0].text, /Refusing to fetch/, pathname);
@@ -384,6 +504,25 @@ test("in production the SSRF guard refuses private addresses before any request,
   } finally {
     await site.close();
   }
+});
+
+test("the blocked ranges cover carrier-grade NAT and IPv4 addresses carried inside IPv6, however the address is written", () => {
+  const blocked = [
+    "100.64.0.1", "100.100.100.100", "100.127.255.255",
+    "64:ff9b::a00:5", "64:ff9b::10.0.0.5", "64:FF9B:0:0:0:0:6464:6464", "64:ff9b::7f00:1", "64:ff9b:1::1",
+    "::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:100.64.0.1",
+    "::", "::1", "0:0:0:0:0:0:0:1", "::10.0.0.5",
+    "fc00::1", "fd7a:115c:a1e0::1", "fe80::1", "fe80::1%eth0", "febf::1",
+    "127.0.0.1", "10.0.0.5", "172.16.0.1", "192.168.1.1", "169.254.169.254", "0.0.0.0",
+  ];
+  for (const address of blocked) assert.equal(isBlockedIpAddress(address), true, address);
+
+  const open = [
+    "100.63.255.255", "100.128.0.1", "8.8.8.8", "93.184.216.34",
+    "64:ff9b::808:808", "64:ff9b::8.8.8.8", "::ffff:8.8.8.8",
+    "2606:4700:4700::1111", "2001:db8::1", "fec0::1",
+  ];
+  for (const address of open) assert.equal(isBlockedIpAddress(address), false, address);
 });
 
 // --- robots and sitemaps -----------------------------------------------------
@@ -419,6 +558,71 @@ Sitemap: https://example.com/news.xml`,
   assert.equal(named.allowed(url("/search?q=x")), false);
 
   assert.equal(parseRobots("", "coldsearch").allowed(url("/anything")), true);
+
+  // Wildcards anywhere in a rule; every other character stands for itself.
+  const wild = parseRobots("User-agent: *\nDisallow: /shop/*/cart\nDisallow: /*.php$\nDisallow: /a.b\nDisallow: /q?x=*&y=1$ # trailing comment\nAllow: /shop/*/cart/help*.html$\n", "coldsearch");
+  assert.equal(wild.allowed(url("/shop/42/cart")), false);
+  assert.equal(wild.allowed(url("/shop/42/cart/items")), false, "a rule without $ is a prefix");
+  assert.equal(wild.allowed(url("/shop/cart")), true, "the * may be empty, but both slashes are in the rule");
+  assert.equal(wild.allowed(url("/shop/42/cart/help-returns.html")), true, "the longer Allow wins");
+  assert.equal(wild.allowed(url("/shop/42/cart/help-returns.html?print=1")), false, "$ means the Allow must reach the end");
+  assert.equal(wild.allowed(url("/index.php")), false);
+  assert.equal(wild.allowed(url("/index.php5")), true);
+  assert.equal(wild.allowed(url("/a.b")), false);
+  assert.equal(wild.allowed(url("/aXb")), true, "a dot is a dot");
+  assert.equal(wild.allowed(url("/q?x=7&y=1")), false);
+  assert.equal(wild.allowed(url("/q?x=7&y=12")), true);
+
+  // A URL too long to check is not requested when the site has rules, and is when it has none.
+  const long = url(`/${"a".repeat(5000)}`);
+  assert.equal(wild.allowed(long), false);
+  assert.equal(parseRobots("User-agent: otherbot\nDisallow: /\n", "coldsearch").allowed(long), true);
+});
+
+test("text the site chose cannot stall the gateway: robots.txt, sitemaps and pages are read in time proportional to their size", () => {
+  // Each timed input here took the first version of this code more than 15
+  // seconds, and several of them hours; the gateway has one thread, so that
+  // was every agent's calls stopped by one response. Now each takes
+  // milliseconds, and the budget is there to catch a pattern that backs up.
+  const BUDGET = 5000;
+  const at = (pathname) => new URL(`https://example.com${pathname}`);
+  const page = (markup) => readHtml(markup, "https://example.com/");
+
+  // Under 3 KB of sitemap: a <loc> that is all spaces and never closes.
+  assert.deepEqual(within(BUDGET, "sitemap, unclosed <loc>", () => parseSitemap(`<urlset><loc>${" ".repeat(2000)}<x/></urlset>`)), { kind: "urlset", locs: [] });
+  // The scanner that replaced the pattern must not have a slow input of its own: CDATA opened 100,000 times.
+  assert.deepEqual(
+    within(BUDGET, "sitemap, CDATA opened again and again", () => parseSitemap(`${"<loc><![CDATA[".repeat(100_000)}https://example.com/a]]></loc>`)).locs,
+    [`${"<loc><![CDATA[".repeat(99_999)}https://example.com/a`],
+    "a CDATA section is one piece of text, whatever it holds"
+  );
+
+  // One robots.txt rule with twenty wildcards, checked against a path that almost matches.
+  const starry = parseRobots(`User-agent: *\nDisallow: /${"*a".repeat(20)}*b$\n`, "coldsearch");
+  assert.equal(within(BUDGET, "robots rule with 20 wildcards", () => starry.allowed(at(`/${"a".repeat(200)}`))), true);
+  assert.equal(starry.allowed(at(`/${"a".repeat(200)}b`)), false, "and it still matches what it should");
+  // A long comment line that ends in a character "." does not match.
+  const commented = within(BUDGET, "robots comment", () => parseRobots(`User-agent: *\nDisallow: /x ${"#".repeat(300_000)}\u2028\n`, "coldsearch"));
+  assert.equal(commented.allowed(at("/x")), false);
+
+  // A megabyte that starts a CAPTCHA marker over and over and never finishes one.
+  const almost = "hcaptcha.com/".repeat(80_000);
+  const facts = { textChars: 0, emptyAppRoot: false, noscriptAsksForJavascript: false };
+  assert.equal(within(BUDGET, "CAPTCHA marker", () => needsFallback({ status: 200, headers: {}, body: almost, html: facts }))?.reason, "no_text");
+
+  // Pages built to make the converter back up: long runs of spaces from empty
+  // blocks inside a heading and a link, line breaks inside emphasis, trailing
+  // spaces in a code block, and application roots nested inside each other.
+  assert.equal(within(BUDGET, "empty blocks in a heading", () => page(`<h1>${"<div></div>".repeat(200_000)}</h1>`).markdown()), "");
+  assert.equal(within(BUDGET, "empty blocks in a link", () => page(`<a href="/x">${"<div></div>".repeat(200_000)}end</a>`).markdown()), "[end](https://example.com/x)");
+  assert.equal(within(BUDGET, "line breaks in emphasis", () => page(`<p><b>a${"<br>".repeat(300_000)}b</b></p>`).markdown()), "**a\nb**");
+  assert.equal(within(BUDGET, "spaces in a code block", () => page(`<pre>x${" ".repeat(300_000)}y${" ".repeat(300_000)}</pre>`).markdown()), `\`\`\`\nx${" ".repeat(300_000)}y\n\`\`\``);
+  assert.equal(within(BUDGET, "nested application roots", () => page(`${'<div id="app">'.repeat(100_000)}x`)).emptyAppRoot, false);
+  // Not a stall but a multiplier: every level of quote used to rewrite and lengthen every line inside it.
+  // Quotes nested past sixteen deep stop adding a marker per level, so a page cannot multiply its own size.
+  const quoted = within(BUDGET, "nested quotes", () => page(`${"<blockquote>".repeat(200)}${"<p>line</p>".repeat(20_000)}`).markdown());
+  assert.match(quoted, /^(?:> ){16}line\n/);
+  assert.ok(quoted.length < 20_000 * 80);
 });
 
 test("sitemap files: page lists, indexes, CDATA, entities and the plain-text form", () => {
@@ -682,6 +886,127 @@ test("in a crawl, pages that need fallback are skipped unless paid fallback is a
   }
 });
 
+test("a crawl goes on through the links of a page it had to buy", async () => {
+  // Every page of this site is an empty application shell: nothing to read, and no links, without JavaScript.
+  const shell = `<html><head><title>App</title></head><body><div id="root"></div><script src="/app.js"></script></body></html>`;
+  const site = await startSite({ "/robots.txt": { type: "text/plain", body: "User-agent: *\nDisallow: /account\n" }, "/": shell, "/docs": shell, "/api_(v2)": shell, "/pricing": shell, "/account": shell });
+  try {
+    const rendered = {
+      "/": (u) => `# Home\n\n[Docs](/docs) and [pricing](${u("/pricing")} "Plans"), [your account](/account), [docs again](/docs#top), ![logo](/logo.png), [elsewhere](https://elsewhere.example.com/).`,
+      "/docs": () => "# Docs\n\nSee the [API](<api_(v2)>) or go [home](/).",
+    };
+    const { core, calls } = makeGateway({
+      site,
+      native: { fallback: "paid__scrape" },
+      paid: async (args) => ({ content: [{ type: "text", text: JSON.stringify({ markdown: rendered[new URL(args.url).pathname]?.(site.url) ?? "# A leaf page" }) }] }),
+    });
+    const crawl = meta(await core.native.call("coldsearch_crawl", { url: site.url("/"), allow_paid_fallback: true, limit: 20 }, ctx));
+    assert.deepEqual(
+      crawl.pages.map((entry) => [new URL(entry.url).pathname, entry.source]),
+      [["/", "paid"], ["/docs", "paid"], ["/pricing", "paid"], ["/api_(v2)", "paid"]],
+      "breadth-first through links found in the bought markdown, relative ones resolved against the page"
+    );
+    assert.deepEqual(crawl.skipped, [{ url: site.url("/account"), reason: "robots_disallowed" }], "robots.txt applies to links from a bought page too");
+    assert.deepEqual(
+      { requested: crawl.stats.requested, paid: crawl.stats.paid, filtered_links: crawl.stats.filtered_links, stopped: crawl.stats.stopped },
+      { requested: 4, paid: 4, filtered_links: 1, stopped: "done" },
+      "the image is not a page; the off-site link is not followed"
+    );
+    assert.equal(calls.length, 4);
+
+    const startOnly = meta(await core.native.call("coldsearch_crawl", { url: site.url("/"), allow_paid_fallback: true, max_depth: 0 }, ctx));
+    assert.deepEqual(startOnly.pages.map((entry) => new URL(entry.url).pathname), ["/"], "max_depth holds for bought pages");
+  } finally {
+    await site.close();
+  }
+});
+
+test("when the agent cancels a crawl, the gateway makes no further request and the ledger says the call was cancelled", async () => {
+  const controller = new AbortController();
+  const site = await startSite({
+    "/": page("Home", ["/a", "/b", "/c"]),
+    // The agent gives up while the gateway is waiting for this page.
+    "/a": { body: page("A"), onServe: () => controller.abort() },
+    "/b": page("B"),
+    "/c": page("C"),
+  });
+  try {
+    const { core, ledger, dir } = makeGateway({ site });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await createGatewayServer(core, []).connect(serverSide);
+    const client = new Client({ name: "agent-under-test", version: "1.0.0" });
+    await client.connect(clientSide);
+
+    await assert.rejects(client.callTool({ name: "coldsearch_crawl", arguments: { url: site.url("/") } }, undefined, { signal: controller.signal }));
+    // The agent is gone; the gateway still closes its books.
+    const entry = await eventually(() => {
+      try {
+        return ledger().find((line) => line.upstream === "coldsearch");
+      } catch {
+        return undefined;
+      }
+    });
+    assert.deepEqual({ ok: entry.ok, error_class: entry.error_class, error: entry.error, pages: entry.pages }, { ok: false, error_class: "gateway", error: "cancelled by the client", pages: 1 });
+    assert.deepEqual(site.requests(), ["GET site.test/robots.txt", "GET site.test/", "GET site.test/a"], "/b and /c were never requested");
+
+    // What was read before the cancellation is in the payload file.
+    const kept = JSON.parse(JSON.parse(readFileSync(path.join(dir, "gateway-payloads", entry.payload), "utf8")).response.content[0].text);
+    assert.deepEqual({ pages: kept.pages.map((item) => new URL(item.url).pathname), stopped: kept.stats.stopped }, { pages: ["/"], stopped: "cancelled" });
+
+    // The site is not remembered as unreachable, and the next call's turn at the host gate is free.
+    const again = meta(await client.callTool({ name: "coldsearch_crawl", arguments: { url: site.url("/"), limit: 2 } }));
+    assert.deepEqual(again.pages.map((item) => new URL(item.url).pathname), ["/", "/a"]);
+    await client.close();
+  } finally {
+    await site.close();
+  }
+});
+
+test("a cancelled call buys no further page, and cancelling during robots.txt does not mark the site unreachable", async () => {
+  const shell = `<html><head><title>App</title></head><body><div id="root"></div><script src="/app.js"></script></body></html>`;
+  const routes = { "/": page("Home", ["/s1", "/s2", "/s3"]), "/s1": shell, "/s2": shell, "/s3": shell };
+  const site = await startSite(routes);
+  try {
+    const controller = new AbortController();
+    const { core, calls } = makeGateway({
+      site,
+      native: { fallback: "paid__scrape" },
+      // The agent cancels while the first paid page is being read.
+      paid: async (args) => {
+        controller.abort();
+        return { content: [{ type: "text", text: JSON.stringify({ markdown: `# Paid copy of ${args.url}` }) }] };
+      },
+    });
+    const crawl = meta(await core.native.call("coldsearch_crawl", { url: site.url("/"), allow_paid_fallback: true }, { ...ctx, signal: controller.signal }));
+    assert.equal(calls.length, 1, "one page was already being bought; no second one is");
+    assert.deepEqual(crawl.pages.map((entry) => [new URL(entry.url).pathname, entry.source]), [["/", "direct"], ["/s1", "paid"]]);
+    assert.equal(crawl.stats.stopped, "cancelled");
+    assert.ok(!site.requests().some((event) => /s2|s3/.test(event)));
+
+    // A fetch and a map cancelled before they start make no request at all.
+    const before = site.requests().length;
+    for (const tool of ["coldsearch_fetch", "coldsearch_map"]) {
+      const result = await core.native.call(tool, { url: site.url("/s2") }, { ...ctx, signal: controller.signal });
+      assert.equal(result.isError, true);
+      assert.equal(result.content[0].text, `${tool}: cancelled by the client`);
+    }
+    assert.equal(site.requests().length, before);
+
+    // Cancelled while robots.txt is on its way: a 5xx there means "do not crawl", a cancellation means nothing.
+    const early = new AbortController();
+    routes["/robots.txt"] = { type: "text/plain", body: "User-agent: *\nDisallow: /s3\n", onServe: () => early.abort() };
+    const fresh = makeGateway({ site });
+    const cancelled = meta(await fresh.core.native.call("coldsearch_crawl", { url: site.url("/") }, { ...ctx, signal: early.signal }));
+    assert.deepEqual({ pages: cancelled.pages, skipped: cancelled.skipped, stopped: cancelled.stats.stopped }, { pages: [], skipped: [], stopped: "cancelled" });
+    assert.equal(fresh.ledger()[0].error, "cancelled by the client");
+    delete routes["/robots.txt"].onServe;
+    const retried = meta(await fresh.core.native.call("coldsearch_crawl", { url: site.url("/"), max_depth: 0 }, ctx));
+    assert.deepEqual(retried.pages.map((entry) => new URL(entry.url).pathname), ["/"]);
+  } finally {
+    await site.close();
+  }
+});
+
 test("a crawl stops asking a site that refuses it three times in a row, and never buys a robots-disallowed page", async () => {
   const refused = { status: 403, body: "<h1>Forbidden</h1>" };
   const site = await startSite({
@@ -799,6 +1124,10 @@ test("[gateway.native] config errors name the field", () => {
   assert.throws(() => config({ fallback: "scrape" }), /native\.fallback must be a gateway tool name, <upstream>__<tool>/);
   assert.throws(() => config({ fallback: "firecrawl__scrape" }), /native\.fallback names upstream "firecrawl", which has no \[gateway\.upstreams\.firecrawl\] block/);
   assert.throws(() => config({ fallback: "paid__scrape", fallback_arguments: { url: "fixed" } }), /native\.fallback_arguments must contain the string "\{url\}"/);
+  // The placeholder may sit inside longer text, at any depth: that is what the gateway fills in at call time.
+  for (const template of [{ prompt: "Read {url} and return markdown" }, { options: { targets: ["page={url}"] } }]) {
+    assert.deepEqual(config({ fallback: "paid__scrape", fallback_arguments: template }).native.fallbackArguments, template);
+  }
   assert.throws(() => config({ fallback_arguments: { url: "{url}" } }), /native\.fallback_arguments is set but native\.fallback is not/);
   assert.throws(() => config({ delay_ms: -1 }), /native\.delay_ms must be a whole number/);
   assert.throws(() => config({ max_paid_pages: 1.5 }), /native\.max_paid_pages must be a whole number/);
