@@ -4,7 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "../config.js";
 import { resolveGatewayConfig, type GatewayConfig, type GatewayMode } from "./config.js";
-import { GatewayCore } from "./core.js";
+import { defaultConnector, GatewayCore } from "./core.js";
+import { formatToolReports, listUpstreamTools } from "./profiles.js";
 import { createGatewayServer } from "./server.js";
 import { loadSkills, type GatewaySkill } from "./skills.js";
 
@@ -13,6 +14,7 @@ export const GATEWAY_HELP = `coldsearch mcp - MCP gateway in front of search pro
 Usage:
   coldsearch mcp [options]            Serve one agent over stdio
   coldsearch mcp --http [options]     Serve many agents over HTTP at /mcp
+  coldsearch mcp --list-tools         Print what each upstream offers and exposes
 
 Options:
   -c, --config PATH   Config file with a [gateway] section
@@ -21,6 +23,10 @@ Options:
   --http              Serve streamable HTTP instead of stdio
   --host HOST         HTTP bind address (default: 127.0.0.1)
   --port N            HTTP port (default: 8787)
+  --list-tools        Per upstream: tools offered, tools exposed after the
+                      include/exclude lists, and their names. Reads tool lists
+                      only; calls no tool. Then exits
+  --json              With --list-tools: print JSON
   -h, --help          Show this help
 
 HTTP mode requires COLDSEARCH_GATEWAY_TOKEN when the bind address is not
@@ -34,10 +40,12 @@ interface GatewayCliOptions {
   host: string;
   port: number;
   help: boolean;
+  listTools: boolean;
+  json: boolean;
 }
 
 export function parseGatewayArgs(args: string[]): GatewayCliOptions {
-  const options: GatewayCliOptions = { http: false, host: "127.0.0.1", port: 8787, help: false };
+  const options: GatewayCliOptions = { http: false, host: "127.0.0.1", port: 8787, help: false, listTools: false, json: false };
   const value = (index: number, flag: string): string => {
     const next = args[index + 1];
     if (next === undefined || next.startsWith("-")) throw new Error(`${flag} requires a value`);
@@ -68,6 +76,12 @@ export function parseGatewayArgs(args: string[]): GatewayCliOptions {
         options.port = port;
         break;
       }
+      case "--list-tools":
+        options.listTools = true;
+        break;
+      case "--json":
+        options.json = true;
+        break;
       case "-h":
       case "--help":
         options.help = true;
@@ -76,6 +90,7 @@ export function parseGatewayArgs(args: string[]): GatewayCliOptions {
         throw new Error(`Unknown option for mcp: ${arg}`);
     }
   }
+  if (options.json && !options.listTools) throw new Error("--json is only for --list-tools");
   return options;
 }
 
@@ -178,6 +193,12 @@ export async function runGatewayCli(args: string[]): Promise<void> {
   const raw = (loadConfig(options.configPath) as unknown as { gateway?: unknown }).gateway;
   const config: GatewayConfig = resolveGatewayConfig(raw);
   if (options.mode) config.mode = options.mode;
+
+  if (options.listTools) {
+    const reports = await listUpstreamTools(config, { connector: defaultConnector });
+    console.log(options.json ? JSON.stringify(reports, null, 2) : formatToolReports(reports));
+    return;
+  }
 
   const core = new GatewayCore(config);
   const skills = loadSkills(config.skillsDir);

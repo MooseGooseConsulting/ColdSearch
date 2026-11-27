@@ -239,6 +239,63 @@ they go stale fast and are intentionally not mirrored here.
 - `/search` (general) → **search** ✅ (operator-configured `baseUrl`, optional `SEARXNG_BASE_URL`; a disabled `format=json` returns 403 — most public instances disable it)
 - category variants (news / images / …) ❌
 
+## Gateway upstreams
+
+`coldsearch mcp` reaches providers through presets, which are separate from
+the adapters above: a preset names a vendor's API documents or hosted MCP
+server and carries a default tool list. `docs/components/gateway.md` explains
+the lists and how a config block changes them. This table is what a block
+that names only the upstream and its keys gets.
+
+- **Offered** is how many tools the provider's documents or server list.
+  For `openapi` presets it was read on 2026-11-27 with
+  `coldsearch mcp --list-tools` from the published documents, or the ones in
+  `specs/`, without a key. For `mcp` presets (marked †) it is the number of
+  tool names in the vendor's documentation and tool listings that day; the
+  hosted servers were not listed with a key for this table, and a server can
+  list differently by account or client.
+- **Exposed by default** is how many of those an agent is offered.
+- No operation was called to build this table.
+
+| Preset | Kind | Source | Offered | Exposed by default | Hidden, and why |
+|--------|------|--------|---------|--------------------|-----------------|
+| `exa` | openapi | `exa.ai/docs/exa-spec.yaml` | 64 | 8 | 15 schedule: search and Websets monitors, which run and bill on a schedule, and their runs. 8 unusable: batches are an Enterprise beta whose results land at a presigned URL; an import needs a file sent to a presigned URL. 2 credentials: the response carries a webhook signing secret. 7 destructive: deletes a run, batch, webset, item, enrichment, import or webhook. 8 account: team-wide run listing, team info, webhook management and the team event log. 1 deprecated: deprecated endpoint; search covers it. 15 spend: Websets bill per compute unit and per search with no per-call cap. |
+| `examcp` | mcp | Hosted MCP server, `https://mcp.exa.ai/mcp` | 4 † | 3 | 1 spend: effort ultra may spend $20 a run and its budget argument is documented for auto and ultra only, so no default cap can be pinned; exa's createAgentRun is pinned. |
+| `exaadmin` | openapi | `exa.ai/docs/team-management-spec.yaml` | 9 | 1 | 6 credentials: the response carries API key ids or secrets. 2 destructive: deletes a key or revokes its previous secret. |
+| `firecrawl` | openapi | `docs.firecrawl.dev/api-reference/v2-openapi.json` + `specs/firecrawl-additions.yaml` (shipped) | 60 | 33 | 3 feedback: feedback to the vendor and its support assistant. 8 schedule: monitors, which re-scrape on a schedule and bill each check. 2 duplicate: POST twins of developerSearch and govSearch. 4 deprecated: extract answers 410 from 2026-12-10, and the token counters count extract only. 10 account: team usage, queue and activity reports, team-wide job listings, and the team's threat-protection policy. |
+| `firecrawlmcp` | mcp | Hosted MCP server, `https://mcp.firecrawl.dev/v2/mcp` | 38 † | 8 | 30 not included: the preset is an allowlist of the tools only the hosted server has; the rest are narrower copies of firecrawl's REST operations, or monitor, feedback, usage and skill-writing tools. |
+| `parallel` | openapi | `docs.parallel.ai/public-openapi.json` + `specs/parallel-suggest.yaml` (shipped) | 43 | 18 | 8 schedule: monitors, which bill every run until cancelled. 15 spend: a task group takes up to 1,000 runs in one call; a FindAll run with generator pro costs $10 plus $1 a match, and a pin cannot rule a value out. 2 destructive: clears or evicts saved results. |
+| `parallelmcp` | mcp | Hosted MCP server, `https://mcp.parallel.ai/mcp` | 14 † | 9 | 1 feedback: sends a problem report to the vendor. 4 schedule: monitors, which bill every run until cancelled. |
+| `tavily` | openapi | `docs.tavily.com/documentation/api-reference/openapi.json` | 10 | 6 | 3 account: usage and request logs; post_org_usage also needs the organization owner's personal key. 1 feedback: feedback to the vendor. |
+| `tavilymcp` | mcp | Hosted MCP server, `https://mcp.tavily.com/mcp/` | 5 † | 5 | Nothing |
+| `tavilykeys` | openapi | `docs.tavily.com/documentation/enterprise/openapi.json` | 3 | 1 | 1 destructive: called with no body it deactivates the key the gateway sent. 1 credentials: the response carries newly minted API keys. |
+| `brightdata` | openapi | 10 documents under `docs.brightdata.com` | 123 | 13 | 5 credentials: zone passwords, in the response or the arguments (getZone answers with the zone's password beside its plan), and the storage credentials a dataset view delivers with. 105 not included: the preset is an allowlist of search-engine and page unlock, the scraper catalogue and its jobs, business search, and the zone list unlockUrl needs. Left out: account, zone and billing management (50 operations), Scraper Studio (22), Web Archive (7), marketplace dataset purchases, and delivery to cloud storage. |
+| `brightdatamcp` | mcp | Hosted MCP server, `https://mcp.brightdata.com/mcp` | 30 † | 13 | 1 feedback: the vendor's support assistant. 2 housekeeping: catalogue refresh and per-session call counts. 14 unusable: the remote browser belongs to the server-side connection, and the gateway keeps one per key, so agents would share one browser. |
+| `tinyfish` | mcp | Hosted MCP server, `https://agent.tinyfish.ai/mcp` | 43 † | 8 | 12 spend: a research run is $2 to $3 and a dataset $0.10 a row ($10 for one default call), against a new account's $8. 2 destructive: permanent; cancel_monitor deletes the monitor. 9 account: saved browser logins, which need a person to sign in; usage and wallet reports; the team's run list. 3 unusable: returns a browser to drive over CDP, which no gateway call can do, and bills per minute until closed. 7 schedule: monitors, which spend on a schedule and post page content to a webhook. 1 housekeeping: onboarding prompt. 1 billing: charges a card $10 to $500. |
+| `tinyfishapi` | openapi | 4 documents under `agent.tinyfish.ai` | 49 | 6 | 1 spend: queues up to 100 agent runs in one call, each billed per step up to its own cap ($240 at the default cap of 150 steps); the caps sit inside the list of runs, where no pin reaches. 42 not included: the preset is an allowlist of the REST operations the hosted MCP server (tinyfish) has no tool for and an agent can use, and the two that cancel a run. |
+| `tinyfishanswer` | openapi | `agent.tinyfish.ai/v1/openapi/answer` | 1 | 1 | Nothing |
+| `context` | openapi | `docs.context.dev/openapi.json` | 53 | 13 | 6 spend: a batch reserves credits for up to 100,000 URLs at submission; people data costs 10 to 50 credits a page and 20 a match. 14 account: access policies for every key, webhook deliveries, and organization-wide usage, logs and browser profiles. 6 credentials: the response carries a webhook signing secret: a monitor's, whenever one is created, read, changed or rotated, and a batch's, which only submitBatch returns. 2 destructive: permanent; deleteBatch also removes stored results. 9 schedule: monitors, which spend on a schedule, and their runs and changes. 2 unusable: parse takes raw file bytes; prefetch needs a paid plan and returns no data. 1 feedback: feedback to the vendor. |
+| `contextmcp` | mcp | Hosted MCP server, `https://mcp.context.dev/mcp` | 44 † | 1 | 43 not included: the preset is an allowlist of the one thing REST cannot do through this gateway: parse a local file. Everything else is on context. |
+| `jina` | openapi | `docs.jina.ai/openapi.json` | 34 | 12 | 1 destructive: deletes an embeddings batch. 14 housekeeping: Reader's echo, ephemeral-file, signature-directory and bot-info routes. 7 duplicate: other forms of reader_get_root and search_get_search, with schemas of 17 to 61 KB each. |
+| `jinamcp` | mcp | Hosted MCP server, `https://mcp.jina.ai/v1` | 12 † | 12 | Nothing |
+| `kagi` | openapi | `kagi.com/api/docs/_bundle/openapi.json` | 2 | 2 | Nothing |
+| `perplexity` | openapi | `docs.perplexity.ai/openapi.json` | 50 | 4 | 2 credentials: the response carries the webhook signing secret it generated. 44 not included: the preset is an allowlist of search, page context, decisions and the model list. Left out: the Agent and Orchestrator APIs, which sell third-party models per token (docs/NORTH_STAR.md rules that out for Anthropic models), the retired Sonar operations, monitors, and the skill, file and batch stores. |
+| `serper` | openapi | `specs/serper.yaml` (shipped) | 15 | 14 | 1 account: the key's credit balance and rate limit. |
+| `brave` | openapi | `specs/brave.yaml` (shipped) | 16 | 9 | 3 unusable: each belongs to another Brave plan with its own key; a Search-plan key cannot call them. 4 duplicate: POST twins of the web, LLM context, news and video searches. |
+| `braveanswers` | openapi | `specs/brave.yaml` (shipped) | 16 | 1 | 15 not included: the preset is an allowlist of the one operation an Answers-plan key can call. |
+| `searxng` | openapi | `specs/searxng.yaml` (shipped) | 4 | 4 | Nothing |
+
+`examcp` and `parallelmcp` ask their servers for more than the default tool
+set through a `tools=` query parameter. `tavilymcp`, `jinamcp`, `kagi`,
+`tinyfishanswer` and `searxng` hide nothing. Arguments pinned by default are
+listed in `docs/components/gateway.md` ("Pinned defaults").
+
+To see the same table for a real config, with the names:
+
+```bash
+coldsearch mcp --config ~/.config/coldsearch/config.toml --list-tools
+```
+
 ## Unexposed surface worth considering
 
 These are design choices, not bugs — the adapters expose the common denominator and

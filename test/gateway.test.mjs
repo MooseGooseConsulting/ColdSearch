@@ -381,12 +381,12 @@ test("gateway config explains what is missing", () => {
 
   const config = resolveGatewayConfig({
     exhausted_cooldown: "30m",
-    upstreams: { brightdata: { keys: ["env:X"] }, custom: { url: "https://mcp.example.com/mcp", auth: "none" } },
+    upstreams: { brightdatamcp: { keys: ["env:X"] }, custom: { url: "https://mcp.example.com/mcp", auth: "none" } },
   });
   assert.equal(config.exhaustedCooldownMs, 30 * 60_000);
   assert.deepEqual(
     config.upstreams.map((upstream) => [upstream.name, upstream.auth, upstream.authName]),
-    [["brightdata", "query", "token"], ["custom", "none", "Authorization"]]
+    [["brightdatamcp", "query", "token"], ["custom", "none", "Authorization"]]
   );
   assert.throws(() => resolveGatewayConfig({ upstreams: { custom: { kind: "openapi", url: "https://api.example.com", keys: ["env:X"] } } }), /needs spec/);
   const exa = resolveGatewayConfig({ upstreams: { exa: { keys: ["env:X"] }, examcp: { keys: ["env:X"] } } }).upstreams;

@@ -186,18 +186,22 @@ async function loadSpec(location: string): Promise<Json> {
  * document's own server when the upstream lists more than one document, then
  * the upstream's `url`. With a single document the upstream's `url` outranks
  * the document's server, which is how a config points at a regional or
- * self-hosted base. A later operation with the same method, base URL and
- * path as an earlier one is dropped; the same path on two hosts is kept twice.
+ * self-hosted base. `presetUrl` keeps that true for a preset with several
+ * documents: a document whose server is that address follows `url`, so a
+ * block that moves the preset moves all of it, and its key goes nowhere else.
+ * A later operation with the same method, base URL and path as an earlier
+ * one is dropped; the same path on two hosts is kept twice.
  */
-async function loadOperations(locations: string[], url: string): Promise<ResolvedOperation[]> {
-  const cacheKey = [url, ...locations].join("\n");
+async function loadOperations(locations: string[], url: string, presetUrl?: string): Promise<ResolvedOperation[]> {
+  const cacheKey = [url, presetUrl ?? "", ...locations].join("\n");
   const cached = specCache.get(cacheKey);
   if (cached && Date.now() - cached.at < SPEC_TTL_MS) return cached.operations;
   const taken = new Set<string>();
   const seen = new Set<string>();
   const operations: ResolvedOperation[] = [];
   for (const spec of await Promise.all(locations.map(loadSpec))) {
-    const documentServer = locations.length > 1 ? serverOf(spec) : undefined;
+    const named = locations.length > 1 ? serverOf(spec) : undefined;
+    const documentServer = named && presetUrl && baseOf(named) === baseOf(presetUrl) ? undefined : named;
     for (const operation of operationsFromSpec(spec, taken)) {
       const base = baseOf(operation.server ?? documentServer ?? url);
       const id = `${operation.method} ${base}${operation.path}`;
@@ -411,7 +415,7 @@ function binaryNotice(type: string, size: number): string {
  *   the upstream sent one.
  */
 export async function connectOpenApi(upstream: UpstreamConfig, keyValue: string): Promise<UpstreamClient> {
-  const operations = await loadOperations(upstream.specs, upstream.url);
+  const operations = await loadOperations(upstream.specs, upstream.url, upstream.presetUrl);
   const byName = new Map(operations.map((operation) => [operation.tool.name, operation]));
   const reserved = (operation: Operation) => operation.headerParams.filter((name) => reservedHeader(name, upstream));
   const tools = operations.map((operation) => withoutArguments(operation.tool, reserved(operation)));

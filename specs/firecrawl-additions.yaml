@@ -1,0 +1,188 @@
+# Firecrawl additions — authored for the ColdSearch gateway on 2026-11-27.
+#
+# Firecrawl's published v2 document
+# (https://docs.firecrawl.dev/api-reference/v2-openapi.json) leaves out some
+# routes and describes three others incompletely. This file supplies them. The
+# `firecrawl` preset lists it before the published document, so the three
+# operations that share a method and path with a published one replace it:
+#
+#   POST /parse                       JSON with uploadRef, in place of a multipart upload the gateway cannot send
+#   POST /scrape/{jobId}/interact     adds `prompt`; `code` is no longer required
+#   GET  /team/credit-usage/historical  adds `byEndpoint` and `bin`
+#
+# Field names come from Firecrawl's public API and MCP server source and its
+# documentation. No operation here was run with a key.
+#
+# There is no `servers` entry: calls go to the upstream's `url`
+# (https://api.firecrawl.dev/v2 in the preset).
+#
+# Not here: a second POST /scrape operation for Alexandria calls. The gateway
+# keeps one operation per method, base URL and path, so it would replace the
+# published scrape operation instead of sitting beside it.
+openapi: 3.1.0
+info:
+  title: Firecrawl v2 additions (authored for ColdSearch)
+  version: "2026-11-27"
+  description: Routes missing from, or incomplete in, Firecrawl's published v2 document. Not a vendor document.
+security:
+  - bearerAuth: []
+paths:
+  /parse/upload-url:
+    post:
+      operationId: createParseUploadUrl
+      summary: Get an upload URL for a local file to parse
+      description: >-
+        Returns {uploadUrl, uploadRef, method, headers, fields, expiresAt, maxSizeBytes}. Send the file's bytes to uploadUrl
+        yourself (the gateway cannot), then call parseUploadedFile with the uploadRef.
+        Source: https://docs.firecrawl.dev/authentication (listed as callable without a key) and apps/api/src/routes/v2.ts
+        in https://github.com/firecrawl/firecrawl, read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename]
+              properties:
+                filename: { type: string, description: "Name of the file, with its extension." }
+                contentType: { type: string, description: 'Media type of the file, for example "application/pdf".' }
+                declaredSizeBytes: { type: integer, description: "Size of the file in bytes." }
+      responses:
+        "200":
+          description: The signed upload URL and the uploadRef to parse with.
+          content:
+            application/json:
+              schema: { type: object }
+  /parse:
+    post:
+      operationId: parseUploadedFile
+      summary: Parse a file already uploaded through createParseUploadUrl
+      description: >-
+        Turns an uploaded PDF, Office or HTML file into markdown or JSON. A PDF costs 1 credit a page.
+        Source: apps/api/src/routes/v2.ts in https://github.com/firecrawl/firecrawl and the hosted MCP server's source
+        (https://github.com/firecrawl/firecrawl-mcp-server), read 2026-11-27. The published document describes only the multipart form of this route.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uploadRef]
+              properties:
+                uploadRef: { type: string, description: "The uploadRef returned by createParseUploadUrl." }
+                formats: { type: array, items: {}, description: 'Output formats, as on a scrape, for example ["markdown"].' }
+                parsers: { type: array, items: {}, description: "Parsers to apply. An empty list returns a PDF unparsed." }
+                onlyMainContent: { type: boolean }
+                redactPII: { description: "Redact personal data. Adds credits." }
+                zeroDataRetention: { type: boolean }
+                timeout: { type: integer, description: "Milliseconds." }
+      responses:
+        "200":
+          description: The parsed document.
+          content:
+            application/json:
+              schema: { type: object }
+  /agent/threads/{threadId}:
+    get:
+      operationId: getAgentThread
+      summary: Read an agent thread and its runs
+      description: >-
+        The runs of one agent thread, with their data when includeData is true.
+        Source: https://docs.firecrawl.dev/features/agent and the SDK's getAgentThread, read 2026-11-27. The route answered 401
+        to a request without a key that day, so it exists; its response was not seen.
+        This operation is unverified against the live API.
+      parameters:
+        - name: threadId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: includeData
+          in: query
+          schema: { type: boolean, description: "Include each run's result data." }
+      responses:
+        "200":
+          description: The thread and its runs.
+          content:
+            application/json:
+              schema: { type: object }
+  /concurrency-check:
+    get:
+      operationId: getConcurrency
+      summary: Browsers in use and the team's limit
+      description: >-
+        Returns {concurrency, maxConcurrency}.
+        Source: https://docs.firecrawl.dev/features/key-restrictions and apps/api/src/routes/v2.ts in
+        https://github.com/firecrawl/firecrawl, read 2026-11-27. The route answered 401 to a request without a key that day,
+        so it exists; its response was not seen.
+        This operation is unverified against the live API.
+      responses:
+        "200":
+          description: Current and maximum concurrency.
+          content:
+            application/json:
+              schema: { type: object }
+  /scrape/{jobId}/interact:
+    post:
+      operationId: interactWithScrapeBrowserSession
+      summary: Act on a page already scraped, by prompt or by code
+      description: >-
+        Runs a plain-language prompt (7 credits per browser minute) or code (2 credits per browser minute) in the browser
+        session of a scrape job. Give prompt or code. Stop the session with the scrape job's interact DELETE operation.
+        Source: https://docs.firecrawl.dev/features/interact, read 2026-11-27. The published document lists only code and
+        marks it required.
+        This operation is unverified against the live API.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, description: "Id of the scrape job whose browser session to use." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt: { type: string, description: "What to do on the page, in plain language." }
+                code: { type: string, description: "Code to run in the session." }
+                language: { type: string, enum: [node, python, bash], description: "Language of code." }
+                timeout: { type: integer }
+                zeroDataRetention: { type: boolean }
+      responses:
+        "200":
+          description: What the prompt or code returned.
+          content:
+            application/json:
+              schema: { type: object }
+  /team/credit-usage/historical:
+    get:
+      operationId: getHistoricalCreditUsage
+      summary: Credit usage by month or day, optionally per key or per endpoint
+      description: >-
+        The team's past credit usage.
+        Source: src/usage.ts in https://github.com/firecrawl/firecrawl-mcp-server, which sends byEndpoint and bin, read
+        2026-11-27. The published document lists only byApiKey; whether the API honours bin is unconfirmed.
+        This operation is unverified against the live API.
+      parameters:
+        - name: byApiKey
+          in: query
+          schema: { type: boolean, description: "Split usage by API key." }
+        - name: byEndpoint
+          in: query
+          schema: { type: boolean, description: "Split usage by endpoint." }
+        - name: bin
+          in: query
+          schema: { type: string, enum: [month, day], description: "Size of each period." }
+      responses:
+        "200":
+          description: Usage per period.
+          content:
+            application/json:
+              schema: { type: object }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

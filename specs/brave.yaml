@@ -1,0 +1,1832 @@
+# Brave Search API — authored for the ColdSearch gateway on 2026-11-27.
+#
+# Brave publishes no full API document. Its only one,
+# https://search.agent.s.brave.app/openapi.json, lists 8 GET operations with a
+# reduced parameter set. This file covers the 16 operations of the reference
+# pages indexed at https://api-dashboard.search.brave.com/llms.txt: names,
+# types, ranges and defaults are the ones those pages state, descriptions are
+# shortened, and value lists longer than 12 entries (countries, languages) are
+# left to the description. Each operation names its page. No operation here
+# was run with a key.
+#
+# Left out on purpose: the key header (the gateway sends it), Accept and
+# User-Agent (the gateway sets them), the deprecated goggles_id, and the
+# metadata and seed fields the Answers page says are ignored.
+#
+# Each Brave plan (Search, Answers, Autosuggest, Spellcheck) issues its own
+# key, so one upstream reaches one plan's operations: the `brave` preset hides
+# answers, suggest and spellcheck, and `braveanswers` offers answers alone.
+openapi: 3.1.0
+info:
+  title: Brave Search API (authored for ColdSearch)
+  version: "2026-11-27"
+  description: Written from Brave's reference pages; not a vendor document.
+servers:
+  - url: https://api.search.brave.com
+security:
+  - subscriptionToken: []
+paths:
+  /res/v1/web/search:
+    get:
+      operationId: webSearch
+      summary: Search
+      description: "Search the web from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/search/get/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's search query term. Query can not be empty. Maximum of 600 characters and 75 words in
+              the query.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The 2 character country code where the search results come from.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The 2 or more character language code for which the search results are provided.
+        - name: ui_lang
+          in: query
+          schema:
+            type: string
+            default: en-US
+            description: User interface language preferred in response. Usually of the format
+              <language_code>-<country_code>. For more, see RFC 9110.
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 20
+            description: "The number of search results returned in response. The maximum is 20. The actual number
+              delivered may be less than requested. Combine this parameter with offset to paginate search
+              results. NOTE: Count only applies to web results."
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 9
+            default: 0
+            description: The zero based offset that indicates number of search result pages (count) to skip before
+              returning the result. The default is 0 and the maximum is 9. The actual number delivered may be
+              less than requested.
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - moderate
+              - strict
+            default: moderate
+            description: "Filters search results for adult content. The following values are supported: - off - No
+              filtering is done. - moderate - Filters explicit content, like images and videos, but allows
+              adult domains in the search results."
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to spell check provided query. If the spell checker is enabled, the modified query is
+              always used for search. The modified query can be found in altered key from the query response
+              model.
+        - name: freshness
+          in: query
+          schema:
+            type: string
+            description: "Filters search results by page age. The age of a page is determined by the most relevant date
+              reported by the content, such as its published or last modified date. The following values are
+              supported: - pd - Pages aged 24 hours or less."
+        - name: text_decorations
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether display strings (e.g. result snippets) should include decoration markers (e.g.
+              highlighting characters).
+        - name: result_filter
+          in: query
+          schema:
+            type: string
+            description: A comma delimited string of result types to include in the search response. Not specifying this
+              parameter will return back all result types in search response where data is available and the
+              plan has the corresponding option activated.
+        - name: units
+          in: query
+          schema:
+            type: string
+            enum:
+              - imperial
+              - metric
+            description: "The measurement units. The following values are supported: - metric - The standardized
+              measurement system (km, celcius..) - imperial - The British Imperial system of units (mile,
+              fahrenheit..)"
+        - name: goggles
+          in: query
+          schema:
+            type: string
+            description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+              url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+              Goggles documentation.
+        - name: extra_snippets
+          in: query
+          schema:
+            type: string
+            description: A snippet is an excerpt from a page you get as a result of the query, and extra_snippets allow
+              you to get up to 5 additional, alternative excerpts.
+        - name: summary
+          in: query
+          schema:
+            type: string
+            description: This parameter enables summary key generation in web search results. This is required for
+              summarizer to be enabled.
+        - name: enable_rich_callback
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: "Enable rich callback. Allows you to get real time rich results via a callback URL when they are
+              relevant to your query. NOTE: Requires `Search` plan."
+        - name: include_fetch_metadata
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Include fetch metadata.
+        - name: operators
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to apply search operators
+        - name: operators_fallback
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Whether to try relaxed operator matching first, falling back to the original results if no
+              matches succeed
+        - name: X-Loc-Lat
+          in: header
+          schema:
+            type: string
+            description: The latitude of the client's geographical location in degrees, to provide relevant local results.
+              The latitude must be greater than or equal to -90.0 degrees and less than or equal to +90.0
+              degrees. Range -90 to 90.
+        - name: X-Loc-Long
+          in: header
+          schema:
+            type: string
+            description: The longitude of the client's geographical location in degrees, to provide relevant local
+              results. The longitude must be greater than or equal to -180.0 and less than or equal to +180.0
+              degrees. Range -180 to 180.
+        - name: X-Loc-Timezone
+          in: header
+          schema:
+            type: string
+            description: The IANA timezone for the client's device. For complete list of IANA timezones and location
+              mappings see IANA Database and Geonames Database.
+        - name: X-Loc-City
+          in: header
+          schema:
+            type: string
+            description: The generic name of the client city.
+        - name: X-Loc-State
+          in: header
+          schema:
+            type: string
+            description: A code which could be up to three characters, that represent the client's state/region. The
+              region is the first-level subdivision (the broadest or least specific) of the ISO 3166-2 code.
+        - name: X-Loc-State-Name
+          in: header
+          schema:
+            type: string
+            description: The name of the client's state/region. The region is the first-level subdivision (the broadest or
+              least specific) of the ISO 3166-2 code.
+        - name: X-Loc-Country
+          in: header
+          schema:
+            type: string
+            description: The two letter country code for the client's country. For a list of country codes, see ISO 3166-1
+              alpha-2.
+        - name: X-Loc-Postal-Code
+          in: header
+          schema:
+            type: string
+            description: The client's postal code.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+    post:
+      operationId: webSearchPost
+      summary: Search (JSON body)
+      description: "Search the web from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/search/post/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: X-Loc-Lat
+          in: header
+          schema:
+            type: string
+            description: The latitude of the client's geographical location in degrees, to provide relevant local results.
+              The latitude must be greater than or equal to -90.0 degrees and less than or equal to +90.0
+              degrees. Range -90 to 90.
+        - name: X-Loc-Long
+          in: header
+          schema:
+            type: string
+            description: The longitude of the client's geographical location in degrees, to provide relevant local
+              results. The longitude must be greater than or equal to -180.0 and less than or equal to +180.0
+              degrees. Range -180 to 180.
+        - name: X-Loc-Timezone
+          in: header
+          schema:
+            type: string
+            description: The IANA timezone for the client's device. For complete list of IANA timezones and location
+              mappings see IANA Database and Geonames Database.
+        - name: X-Loc-City
+          in: header
+          schema:
+            type: string
+            description: The generic name of the client city.
+        - name: X-Loc-State
+          in: header
+          schema:
+            type: string
+            description: A code which could be up to three characters, that represent the client's state/region. The
+              region is the first-level subdivision (the broadest or least specific) of the ISO 3166-2 code.
+        - name: X-Loc-State-Name
+          in: header
+          schema:
+            type: string
+            description: The name of the client's state/region. The region is the first-level subdivision (the broadest or
+              least specific) of the ISO 3166-2 code.
+        - name: X-Loc-Country
+          in: header
+          schema:
+            type: string
+            description: The two letter country code for the client's country. For a list of country codes, see ISO 3166-1
+              alpha-2.
+        - name: X-Loc-Postal-Code
+          in: header
+          schema:
+            type: string
+            description: The client's postal code.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+                  description: The user's search query term. Query can not be empty. Maximum of 600 characters and 75 words in
+                    the query.
+                country:
+                  type: string
+                  default: US
+                  description: The 2 character country code where the search results come from.
+                search_lang:
+                  type: string
+                  default: en
+                  description: The 2 or more character language code for which the search results are provided.
+                ui_lang:
+                  type: string
+                  default: en-US
+                  description: User interface language preferred in response. Usually of the format
+                    <language_code>-<country_code>. For more, see RFC 9110.
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 20
+                  description: "The number of search results returned in response. The maximum is 20. The actual number
+                    delivered may be less than requested. Combine this parameter with offset to paginate
+                    search results. NOTE: Count only applies to web results."
+                offset:
+                  type: integer
+                  minimum: 0
+                  maximum: 9
+                  default: 0
+                  description: The zero based offset that indicates number of search result pages (count) to skip before
+                    returning the result. The default is 0 and the maximum is 9. The actual number delivered
+                    may be less than requested.
+                safesearch:
+                  type: string
+                  enum:
+                    - off
+                    - moderate
+                    - strict
+                  default: moderate
+                  description: "Filters search results for adult content. The following values are supported: - off - No
+                    filtering is done. - moderate - Filters explicit content, like images and videos, but
+                    allows adult domains in the search results."
+                spellcheck:
+                  type: boolean
+                  default: true
+                  description: Whether to spell check provided query. If the spell checker is enabled, the modified query is
+                    always used for search. The modified query can be found in altered key from the query
+                    response model.
+                freshness:
+                  type: string
+                  description: "Filters search results by page age. The age of a page is determined by the most relevant date
+                    reported by the content, such as its published or last modified date. The following values
+                    are supported: - pd - Pages aged 24 hours or less."
+                text_decorations:
+                  type: boolean
+                  default: true
+                  description: Whether display strings (e.g. result snippets) should include decoration markers (e.g.
+                    highlighting characters).
+                result_filter:
+                  type: array
+                  items:
+                    type: string
+                  description: A comma delimited string of result types to include in the search response. Not specifying this
+                    parameter will return back all result types in search response where data is available and
+                    the plan has the corresponding option activated.
+                units:
+                  type: string
+                  enum:
+                    - imperial
+                    - metric
+                  description: "The measurement units. The following values are supported: - metric - The standardized
+                    measurement system (km, celcius..) - imperial - The British Imperial system of units
+                    (mile, fahrenheit..)"
+                goggles:
+                  description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+                    url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+                    Goggles documentation.
+                extra_snippets:
+                  type: boolean
+                  description: A snippet is an excerpt from a page you get as a result of the query, and extra_snippets allow
+                    you to get up to 5 additional, alternative excerpts.
+                summary:
+                  type: boolean
+                  description: This parameter enables summary key generation in web search results. This is required for
+                    summarizer to be enabled.
+                enable_rich_callback:
+                  type: boolean
+                  default: false
+                  description: "Enable rich callback. Allows you to get real time rich results via a callback URL when they are
+                    relevant to your query. NOTE: Requires `Search` plan."
+                include_fetch_metadata:
+                  type: boolean
+                  default: false
+                  description: Include fetch metadata.
+                operators:
+                  type: boolean
+                  default: true
+                  description: Whether to apply search operators
+                operators_fallback:
+                  type: boolean
+                  default: false
+                  description: Whether to try relaxed operator matching first, falling back to the original results if no
+                    matches succeed
+              required:
+                - q
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/llm/context:
+    get:
+      operationId: llmContext
+      summary: LLM Context
+      description: "Pre-extracted web content optimized for AI agents, LLM grounding, and RAG pipelines. Use this
+        API to get the context for your LLM or AI agent. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/ai/llm_context/get/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's search query term. Query can not be empty. Maximum of 600 characters and 75 words in
+              the query.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The search query country, where the results come from. The country string is limited to 2
+              character country codes of supported countries.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The search language preference. The 2 or more character language code for which the search
+              results are provided.
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            description: The maximum number of search results considered to select the LLM context data. The default is 20
+              and the maximum is 50.
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - moderate
+              - strict
+            description: "Filters results for adult content. The following values are supported: - off - No filtering is
+              done. - moderate - Drops adult content from the results used for context. - strict - Drops all
+              adult content from the results used for context."
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to enable spellcheck on the query.
+        - name: operators
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to apply search operators.
+        - name: operators_fallback
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to try relaxed operator matching first, falling back to the original results if no
+              matches succeed.
+        - name: maximum_number_of_urls
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            description: Maximum number of different URLs to include in LLM context.
+        - name: maximum_number_of_tokens
+          in: query
+          schema:
+            type: integer
+            minimum: 1024
+            maximum: 32768
+            default: 8192
+            description: Approximate maximum number of tokens to include in context. The default is `8192` and maximum is
+              `32768`.
+        - name: context_threshold_mode
+          in: query
+          schema:
+            type: string
+            enum:
+              - disabled
+              - strict
+              - lenient
+              - balanced
+            description: The mode to use to determine the threshold for including content in context.
+        - name: maximum_number_of_tokens_per_url
+          in: query
+          schema:
+            type: integer
+            minimum: 512
+            maximum: 8192
+            description: Maximum number of tokens to include per URL. The default is `4096` and maximum is `8192`.
+        - name: goggles
+          in: query
+          schema:
+            type: string
+            description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+              url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+              Goggles documentation.
+        - name: freshness
+          in: query
+          schema:
+            type: string
+            description: "Filters search results by page age. The age of a page is determined by the most relevant date
+              reported by the content, such as its published or last modified date. The following values are
+              supported: - pd - Pages aged 24 hours or less."
+        - name: enable_local
+          in: query
+          schema:
+            type: string
+            description: "Whether to enable local recall. Not setting this value means auto-detect: local recall is used
+              if a location is provided (`X-Loc-Lat` with `X-Loc-Long`, or `X-Loc-City`)."
+        - name: enable_source_metadata
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Enable source metadata enrichment (site_name, favicon, thumbnail, description,
+              fetched_content_timestamp) in the sources attribute of the response.
+        - name: X-Loc-Lat
+          in: header
+          schema:
+            type: string
+            description: The latitude of the client's geographical location in degrees, to provide relevant local results.
+              The latitude must be greater than or equal to -90.0 degrees and less than or equal to +90.0
+              degrees. Range -90 to 90.
+        - name: X-Loc-Long
+          in: header
+          schema:
+            type: string
+            description: The longitude of the client's geographical location in degrees, to provide relevant local
+              results. The longitude must be greater than or equal to -180.0 and less than or equal to +180.0
+              degrees. Range -180 to 180.
+        - name: X-Loc-City
+          in: header
+          schema:
+            type: string
+            description: The generic name of the client city
+        - name: X-Loc-State
+          in: header
+          schema:
+            type: string
+            description: A code which could be up to three characters, that represent the client's state/region. The
+              region is the first-level subdivision (the broadest or least specific) of the ISO 3166-2 code.
+        - name: X-Loc-State-Name
+          in: header
+          schema:
+            type: string
+            description: The name of the client's state/region. The region is the first-level subdivision (the broadest or
+              least specific) of the ISO 3166-2 code.
+        - name: X-Loc-Country
+          in: header
+          schema:
+            type: string
+            description: The two letter country code for the client's country. For a list of country codes, see ISO 3166-1
+              alpha-2
+        - name: X-Loc-Postal-Code
+          in: header
+          schema:
+            type: string
+            description: The client's postal code
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+    post:
+      operationId: llmContextPost
+      summary: LLM Context (JSON body)
+      description: "Pre-extracted web content optimized for AI agents, LLM grounding, and RAG pipelines. Use this
+        API to get the context for your LLM or AI agent. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/ai/llm_context/post/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: X-Loc-Lat
+          in: header
+          schema:
+            type: string
+            description: The latitude of the client's geographical location in degrees, to provide relevant local results.
+              The latitude must be greater than or equal to -90.0 degrees and less than or equal to +90.0
+              degrees. Range -90 to 90.
+        - name: X-Loc-Long
+          in: header
+          schema:
+            type: string
+            description: The longitude of the client's geographical location in degrees, to provide relevant local
+              results. The longitude must be greater than or equal to -180.0 and less than or equal to +180.0
+              degrees. Range -180 to 180.
+        - name: X-Loc-City
+          in: header
+          schema:
+            type: string
+            description: The generic name of the client city
+        - name: X-Loc-State
+          in: header
+          schema:
+            type: string
+            description: A code which could be up to three characters, that represent the client's state/region. The
+              region is the first-level subdivision (the broadest or least specific) of the ISO 3166-2 code.
+        - name: X-Loc-State-Name
+          in: header
+          schema:
+            type: string
+            description: The name of the client's state/region. The region is the first-level subdivision (the broadest or
+              least specific) of the ISO 3166-2 code.
+        - name: X-Loc-Country
+          in: header
+          schema:
+            type: string
+            description: The two letter country code for the client's country. For a list of country codes, see ISO 3166-1
+              alpha-2
+        - name: X-Loc-Postal-Code
+          in: header
+          schema:
+            type: string
+            description: The client's postal code
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+                  description: The user's search query term. Query can not be empty. Maximum of 600 characters and 75 words in
+                    the query.
+                country:
+                  type: string
+                  default: US
+                  description: The search query country, where the results come from. The country string is limited to 2
+                    character country codes of supported countries.
+                search_lang:
+                  type: string
+                  default: en
+                  description: The search language preference. The 2 or more character language code for which the search
+                    results are provided.
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  description: The maximum number of search results considered to select the LLM context data. The default is 20
+                    and the maximum is 50.
+                safesearch:
+                  type: string
+                  enum:
+                    - off
+                    - moderate
+                    - strict
+                  description: "Filters results for adult content. The following values are supported: - off - No filtering is
+                    done. - moderate - Drops adult content from the results used for context. - strict - Drops
+                    all adult content from the results used for context."
+                spellcheck:
+                  type: boolean
+                  default: true
+                  description: Whether to enable spellcheck on the query.
+                operators:
+                  type: boolean
+                  default: true
+                  description: Whether to apply search operators.
+                operators_fallback:
+                  type: boolean
+                  default: true
+                  description: Whether to try relaxed operator matching first, falling back to the original results if no
+                    matches succeed.
+                maximum_number_of_urls:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  description: Maximum number of different URLs to include in LLM context.
+                maximum_number_of_tokens:
+                  type: integer
+                  minimum: 1024
+                  maximum: 32768
+                  default: 8192
+                  description: Approximate maximum number of tokens to include in context. The default is `8192` and maximum is
+                    `32768`.
+                context_threshold_mode:
+                  type: string
+                  enum:
+                    - disabled
+                    - strict
+                    - lenient
+                    - balanced
+                  description: The mode to use to determine the threshold for including content in context.
+                maximum_number_of_tokens_per_url:
+                  type: integer
+                  minimum: 512
+                  maximum: 8192
+                  description: Maximum number of tokens to include per URL. The default is `4096` and maximum is `8192`.
+                goggles:
+                  description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+                    url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+                    Goggles documentation.
+                freshness:
+                  type: string
+                  description: "Filters search results by page age. The age of a page is determined by the most relevant date
+                    reported by the content, such as its published or last modified date. The following values
+                    are supported: - pd - Pages aged 24 hours or less."
+                enable_local:
+                  type: boolean
+                  description: "Whether to enable local recall. Not setting this value means auto-detect: local recall is used
+                    if a location is provided (`X-Loc-Lat` with `X-Loc-Long`, or `X-Loc-City`)."
+                enable_source_metadata:
+                  type: boolean
+                  default: false
+                  description: Enable source metadata enrichment (site_name, favicon, thumbnail, description,
+                    fetched_content_timestamp) in the sources attribute of the response.
+              required:
+                - q
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/news/search:
+    get:
+      operationId: newsSearch
+      summary: News search
+      description: "Search news content from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/news/news_search/get/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's search query term. Query can not be empty. Maximum of 400 characters and 50 words in
+              the query.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The search language preference. The 2 or more character language code for which the search
+              results are provided.
+        - name: ui_lang
+          in: query
+          schema:
+            type: string
+            default: en-US
+            description: User interface language preferred in response. Usually of the format
+              `<language_code>-<country_code>`. For more, see RFC 9110.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The search query country, where the results come from. The country string is limited to 2
+              character country codes of supported countries or `ALL` for worldwide.
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - moderate
+              - strict
+            default: strict
+            description: "Filters search results for adult content. The following values are supported: - off - No
+              filtering is done. - moderate - Filter out explicit content. - strict - Filter out explicit and
+              suggestive content."
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+            description: The number of search results returned in response. The maximum is 50. The actual number delivered
+              may be less than requested. Combine this parameter with offset to paginate search results.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 9
+            default: 0
+            description: The zero based offset that indicates number of search results per page (count) to skip before
+              returning the result. The maximum is 9. The actual number delivered may be less than requested
+              based on the query.
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to spell check the provided query. If the spellchecker is enabled, the modified query is
+              always used for search. The modified query can be found in altered key from the query response
+              model.
+        - name: freshness
+          in: query
+          schema:
+            type: string
+            description: "Filters search results by page age. The age of a page is determined by the most relevant date
+              reported by the content, such as its published or last modified date. The following values are
+              supported: - pd - Pages aged 24 hours or less."
+        - name: extra_snippets
+          in: query
+          schema:
+            type: string
+            description: A snippet is an excerpt from a page you get as a result of the query, and extra_snippets allow
+              you to get up to 5 additional, alternative excerpts.
+        - name: goggles
+          in: query
+          schema:
+            type: string
+            description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+              url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+              Goggles documentation.
+        - name: include_fetch_metadata
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Include fetch metadata.
+        - name: operators
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to apply search operators.
+        - name: operators_fallback
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Whether to try relaxed operator matching first, falling back to the original results if no
+              matches succeed.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+    post:
+      operationId: newsSearchPost
+      summary: News search (JSON body)
+      description: "Search news content from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/news/news_search/post/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+                  description: The user's search query term. Query can not be empty. Maximum of 400 characters and 50 words in
+                    the query.
+                search_lang:
+                  type: string
+                  default: en
+                  description: The search language preference. The 2 or more character language code for which the search
+                    results are provided.
+                ui_lang:
+                  type: string
+                  default: en-US
+                  description: User interface language preferred in response. Usually of the format
+                    `<language_code>-<country_code>`. For more, see RFC 9110.
+                country:
+                  type: string
+                  default: US
+                  description: The search query country, where the results come from. The country string is limited to 2
+                    character country codes of supported countries or `ALL` for worldwide.
+                safesearch:
+                  type: string
+                  enum:
+                    - off
+                    - moderate
+                    - strict
+                  default: strict
+                  description: "Filters search results for adult content. The following values are supported: - off - No
+                    filtering is done. - moderate - Filter out explicit content. - strict - Filter out
+                    explicit and suggestive content."
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  default: 20
+                  description: The number of search results returned in response. The maximum is 50. The actual number delivered
+                    may be less than requested. Combine this parameter with offset to paginate search results.
+                offset:
+                  type: integer
+                  minimum: 0
+                  maximum: 9
+                  default: 0
+                  description: The zero based offset that indicates number of search results per page (count) to skip before
+                    returning the result. The maximum is 9. The actual number delivered may be less than
+                    requested based on the query.
+                spellcheck:
+                  type: boolean
+                  default: true
+                  description: Whether to spell check the provided query. If the spellchecker is enabled, the modified query is
+                    always used for search. The modified query can be found in altered key from the query
+                    response model.
+                freshness:
+                  type: string
+                  description: "Filters search results by page age. The age of a page is determined by the most relevant date
+                    reported by the content, such as its published or last modified date. The following values
+                    are supported: - pd - Pages aged 24 hours or less."
+                extra_snippets:
+                  type: boolean
+                  description: A snippet is an excerpt from a page you get as a result of the query, and extra_snippets allow
+                    you to get up to 5 additional, alternative excerpts.
+                goggles:
+                  description: Goggles act as a custom re-ranking on top of Brave's search index. The parameter supports both a
+                    url where the Goggle is hosted or the definition of the Goggle. For more details, see the
+                    Goggles documentation.
+                include_fetch_metadata:
+                  type: boolean
+                  default: false
+                  description: Include fetch metadata.
+                operators:
+                  type: boolean
+                  default: true
+                  description: Whether to apply search operators.
+                operators_fallback:
+                  type: boolean
+                  default: false
+                  description: Whether to fall back to the original results when search operators return no results.
+              required:
+                - q
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/videos/search:
+    get:
+      operationId: videosSearch
+      summary: Video search
+      description: "Search video content from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/videos/video_search/get/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's search query term. Query can not be empty. Maximum of 400 characters and 50 words in
+              the query.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The search language preference. The 2 or more character language code for which the search
+              results are provided.
+        - name: ui_lang
+          in: query
+          schema:
+            type: string
+            default: en-US
+            description: User interface language preferred in response. Usually of the format
+              `<language_code>-<country_code>`. For more, see RFC 9110.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The search query country, where the results come from. The country string is limited to 2
+              character country codes of supported countries or `ALL` for worldwide.
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - moderate
+              - strict
+            default: moderate
+            description: "Filters search results for adult content. The following values are supported: - off - No
+              filtering is done. - moderate - Filters explicit content, like images and videos, but allows
+              adult domains in the search results."
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+            description: The number of search results returned in response. The maximum is 50. The actual number delivered
+              may be less than requested. Combine this parameter with offset to paginate search results.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 9
+            default: 0
+            description: The zero based offset that indicates number of search results per page (count) to skip before
+              returning the result. The maximum is 9. The actual number delivered may be less than requested
+              based on the query.
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to spell check the provided query. If the spellchecker is enabled, the modified query is
+              always used for search. The modified query can be found in altered key from the query response
+              model.
+        - name: freshness
+          in: query
+          schema:
+            type: string
+            description: "Filters search results by page age. The age of a page is determined by the most relevant date
+              reported by the content, such as its published or last modified date. The following values are
+              supported: - pd - Pages aged 24 hours or less."
+        - name: include_fetch_metadata
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Include fetch metadata.
+        - name: operators
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to apply search operators.
+        - name: operators_fallback
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Whether to try relaxed operator matching first, falling back to the original results if no
+              matches succeed.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+    post:
+      operationId: videosSearchPost
+      summary: Video search (JSON body)
+      description: "Search video content from a large independent index of web pages. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/videos/video_search/post/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+                  description: The user's search query term. Query can not be empty. Maximum of 400 characters and 50 words in
+                    the query.
+                search_lang:
+                  type: string
+                  default: en
+                  description: The search language preference. The 2 or more character language code for which the search
+                    results are provided.
+                ui_lang:
+                  type: string
+                  default: en-US
+                  description: User interface language preferred in response. Usually of the format
+                    `<language_code>-<country_code>`. For more, see RFC 9110.
+                country:
+                  type: string
+                  default: US
+                  description: The search query country, where the results come from. The country string is limited to 2
+                    character country codes of supported countries or `ALL` for worldwide.
+                safesearch:
+                  type: string
+                  enum:
+                    - off
+                    - moderate
+                    - strict
+                  default: moderate
+                  description: "Filters search results for adult content. The following values are supported: - off - No
+                    filtering is done. - moderate - Filters explicit content, like images and videos, but
+                    allows adult domains in the search results."
+                count:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  default: 20
+                  description: The number of search results returned in response. The maximum is 50. The actual number delivered
+                    may be less than requested. Combine this parameter with offset to paginate search results.
+                offset:
+                  type: integer
+                  minimum: 0
+                  maximum: 9
+                  default: 0
+                  description: The zero based offset that indicates number of search results per page (count) to skip before
+                    returning the result. The maximum is 9. The actual number delivered may be less than
+                    requested based on the query.
+                spellcheck:
+                  type: boolean
+                  default: true
+                  description: Whether to spell check the provided query. If the spellchecker is enabled, the modified query is
+                    always used for search. The modified query can be found in altered key from the query
+                    response model.
+                freshness:
+                  type: string
+                  description: "Filters search results by page age. The age of a page is determined by the most relevant date
+                    reported by the content, such as its published or last modified date. The following values
+                    are supported: - pd - Pages aged 24 hours or less."
+                include_fetch_metadata:
+                  type: boolean
+                  default: false
+                  description: Include fetch metadata.
+                operators:
+                  type: boolean
+                  default: true
+                  description: Whether to apply search operators.
+                operators_fallback:
+                  type: boolean
+                  default: false
+                  description: Whether to fall back to the original results when search operators return no results.
+              required:
+                - q
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/images/search:
+    get:
+      operationId: imagesSearch
+      summary: Image search
+      description: "Find images from a large independent index of images. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/images/image_search/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's search query term. Query can not be empty. Maximum of 400 characters and 50 words in
+              the query.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The search language preference. The 2 or more character language code for which the search
+              results are provided.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The search query country, where the results come from. The country string is limited to 2
+              character country codes of supported countries and `ALL` for worldwide.
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - strict
+            default: strict
+            description: "Filters search results for adult content. The following values are supported: - off - No content
+              filtering (except for illegal content). - strict - Drops all adult content from search results."
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+            description: "The number of search results returned in response. The maximum is 200. The actual number
+              delivered may be less than requested. NOTE: Image search is not paginated and has no `offset`
+              parameter. Raise `count` to get more results."
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to spell check provided query. If the spell checker is enabled, the modified query is
+              always used for search. The modified query can be found in altered key from the query response
+              model.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/local/place_search:
+    get:
+      operationId: localPlaceSearch
+      summary: Place search
+      description: "Search for points of interest in an area. If no `q` is provided, the endpoint will return
+        general points of interest in the given area. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/place_search/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: radius
+          in: query
+          schema:
+            type: string
+            enum:
+              - "0"
+            description: "Search radius bias around the given coordinates, in meters. NOTE: This is not strictly the
+              radius of the search (nor the resulting radius of the results), but rather a bias towards
+              results that are closer to the given coordinates."
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+            description: Number of results to return. The maximum is 100.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: Two-letter country code (ISO 3166-1 alpha-2) to scope the search.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: Language for the search results.
+        - name: ui_lang
+          in: query
+          schema:
+            type: string
+            default: en-US
+            description: User interface language for the response. Usually `<language>-<region>`.
+        - name: units
+          in: query
+          schema:
+            type: string
+            enum:
+              - imperial
+              - metric
+            default: metric
+            description: "Units of measurement for distance values: `metric` is kilometres, `imperial` is miles."
+        - name: safesearch
+          in: query
+          schema:
+            type: string
+            enum:
+              - off
+              - moderate
+              - strict
+            default: strict
+            description: Safe search level for the query results.
+        - name: spellcheck
+          in: query
+          schema:
+            type: boolean
+            default: true
+            description: Whether to apply spellcheck before executing the search.
+        - name: geoloc
+          in: query
+          schema:
+            type: string
+            description: Optional geolocation of the user in the format `<latitude>x<longitude>`. Used to calculate
+              distance values in results.
+        - name: q
+          in: query
+          schema:
+            type: string
+            description: Query string to search for points of interest in an area. If no `q` is provided, the endpoint
+              will return general points of interest in the given area.
+        - name: latitude
+          in: query
+          schema:
+            type: string
+            description: Latitude of the geographical coordinates. Range -90 to 90.
+        - name: longitude
+          in: query
+          schema:
+            type: string
+            description: Longitude of the geographical coordinates. Range -180 to 180.
+        - name: location
+          in: query
+          schema:
+            type: string
+            description: Location string to search for points of interest in an area. This is alternative to the
+              `latitude` and `longitude` parameters. * For locations in US prefer the form `<city> <state>
+              <country name>`, ie.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/local/pois:
+    get:
+      operationId: localPois
+      summary: Local POIs
+      description: "Get detailed information about points of interest. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/local_pois/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+            description: A list of unique identifiers for the location. The ids are valid only for 8 hours.
+        - name: search_lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The search language preference. The 2 or more character language code for which the search
+              results are provided.
+        - name: ui_lang
+          in: query
+          schema:
+            type: string
+            default: en-US
+            description: User interface language preferred in response. Usually of the format
+              <language_code>-<country_code>. For more, see RFC 9110.
+        - name: units
+          in: query
+          schema:
+            type: string
+            enum:
+              - imperial
+              - metric
+            description: "The measurement units. The following values are supported: - metric - The standardized
+              measurement system (km, celcius..) - imperial - The British Imperial system of units (mile,
+              fahrenheit..)"
+        - name: X-Loc-Lat
+          in: header
+          schema:
+            type: string
+            description: The latitude of the client's geographical location in degrees, to provide relevant local results.
+              The latitude must be greater than or equal to -90.0 degrees and less than or equal to +90.0
+              degrees. Range -90 to 90.
+        - name: X-Loc-Long
+          in: header
+          schema:
+            type: string
+            description: The longitude of the client's geographical location in degrees, to provide relevant local
+              results. The longitude must be greater than or equal to -180.0 and less than or equal to +180.0
+              degrees. Range -180 to 180.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/local/descriptions:
+    get:
+      operationId: localDescriptions
+      summary: POI descriptions
+      description: "Get LLM generated descriptions about points of interest. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/poi_descriptions/index.html.md, read
+        2026-11-27. This operation is unverified against the live API."
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+            description: A list of unique identifiers for the location. The ids are valid only for 8 hours.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/web/rich:
+    get:
+      operationId: richSearch
+      summary: Rich search
+      description: "Gets the rich realtime result for the requested resource, ie. query like `weather in london`.
+        The rich result `callback_key` is obtained by performing first a Web Search and including the
+        `enable_rich_callback=true` parameter in the request. Requires a Search plan. Search plan. Source:
+        https://api-dashboard.search.brave.com/api-reference/web/rich_search/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: callback_key
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The callback key to use for the rich header
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/suggest/search:
+    get:
+      operationId: suggest
+      summary: Suggestions
+      description: "Intelligent search suggestions to help users find what they’re looking for. Autosuggest plan:
+        needs that plan's own key. Source:
+        https://api-dashboard.search.brave.com/api-reference/other/suggestions/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The user's suggest search query term. Query can not be empty. The max query length is 400
+              characters, and the word limit is 50 words.
+        - name: lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The suggest search language preference, where potentially the results could come from. The 2 or
+              more character language code for which the suggest search results are provided. This is a just a
+              hint for calculating suggest responses.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The suggest search query country, where potentially the results could come from. The country
+              string is limited to 2 character country codes of supported countries. This is a just a hint for
+              calculating suggest responses.
+        - name: count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+            description: The number of suggestion search results returned in response. The actual number of results
+              delivered may be less than requested. Minimum is 1, maximum is 20. The default is 5.
+        - name: rich
+          in: query
+          schema:
+            type: boolean
+            default: false
+            description: Whether to enhance suggestions with rich results. This requires a paid autosuggest subscription.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/spellcheck/search:
+    get:
+      operationId: spellcheck
+      summary: Spell check
+      description: "Intelligent spell checking to improve query quality and help users find what they’re looking
+        for. Spellcheck plan: needs that plan's own key. Source:
+        https://api-dashboard.search.brave.com/api-reference/other/spell_check/index.html.md, read 2026-11-27.
+        This operation is unverified against the live API."
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            description: The phrase to be spell checked. Query can not be empty. Maximum of 400 characters and 50 words in
+              the query.
+        - name: lang
+          in: query
+          schema:
+            type: string
+            default: en
+            description: The spell check language preference, where potentially the results could come from. The 2 or more
+              character language code for which the spell check search results are provided. This is a just a
+              hint for calculating spell check responses.
+        - name: country
+          in: query
+          schema:
+            type: string
+            default: US
+            description: The spell check country, where potentially the results could come from. The country string is
+              limited to 2 character country codes of supported countries. This is a just a hint for
+              calculating spellcheck responses.
+        - name: Api-Version
+          in: header
+          schema:
+            type: string
+            description: The API version to use. This is denoted by the format `YYYY-MM-DD`. Default is the latest that is
+              available. Read more about API versioning.
+        - name: Cache-Control
+          in: header
+          schema:
+            type: string
+            enum:
+              - no-cache
+            description: Brave Search will return cached content by default. To prevent caching set the Cache-Control
+              header to `no-cache`. This is currently done as best effort.
+      responses:
+        "200":
+          $ref: "#/components/responses/Results"
+  /res/v1/chat/completions:
+    post:
+      operationId: answers
+      summary: Answers
+      description: "API for AI-generated answers backed by real-time web search and verifiable sources. Answers
+        plan: needs that plan's own key; billed per query plus input and output tokens. stream defaults to
+        true, so the answer arrives as an event stream unless stream is false. Source:
+        https://api-dashboard.search.brave.com/api-reference/ai/answers/index.html.md, read 2026-11-27. This
+        operation is unverified against the live API."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum:
+                          - user
+                        default: user
+                      content:
+                        type: string
+                    required:
+                      - content
+                  description: 'The conversation so far. Exactly one `user` message is supported, e.g. `[{"role": "user",
+                    "content": "Explain quantum computing"}]`.'
+                model:
+                  type: string
+                  enum:
+                    - brave-pro
+                    - brave
+                  default: brave-pro
+                  description: Model ID used to generate the response.
+                max_completion_tokens:
+                  type: integer
+                stream:
+                  type: boolean
+                  default: true
+                web_search_options:
+                  type: object
+                  properties:
+                    search_context_size:
+                      type: string
+                      enum:
+                        - low
+                        - medium
+                        - high
+                    user_location:
+                      type: object
+                      properties:
+                        approximate:
+                          type: object
+                          properties:
+                            city:
+                              type: string
+                            country:
+                              type: string
+                            region:
+                              type: string
+                            timezone:
+                              type: string
+                        type:
+                          type: string
+                          enum:
+                            - approximate
+                          default: approximate
+                      required:
+                        - approximate
+                country:
+                  type: string
+                  default: us
+                language:
+                  type: string
+                  default: en
+                safesearch:
+                  type: string
+                  default: moderate
+                enable_entities:
+                  type: boolean
+                  default: false
+                  description: Whether to include inline entity tags in the answer. Requires `stream=true` and is not supported
+                    in research mode.
+                enable_citations:
+                  type: boolean
+                  default: false
+                  description: Whether to include inline citation tags in the answer. Requires `stream=true` and is not
+                    supported in research mode.
+                enable_research:
+                  type: boolean
+                  default: false
+                  description: Whether to answer with iterative deep research instead of a single search. Requires
+                    `stream=true`.
+                research_allow_thinking:
+                  type: boolean
+                  default: true
+                  description: Accepted for compatibility. Ignored by the mixer engine behind this API, which always runs
+                    research with extended thinking off.
+                research_maximum_number_of_tokens_per_query:
+                  type: integer
+                  minimum: 1024
+                  maximum: 16384
+                  default: 8192
+                  description: Maximum number of tokens to gather per research query.
+                research_maximum_number_of_queries:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  default: 20
+                  description: Maximum number of search queries research mode may issue in total.
+                research_maximum_number_of_iterations:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  default: 4
+                  description: Maximum number of research iterations.
+                research_maximum_number_of_seconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 300
+                  default: 180
+                  description: Time budget for research, in seconds.
+                research_maximum_number_of_results_per_query:
+                  type: integer
+                  minimum: 1
+                  maximum: 60
+                  default: 30
+                  description: Maximum number of search results to consider per research query.
+              required:
+                - messages
+      responses:
+        "200":
+          description: An OpenAI chat completion, or an event stream of completion chunks when stream is true.
+          content:
+            application/json:
+              schema:
+                type: object
+            text/event-stream:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    subscriptionToken:
+      type: apiKey
+      in: header
+      name: X-Subscription-Token
+  responses:
+    Results:
+      description: JSON result. Errors use
+        {"type":"ErrorResponse","error":{"id","status","code","detail","meta"},"time"}; a rejected key is HTTP
+        422 with code SUBSCRIPTION_TOKEN_INVALID.
+      content:
+        application/json:
+          schema:
+            type: object
