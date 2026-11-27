@@ -206,6 +206,14 @@ one document per host fits in one block; a document with no server of its own
 still uses `url`. To send every document of a list to one base, give each its
 own upstream.
 
+A preset that lists several documents (`firecrawl`, `parallel`, `brightdata`,
+`tinyfishapi`) is the exception to rule 3. Its documents all name the preset's
+own address, so a block that sets `url` and leaves `spec` alone moves all of
+them: a document whose server is the preset's address follows the block's
+`url`. `url = "http://localhost:3002/v2"` under `firecrawl` sends every
+Firecrawl call, and the key, to the self-hosted instance and nowhere else. A
+block that sets `spec` itself gets rule 3 as written.
+
 Only the first entry of a `servers` list is read, and only when it is an
 absolute `http` or `https` URL with no `{variable}` in it. Anything else is
 skipped and the next rule applies.
@@ -341,13 +349,25 @@ curation = "none"
   preset's `kind` gets none of them.
 - An upstream without a preset has no default lists; only the block's apply.
 
-The tools hidden for `credentials` are: `exa` `createMonitor` and
-`webhooks_create` (a webhook signing secret); `exaadmin` `list_api_keys`,
-`create_api_key`, `get_api_key`, `update_api_key`, `rotate_api_key` and
-`get_api_key_usage`; `tavilykeys` `post_generate_keys`; `brightdata`
-`listZonePasswords`, `addZonePassword` and `removeZonePassword`; `context`
-`rotateMonitorWebhookSecret`. Firecrawl's partner API, which mints keys, has
-no preset.
+The tools hidden for `credentials` are:
+
+| Preset | Tools | What the response carries |
+|--------|-------|---------------------------|
+| `exa` | `createMonitor`, `webhooks_create` | A webhook signing secret, returned once at creation |
+| `exaadmin` | `list_api_keys`, `create_api_key`, `get_api_key`, `update_api_key`, `rotate_api_key`, `get_api_key_usage` | API key ids or secrets |
+| `tavilykeys` | `post_generate_keys` | Newly minted API keys |
+| `brightdata` | `listZonePasswords`, `getZone`, `addZonePassword`, `removeZonePassword` | Zone passwords, which are proxy credentials; `getZone` answers with the password beside the zone's plan, and the last two take one as an argument |
+| `brightdata` | `getDatasetViewDeliverySettings` | The storage credentials a dataset view delivers with |
+| `context` | `createMonitor`, `getMonitor`, `listMonitors`, `updateMonitor`, `rotateMonitorWebhookSecret` | A monitor's webhook signing secret, returned on every read made with full access |
+| `context` | `submitBatch` | The batch's webhook secret, which only the submit returns |
+| `perplexity` | `createMonitor`, `updateMonitor` | The webhook signing secret the call generated |
+
+The list was made on 2026-11-27 by scanning every success response in the
+vendors' API documents for a key, password, token or secret field and reading
+what the document says of each. A vendor that adds such a field later is not
+caught until the list is made again. The hosted MCP servers publish no
+response schemas, so the `mcp` presets could not be scanned. Firecrawl's
+partner API, which mints keys, has no preset.
 
 ### Pinned defaults
 
@@ -364,12 +384,16 @@ no preset.
 | `tavily` | `createResearch`; `tavilymcp` `tavily_research` | `model` defaults to `mini` | `auto` may pick `pro`, up to 250 credits |
 | `tavily` | `search`, `extract`, `crawl`, `map`, `getResearch` | `include_usage` defaults to `true` | Tavily reports a call's cost only when asked, and the ledger records it |
 | `context` | `post_web_answers` | `mode` defaults to `fast` | The API default, `ultra`, is 100 credits; `fast` is 10 |
+| `brightdata` | `triggerScrape` | `limit_per_input` defaults to 10, capped at 100; `limit_multiple_results` defaults to 100, capped at 1,000 | A discover method bills every record it returns and the API sets no limit of its own |
+| `brightdata` | `listScrapers` | One of `dataset_id` and `domain` is required | The unfiltered catalogue is several megabytes |
 | `searxng` | `search` | `format` defaults to `json` | Without it the instance answers with an HTML page |
 
 The numbers are a starting point chosen from the vendors' price lists, not
 measured. A `default` leaves an argument the agent supplied alone, so an agent
 can still ask for Parallel's `advanced` mode or Tavily's `pro` model by
-naming it. Only a `max` binds.
+naming it. Only a `max` or a `require_one_of` binds. A Bright Data job that
+collects more than 100 records needs `limit_multiple_results` named in the
+call, up to the cap.
 
 ### Shipped documents
 
@@ -420,8 +444,14 @@ keys = ["doppler:EXA_API_KEY"]
   or `"body.maxCredits"` for a tool whose JSON body is the single `body`
   argument. Quote such a name in TOML. A dotted `default` creates the
   enclosing object when it is missing. Lists are not searched.
+- `require_one_of` lists arguments of which the call must supply at least
+  one: `"listScrapers" = { require_one_of = ["dataset_id", "domain"] }`. A
+  call that supplies none, after defaults are filled in, is refused before any
+  request with an error naming them; `null` and an empty string count as left
+  out. It is for a tool whose answer without a filter is too large to return.
 - When several patterns match one tool, all apply in the order written: the
-  first `default` for an argument wins, and the lowest `max` wins.
+  first `default` for an argument wins, the lowest `max` wins, and every
+  `require_one_of` must be met.
 - A capped argument that is neither a number nor a numeric string is refused
   before any call, because it cannot be compared with the cap. That includes
   `null`: the API would read it as "use your own default", which is what the
@@ -480,6 +510,13 @@ that carries one of the phrases in the table: TinyFish answers 429 when a
 key's daily Search or Fetch allowance is used up, and that key is skipped.
 Tavily's 434 is a capacity error that clears on its own and does not skip a
 key either.
+
+Jina uses HTTP 402 for two things: an empty balance
+(`InsufficientBalanceError`, application status 40203) and a feature above
+the key's plan (`TierFeatureConstraintError`, 40202). The second is passed
+back to the agent and does not skip a key, because every key on that plan
+gets the same answer. Both shapes are from Jina's API document and have not
+been seen in a live response.
 
 A key reference is resolved again after the secret cache expires
 (`COLDSEARCH_SECRET_CACHE_TTL`, default 5 minutes for `doppler:` references).
@@ -554,15 +591,20 @@ descriptions are also sent in the server instructions at connect time.
   can call again, with `Last-Event-ID` where the API takes it, or poll the
   run's status operation.
 - A pin applies to arguments by name. It cannot change an argument inside a
-  list, and a `max` does not stop an agent from leaving the argument out.
+  list, and a `max` does not stop an agent from leaving the argument out;
+  pair it with a `default`, or use `require_one_of`.
+- The gateway puts no size limit on a successful response that is not a
+  stream. `require_one_of` keeps one known multi-megabyte answer from being
+  asked for; any other large answer reaches the agent and the payload file
+  whole.
 - A pin cannot rule out one value of an argument. A tool whose price is set
   by a value the agent chooses (Parallel's `generator = "pro"`, a task
   group's run count) is hidden by its preset instead.
-- `firecrawl` and `parallel` list two documents each, so the published one
-  goes to the host it names, whatever `url` says (see
-  [Which host a call goes to](#which-host-a-call-goes-to)). To point either
-  preset at another host, such as a self-hosted Firecrawl, set `spec` to one
-  document as well as `url`.
+- A block's `url` moves a preset's documents only when they name the
+  preset's own address (see
+  [Which host a call goes to](#which-host-a-call-goes-to)). An operation or
+  path with a `servers` entry of its own keeps that host whatever `url` says:
+  Serper's scrape and location hosts, Jina's Reader and Search hosts.
 - One upstream holds one operation per method, base URL and path. Firecrawl
   runs Alexandria capabilities through the same `POST /scrape` as a page
   scrape, so a second, Alexandria-shaped tool cannot sit beside

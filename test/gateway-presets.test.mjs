@@ -11,6 +11,7 @@ import { parse as parseYaml } from "yaml";
 import {
   GatewayCore,
   UPSTREAM_PRESETS,
+  classifyFault,
   connectOpenApi,
   defaultConnector,
   formatToolReports,
@@ -298,8 +299,8 @@ const EXPOSED = {
   firecrawl: 33, firecrawlmcp: 8,
   parallel: 18, parallelmcp: 9,
   tavily: 6, tavilymcp: 5, tavilykeys: 1,
-  brightdata: 14, brightdatamcp: 13,
-  tinyfish: 8, tinyfishapi: 5, tinyfishanswer: 1,
+  brightdata: 13, brightdatamcp: 13,
+  tinyfish: 8, tinyfishapi: 6, tinyfishanswer: 1,
   context: 13, contextmcp: 1,
   jina: 12, jinamcp: 12,
   kagi: 2, perplexity: 4, serper: 14,
@@ -328,7 +329,7 @@ test("every tool the search-routing skill names is one its preset exposes by def
 test("no preset exposes a tool that deletes, pays, manages the account, sends feedback or sets up a schedule", () => {
   const risky = /delete|remove|clear|evict|password|api_?key|top_?up|wallet|recharge|payment|feedback|webhook|monitor|polic|usage|rotate|deactivate|generate_keys|zone(?!s$)/i;
   // Closing something the agent itself opened is not a deletion of anything shared.
-  const allowed = new Set(["firecrawl__deleteBrowserSession", "firecrawl__delete_scrape_jobId_interact", "brightdata__getZone"]);
+  const allowed = new Set(["firecrawl__deleteBrowserSession", "firecrawl__delete_scrape_jobId_interact"]);
   for (const name of PRESET_NAMES) {
     const exposed = exposedOf(name).filter((tool) => risky.test(tool) && !allowed.has(`${name}__${tool}`));
     assert.deepEqual(exposed, [], `${name} exposes ${exposed.join(", ")}`);
@@ -376,7 +377,7 @@ test("the pinned defaults and caps for expensive tools are the documented ones",
     },
     close: async () => undefined,
   });
-  const names = ["exa", "firecrawl", "firecrawlmcp", "parallel", "context"];
+  const names = ["exa", "firecrawl", "firecrawlmcp", "parallel", "context", "brightdata"];
   const core = new GatewayCore(makeConfig(dir, Object.fromEntries(names.map((name) => [name, block(name)]))), { connector, resolveKey });
 
   await core.callTool("exa__createAgentRun", { query: "q" }, ctx);
@@ -404,6 +405,102 @@ test("the pinned defaults and caps for expensive tools are the documented ones",
 
   await core.callTool("context__post_web_answers", { task: "t" }, ctx);
   assert.deepEqual(sent.context__post_web_answers, { task: "t", mode: "fast" });
+
+  // A Bright Data discover job bills every record it finds, so both of its limits are filled in and capped.
+  const discover = { dataset_id: "gd_example", type: "discover_new", discover_by: "keyword", body: [{ keyword: "k" }] };
+  await core.callTool("brightdata__triggerScrape", discover, ctx);
+  assert.deepEqual(sent.brightdata__triggerScrape, { ...discover, limit_per_input: 10, limit_multiple_results: 100 });
+  const lowered = await core.callTool("brightdata__triggerScrape", { ...discover, limit_per_input: 5000, limit_multiple_results: 50000 }, ctx);
+  assert.deepEqual(sent.brightdata__triggerScrape, { ...discover, limit_per_input: 100, limit_multiple_results: 1000 });
+  assert.match(lowered.content.at(-2).text, /"limit_per_input" was lowered from 5000 to 100/);
+  assert.match(lowered.content.at(-1).text, /"limit_multiple_results" was lowered from 50000 to 1000/);
+});
+
+test("the Bright Data scraper catalogue is never asked for whole", async () => {
+  const dir = tempDir();
+  const { connector, calls } = fakeUpstream(OFFERED.brightdata);
+  const core = new GatewayCore(makeConfig(dir, { brightdata: block("brightdata") }), { connector, resolveKey });
+
+  // Unfiltered, the vendor's answer is several megabytes: the call is refused before it is made.
+  for (const args of [undefined, {}, { domain: "" }, { dataset_id: null }]) {
+    const refused = await core.callTool("brightdata__listScrapers", args, ctx);
+    assert.equal(refused.isError, true, JSON.stringify(args));
+    assert.match(refused.content[0].text, /^brightdata__listScrapers needs "dataset_id" or "domain": this gateway does not make the call without one of them\./);
+  }
+  assert.deepEqual(calls, [], "an unfiltered catalogue request reached the upstream");
+
+  await core.callTool("brightdata__listScrapers", { domain: "example.com" }, ctx);
+  await core.callTool("brightdata__listScrapers", { dataset_id: "gd_example" }, ctx);
+  assert.deepEqual(calls, [
+    { name: "listScrapers", args: { domain: "example.com" } },
+    { name: "listScrapers", args: { dataset_id: "gd_example" } },
+  ]);
+
+  // A block may set the same guard, and a block's pin table replaces the preset's, guard included.
+  const custom = upstreamOf("tavily", { pin: { search: { require_one_of: ["query"] } } });
+  assert.deepEqual(custom.pins, [{ pattern: "search", defaults: [], max: [], requireOneOf: ["query"] }]);
+  assert.deepEqual(upstreamOf("brightdata", { pin: {} }).pins, []);
+  for (const bad of [[], "domain", ["domain", 3], ["a..b"]]) {
+    assert.throws(
+      () => upstreamOf("tavily", { pin: { search: { require_one_of: bad } } }),
+      /upstreams\.tavily\.pin\."search"\.require_one_of must be a list of argument names/,
+      JSON.stringify(bad)
+    );
+  }
+});
+
+test("every pinned tool is one its preset exposes", () => {
+  for (const name of PRESET_NAMES) {
+    const exposed = exposedOf(name);
+    for (const pattern of Object.keys(UPSTREAM_PRESETS[name].pin ?? {})) {
+      assert.ok(exposed.some((tool) => new RegExp(`^${pattern.replaceAll("*", ".*")}$`).test(tool)), `${name}: the pin "${pattern}" matches no exposed tool`);
+    }
+  }
+});
+
+// --- spend and cancelling ----------------------------------------------------
+
+test("no preset exposes a tool that takes a list of paid runs in one call", async () => {
+  // Each queues many agent runs or tasks at once, priced per run by values inside the list, where no pin reaches.
+  const batches = { tinyfishapi: ["runBatch"], parallel: ["post_v1_tasks_groups", "post_v1_tasks_groups_taskgroup_id_runs"] };
+  for (const [name, tools] of Object.entries(batches)) {
+    for (const tool of tools) {
+      assert.ok(OFFERED[name].includes(tool), `${name}: ${tool} is not a tool the provider offers`);
+      assert.ok(!exposedOf(name).includes(tool), `${name} exposes ${tool}`);
+    }
+  }
+
+  assert.deepEqual(exposedOf("tinyfishapi").sort(), ["batchCancelRuns", "cancelRunById", "getBrowserContextProfile", "getRunById", "getStepHtml", "run"]);
+  const { connector, calls } = fakeUpstream(OFFERED.tinyfishapi);
+  const config = makeConfig(tempDir(), { tinyfishapi: block("tinyfishapi") });
+  const [report] = await listUpstreamTools(config, { connector, resolveKey });
+  assert.deepEqual(report.hidden.find((entry) => entry.tool === "runBatch"), { tool: "runBatch", reason: "spend" });
+  const refused = await new GatewayCore(config, { connector, resolveKey }).callTool(
+    "tinyfishapi__runBatch",
+    { runs: [{ url: "https://example.com", goal: "g" }] },
+    ctx
+  );
+  assert.equal(refused.isError, true);
+  assert.deepEqual(calls, [], "a batch of runs reached the upstream");
+});
+
+test("whatever a preset lets an agent start, it lets the agent cancel", () => {
+  // [what starts or tracks a job, what cancels it], for every job the providers offer a cancel for.
+  const pairs = {
+    exa: [["createAgentRun", "cancelAgentRun"]],
+    firecrawl: [["crawlUrls", "cancelCrawl"], ["scrapeAndExtractFromUrls", "cancelBatchScrape"], ["startAgent", "cancelAgent"]],
+    brightdata: [["triggerScrape", "cancelScrape"]],
+    tinyfish: [["run_web_automation_async", "cancel_run"], ["batch_status", "batch_cancel"]],
+    tinyfishapi: [["runAsync", "cancelRunById"], ["runBatch", "batchCancelRuns"], ["getRunById", "cancelRunById"]],
+    context: [["submitBatch", "cancelBatch"]],
+  };
+  for (const [name, list] of Object.entries(pairs)) {
+    const exposed = exposedOf(name);
+    for (const [starter, canceller] of list) {
+      for (const tool of [starter, canceller]) assert.ok(OFFERED[name].includes(tool), `${name}: ${tool} is not a tool the provider offers`);
+      if (exposed.includes(starter)) assert.ok(exposed.includes(canceller), `${name} exposes ${starter} without ${canceller}`);
+    }
+  }
 });
 
 // --- overriding --------------------------------------------------------------
@@ -450,8 +547,9 @@ test("the tools that return credentials are named, and stay hidden under a block
     exa: ["createMonitor", "webhooks_create"],
     exaadmin: ["list_api_keys", "create_api_key", "get_api_key", "update_api_key", "rotate_api_key", "get_api_key_usage"],
     tavilykeys: ["post_generate_keys"],
-    brightdata: ["listZonePasswords", "addZonePassword", "removeZonePassword"],
-    context: ["rotateMonitorWebhookSecret"],
+    brightdata: ["listZonePasswords", "addZonePassword", "removeZonePassword", "getZone", "getDatasetViewDeliverySettings"],
+    context: ["rotateMonitorWebhookSecret", "createMonitor", "getMonitor", "listMonitors", "updateMonitor", "submitBatch"],
+    perplexity: ["createMonitor", "updateMonitor"],
   });
   for (const extra of [{ exclude: [] }, { include: ["*"] }, { include: ["listZonePasswords"], exclude: [] }, { curation: "none", include: ["*Zone*"] }]) {
     assert.ok(!exposedOf("brightdata", extra).includes("listZonePasswords"), JSON.stringify(extra));
@@ -486,6 +584,183 @@ test("a block's include, exclude or pin replaces the preset's value for that set
 test("a block that changes a preset's kind gets none of the preset's tool lists", () => {
   const hosted = upstreamOf("brightdata", { kind: "mcp", url: "https://mcp.brightdata.com/mcp", auth: "query", auth_name: "token" });
   assert.deepEqual([hosted.kind, hosted.include, hosted.exclude, hosted.pins, hosted.curation], ["mcp", [], [], [], "none"]);
+});
+
+/**
+ * Operations whose published success response documents a key, password or
+ * signing secret, with the field that carries it. Read from the vendors' API
+ * documents on 2026-11-27 by scanning every 2xx response schema and example
+ * for secret-like field names, then reading what each document says of the
+ * field. Left out after reading: Exa's webhook reads and updates (`secret` is
+ * "only returned on Webhook creation"), Perplexity's monitor reads, pause and
+ * resume (`secret` is "present only in the response that generated it"),
+ * Firecrawl's `apiKey` (a key's name) and Tavily's `api_key` (masked to four
+ * characters). The `mcp` presets publish no response schemas to scan.
+ */
+const SECRET_RESPONSES = {
+  exa: { createMonitor: "webhookSecret", webhooks_create: "secret" },
+  exaadmin: { create_api_key: "apiKey.secret", rotate_api_key: "apiKey.secret" },
+  tavilykeys: { post_generate_keys: "keys" },
+  brightdata: {
+    listZonePasswords: "passwords",
+    getZone: "password",
+    getDatasetViewDeliverySettings: "deliver.credentials",
+  },
+  context: {
+    createMonitor: "webhook.secret",
+    getMonitor: "webhook.secret",
+    listMonitors: "webhook.secret",
+    updateMonitor: "webhook.secret",
+    rotateMonitorWebhookSecret: "secret",
+    submitBatch: "webhook_secret",
+  },
+  perplexity: { createMonitor: "webhook.secret", updateMonitor: "webhook.secret" },
+};
+
+test("no block reaches an operation whose response carries a secret without allow_credential_tools", async () => {
+  // What a config block following docs/components/gateway.md may set, and still not get these tools.
+  const blocks = [{}, { exclude: [] }, { exclude: ["post_people_*"] }, { include: ["*"] }, { curation: "none" }, { curation: "none", include: ["*"], exclude: [] }];
+  for (const [name, tools] of Object.entries(SECRET_RESPONSES)) {
+    const credentialPatterns = UPSTREAM_PRESETS[name].hide.filter((rule) => rule.reason === "credentials").flatMap((rule) => rule.patterns);
+    for (const [tool, field] of Object.entries(tools)) {
+      assert.ok(OFFERED[name].includes(tool), `${name}: ${tool} is not a tool the provider offers`);
+      assert.ok(credentialPatterns.includes(tool), `${name}__${tool} answers with ${field} and is not hidden for credentials`);
+      for (const extra of blocks) {
+        assert.ok(!exposedOf(name, extra).includes(tool), `${name}__${tool} (${field}) is exposed by ${JSON.stringify(extra)}`);
+      }
+      assert.ok(exposedOf(name, { curation: "none", allow_credential_tools: true }).includes(tool), `${name}__${tool}`);
+    }
+  }
+
+  // A call is refused too, whatever the list says, and nothing reaches the upstream.
+  const { connector, calls } = fakeUpstream(OFFERED.context);
+  const core = new GatewayCore(makeConfig(tempDir(), { context: { keys: ["env:KEY_A"], exclude: ["post_people_*"] } }), { connector, resolveKey });
+  const listed = (await core.listTools()).map((entry) => entry.name);
+  assert.equal(listed.length, OFFERED.context.length - 2 - Object.keys(SECRET_RESPONSES.context).length);
+  for (const tool of Object.keys(SECRET_RESPONSES.context)) {
+    assert.ok(!listed.includes(`context__${tool}`), tool);
+    const refused = await core.callTool(`context__${tool}`, { monitor_id: "m" }, ctx);
+    assert.equal(refused.isError, true, tool);
+    assert.match(refused.content[0].text, /is not offered by this gateway/);
+  }
+  assert.deepEqual(calls, [], "a credential tool reached the upstream");
+});
+
+// --- moving a preset ---------------------------------------------------------
+
+test("a block that moves a preset with several documents moves every document that names the preset's address", async () => {
+  const publishedAt = "https://docs.firecrawl.dev/api-reference/v2-openapi.json";
+  const json = { headers: { "Content-Type": "application/json" } };
+  // A stand-in for the published document: it names Firecrawl's own host, and repeats three routes of the shipped additions.
+  const published = {
+    openapi: "3.0.0",
+    info: { title: "published", version: "1" },
+    servers: [{ url: "https://api.firecrawl.dev/v2" }],
+    paths: {
+      "/scrape": { post: { operationId: "scrapeAndExtractFromUrl" } },
+      "/search": { post: { operationId: "searchAndScrape" } },
+      "/parse": { post: { operationId: "parseFile" } },
+      "/team/credit-usage/historical": { get: { operationId: "getHistoricalCreditUsage" } },
+      "/scrape/{jobId}/interact": {
+        post: { operationId: "interactWithScrapeBrowserSession", parameters: [{ name: "jobId", in: "path", required: true, schema: { type: "string" } }] },
+      },
+    },
+  };
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === publishedAt) return new Response(JSON.stringify(published), json);
+    requests.push(`${init.method} ${url} ${new Headers(init.headers).get("authorization")}`);
+    return new Response("{}", json);
+  };
+  const trace = async (upstream) => {
+    requests.length = 0;
+    const client = await connectOpenApi(upstream, "secret-value-aaaaaa");
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    for (const name of ["scrapeAndExtractFromUrl", "searchAndScrape", "parseUploadedFile", "getHistoricalCreditUsage"]) {
+      await client.callTool({ name, arguments: {} });
+    }
+    return { names, hosts: [...new Set(requests.map((request) => new URL(request.split(" ")[1]).origin))] };
+  };
+  try {
+    // A self-hosted Firecrawl: every call goes there, and the key goes nowhere else.
+    const moved = upstreamOf("firecrawl", { url: "http://127.0.0.1:3002/v2" });
+    assert.equal(moved.presetUrl, "https://api.firecrawl.dev/v2");
+    const selfHosted = await trace(moved);
+    assert.deepEqual(requests, [
+      "POST http://127.0.0.1:3002/v2/scrape Bearer secret-value-aaaaaa",
+      "POST http://127.0.0.1:3002/v2/search Bearer secret-value-aaaaaa",
+      "POST http://127.0.0.1:3002/v2/parse Bearer secret-value-aaaaaa",
+      "GET http://127.0.0.1:3002/v2/team/credit-usage/historical Bearer secret-value-aaaaaa",
+    ]);
+    // The shipped additions still replace the published forms, so no hidden tool comes back under a second name.
+    assert.deepEqual(selfHosted.names.filter((name) => /_\d+$/.test(name) || name === "parseFile"), []);
+    assert.deepEqual(selfHosted.names.filter((name) => !toolAllowed(moved, name)), ["getConcurrency", "getHistoricalCreditUsage"]);
+
+    // At its own address the preset is as it was.
+    const usual = upstreamOf("firecrawl");
+    assert.equal(usual.presetUrl, undefined);
+    const hosted = await trace(usual);
+    assert.deepEqual(hosted.hosts, ["https://api.firecrawl.dev"]);
+    assert.deepEqual(hosted.names, selfHosted.names);
+
+    // A block that lists its own documents keeps the rule for lists: each goes to the host it names.
+    const own = upstreamOf("firecrawl", { url: "http://127.0.0.1:3002/v2", spec: ["package:specs/firecrawl-additions.yaml", publishedAt] });
+    assert.equal(own.presetUrl, undefined);
+    assert.deepEqual((await trace(own)).hosts.sort(), ["http://127.0.0.1:3002", "https://api.firecrawl.dev"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Every preset with more than one document is moved the same way.
+  const several = PRESET_NAMES.filter((name) => Array.isArray(UPSTREAM_PRESETS[name].spec) && UPSTREAM_PRESETS[name].spec.length > 1);
+  assert.deepEqual(several, ["firecrawl", "parallel", "brightdata", "tinyfishapi"]);
+  for (const name of several) {
+    assert.equal(upstreamOf(name, { url: "http://127.0.0.1:9/base" }).presetUrl, UPSTREAM_PRESETS[name].url, name);
+    assert.equal(upstreamOf(name, { url: UPSTREAM_PRESETS[name].url }).presetUrl, undefined, name);
+  }
+  assert.equal(upstreamOf("brightdata", { kind: "mcp", url: "https://mcp.brightdata.com/mcp", auth: "query", auth_name: "token" }).presetUrl, undefined);
+});
+
+// --- key signals of the added presets ----------------------------------------
+
+test("a Jina plan refusal shares HTTP 402 with an empty balance and does not skip the key", async () => {
+  // Shapes from Jina's API document: TierFeatureConstraintError is status 40202, InsufficientBalanceError 40203.
+  const tier = 'HTTP 402: {"code":402,"status":40202,"message":"This feature is not available on your plan","readableMessage":"TierFeatureConstraintError: This feature is not available on your plan"}';
+  const empty = 'HTTP 402: {"code":402,"status":40203,"message":"Account balance not enough to run this query, please recharge.","readableMessage":"InsufficientBalanceError: Account balance not enough to run this query, please recharge."}';
+  assert.equal(classifyFault(tier), undefined);
+  assert.equal(classifyFault('HTTP 402: {"code":402,"status":40202,"message":"Payment Required"}'), undefined);
+  assert.equal(classifyFault('{"name":"TierFeatureConstraintError","message":"402 Payment Required"}'), undefined);
+  assert.equal(classifyFault(empty), "quota");
+  assert.equal(classifyFault('HTTP 402: {"code":402,"status":40203}'), "quota");
+
+  const dir = tempDir();
+  const attempts = [];
+  let answer = tier;
+  const connector = async (upstream, keyValue) => ({
+    listTools: async () => ({ tools: [] }),
+    callTool: async () => {
+      attempts.push(keyValue === SECRETS["env:KEY_A"] ? "A" : "B");
+      return { content: [{ type: "text", text: answer }], isError: true };
+    },
+    close: async () => undefined,
+  });
+  const core = new GatewayCore(makeConfig(dir, { jina: { keys: ["env:KEY_A", "env:KEY_B"] } }), { connector, resolveKey });
+  const keyStates = () => core.status().upstreams[0].keys.map((key) => key.state);
+
+  // A feature above the plan: one attempt, the error goes back as it is, and both keys stay in use.
+  const refused = await core.callTool("jina__reader_get_root", { url: "https://example.com" }, ctx);
+  assert.equal(refused.isError, true);
+  assert.equal(refused.content[0].text, tier);
+  assert.deepEqual(attempts, ["A"]);
+  assert.deepEqual(keyStates(), ["active", "standby"]);
+
+  // An empty balance: the key is skipped and the call moves to the next one.
+  answer = empty;
+  attempts.length = 0;
+  await core.callTool("jina__reader_get_root", { url: "https://example.com" }, ctx);
+  assert.deepEqual(attempts, ["A", "B"]);
+  assert.deepEqual(keyStates(), ["skipped", "skipped"]);
 });
 
 // --- --list-tools ------------------------------------------------------------

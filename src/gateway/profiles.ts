@@ -44,7 +44,10 @@ export interface HideRule {
 }
 
 /** A preset's pin table, in the shape of a config block's `pin`. */
-export type PresetPins = Record<string, { default?: Record<string, unknown>; max?: Record<string, number> }>;
+export type PresetPins = Record<
+  string,
+  { default?: Record<string, unknown>; max?: Record<string, number>; require_one_of?: string[] }
+>;
 
 /**
  * Everything the gateway knows about one upstream by name: how to reach it,
@@ -332,17 +335,22 @@ export const UPSTREAM_PRESETS: Record<string, UpstreamProfile> = {
       "searchCompany",
       "searchPeople",
       "listActiveZones",
-      "getZone",
     ],
     includeNote:
-      "search-engine and page unlock, the scraper catalogue and its jobs, business search, and the two zone reads unlockUrl needs. Left out: account, zone and billing management (50 operations), Scraper Studio (22), Web Archive (7), marketplace dataset purchases, and delivery to cloud storage",
+      "search-engine and page unlock, the scraper catalogue and its jobs, business search, and the zone list unlockUrl needs. Left out: account, zone and billing management (50 operations), Scraper Studio (22), Web Archive (7), marketplace dataset purchases, and delivery to cloud storage",
     hide: [
       {
         reason: "credentials",
-        patterns: ["listZonePasswords", "addZonePassword", "removeZonePassword"],
-        note: "zone passwords, in the response or the arguments",
+        patterns: ["listZonePasswords", "addZonePassword", "removeZonePassword", "getZone", "getDatasetViewDeliverySettings"],
+        note: "zone passwords, in the response or the arguments (getZone answers with the zone's password beside its plan), and the storage credentials a dataset view delivers with",
       },
     ],
+    pin: {
+      // A discover method bills every record it returns and has no limit of its own. The hosted server defaults to 10 per input.
+      triggerScrape: { default: { limit_per_input: 10, limit_multiple_results: 100 }, max: { limit_per_input: 100, limit_multiple_results: 1000 } },
+      // The unfiltered catalogue is several megabytes.
+      listScrapers: { require_one_of: ["dataset_id", "domain"] },
+    },
   },
   brightdatamcp: {
     kind: "mcp",
@@ -396,8 +404,16 @@ export const UPSTREAM_PRESETS: Record<string, UpstreamProfile> = {
     auth: "header",
     authName: "X-API-Key",
     authPrefix: "",
-    include: ["run", "runBatch", "getRunById", "getStepHtml", "getBrowserContextProfile"],
-    includeNote: "the REST operations the hosted MCP server (tinyfish) has no tool for and an agent can use",
+    include: ["run", "getRunById", "cancelRunById", "batchCancelRuns", "getStepHtml", "getBrowserContextProfile"],
+    includeNote:
+      "the REST operations the hosted MCP server (tinyfish) has no tool for and an agent can use, and the two that cancel a run",
+    hide: [
+      {
+        reason: "spend",
+        patterns: ["runBatch"],
+        note: "queues up to 100 agent runs in one call, each billed per step up to its own cap ($240 at the default cap of 150 steps); the caps sit inside the list of runs, where no pin reaches",
+      },
+    ],
   },
   tinyfishanswer: {
     kind: "openapi",
@@ -415,7 +431,11 @@ export const UPSTREAM_PRESETS: Record<string, UpstreamProfile> = {
     spec: "https://docs.context.dev/openapi.json",
     ...bearer,
     hide: [
-      { reason: "credentials", patterns: ["rotateMonitorWebhookSecret"], note: "replaces a webhook signing secret" },
+      {
+        reason: "credentials",
+        patterns: ["rotateMonitorWebhookSecret", "createMonitor", "getMonitor", "listMonitors", "updateMonitor", "submitBatch"],
+        note: "the response carries a webhook signing secret: a monitor's, whenever one is created, read, changed or rotated, and a batch's, which only submitBatch returns",
+      },
       { reason: "destructive", patterns: ["deleteMonitor", "deleteBatch"], note: "permanent; deleteBatch also removes stored results" },
       {
         reason: "account",
@@ -482,6 +502,13 @@ export const UPSTREAM_PRESETS: Record<string, UpstreamProfile> = {
     include: ["post_search", "context", "post_v1_decisions", "listModels"],
     includeNote:
       "search, page context, decisions and the model list. Left out: the Agent and Orchestrator APIs, which sell third-party models per token (docs/NORTH_STAR.md rules that out for Anthropic models), the retired Sonar operations, monitors, and the skill, file and batch stores",
+    hide: [
+      {
+        reason: "credentials",
+        patterns: ["createMonitor", "updateMonitor"],
+        note: "the response carries the webhook signing secret it generated",
+      },
+    ],
   },
 
   // --- Serper --------------------------------------------------------------

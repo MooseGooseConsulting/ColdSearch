@@ -21,6 +21,12 @@ export interface UpstreamConfig {
   kind: UpstreamKind;
   /** MCP endpoint (`mcp`) or API base URL (`openapi`). */
   url: string;
+  /**
+   * The preset's own address, set when the block's `url` replaces it and the
+   * documents are still the preset's. A document that names this address as
+   * its server follows `url`. `openapi` only.
+   */
+  presetUrl?: string;
   /** Where the OpenAPI documents are: https URLs or file paths. `openapi` only. */
   specs: string[];
   /** Fixed headers sent on every request, e.g. a beta opt-in the vendor requires. Not for credentials. */
@@ -69,6 +75,8 @@ export interface ArgumentPin {
   defaults: Array<{ path: string; value: unknown }>;
   /** Highest value a numeric argument may have; a larger one is lowered to it. */
   max: Array<{ path: string; limit: number }>;
+  /** When set, a call that supplies none of these arguments is refused. */
+  requireOneOf?: string[];
 }
 
 export interface GatewayConfig {
@@ -178,7 +186,7 @@ function patternList(value: unknown, field: string): string[] {
   return value as string[];
 }
 
-const PIN_SETTINGS = ["default", "max"];
+const PIN_SETTINGS = ["default", "max", "require_one_of"];
 const PIN_PATH = /^[^.\s]+(?:\.[^.\s]+)*$/;
 
 function isTable(value: unknown): value is Record<string, unknown> {
@@ -186,9 +194,10 @@ function isTable(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Read an upstream's `pin` table: tool-name pattern to `{ default, max }`.
- * `default` maps argument paths to any value; `max` maps argument paths to
- * numbers. Throws naming the pattern and the setting that is wrong.
+ * Read an upstream's `pin` table: tool-name pattern to
+ * `{ default, max, require_one_of }`. `default` maps argument paths to any
+ * value; `max` maps argument paths to numbers; `require_one_of` lists
+ * argument paths. Throws naming the pattern and the setting that is wrong.
  */
 function pinList(value: unknown, field: string): ArgumentPin[] {
   if (value === undefined) return [];
@@ -199,15 +208,21 @@ function pinList(value: unknown, field: string): ArgumentPin[] {
   for (const [pattern, entry] of Object.entries(value)) {
     const at = `${field}."${pattern}"`;
     if (!pattern.trim()) throw new Error(`[gateway] ${field} has an empty tool-name pattern`);
-    if (!isTable(entry)) throw new Error(`[gateway] ${at} must be a table with default and/or max`);
+    if (!isTable(entry)) throw new Error(`[gateway] ${at} must be a table with default, max and/or require_one_of`);
     const stray = Object.keys(entry).find((key) => !PIN_SETTINGS.includes(key));
     if (stray !== undefined) {
-      throw new Error(`[gateway] ${at}.${stray} is not a pin setting; use default or max`);
+      throw new Error(`[gateway] ${at}.${stray} is not a pin setting; use default, max or require_one_of`);
     }
-    if (entry.default === undefined && entry.max === undefined) {
-      throw new Error(`[gateway] ${at} needs default or max`);
+    if (entry.default === undefined && entry.max === undefined && entry.require_one_of === undefined) {
+      throw new Error(`[gateway] ${at} needs default, max or require_one_of`);
     }
-    for (const setting of PIN_SETTINGS) {
+    const required = entry.require_one_of;
+    if (required !== undefined) {
+      if (!Array.isArray(required) || required.length === 0 || required.some((item) => typeof item !== "string" || !PIN_PATH.test(item))) {
+        throw new Error(`[gateway] ${at}.require_one_of must be a list of argument names, such as ["dataset_id", "domain"]`);
+      }
+    }
+    for (const setting of ["default", "max"]) {
       if (entry[setting] !== undefined && !isTable(entry[setting])) {
         const holds = setting === "max" ? "numbers" : "values";
         throw new Error(`[gateway] ${at}.${setting} must be a table of argument names to ${holds}`);
@@ -228,7 +243,12 @@ function pinList(value: unknown, field: string): ArgumentPin[] {
       }
       return { path, limit };
     });
-    pins.push({ pattern, defaults: paths("default").map(([path, item]) => ({ path, value: item })), max });
+    pins.push({
+      pattern,
+      defaults: paths("default").map(([path, item]) => ({ path, value: item })),
+      max,
+      ...(required !== undefined ? { requireOneOf: required as string[] } : {}),
+    });
   }
   return pins;
 }
@@ -351,12 +371,20 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
       hidden.push(...presetHides.filter((rule) => rule.reason !== "credentials"));
     }
 
+    // A block that moves a preset to another address, and keeps the preset's
+    // documents, moves every document that names the preset's address.
+    const movedFrom =
+      kind === "openapi" && sameKind && block.spec === undefined && block.url !== undefined && preset?.url !== url
+        ? preset?.url
+        : undefined;
+
     upstreams.push({
       name,
       kind,
       specs,
       headers: headerTable(block.headers, `upstreams.${name}.headers`),
       url,
+      ...(movedFrom ? { presetUrl: movedFrom } : {}),
       auth,
       authName: asString(block.auth_name, `upstreams.${name}.auth_name`) ?? preset?.authName ?? "Authorization",
       authPrefix:

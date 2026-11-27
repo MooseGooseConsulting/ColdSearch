@@ -81,6 +81,14 @@ const QUOTA_PATTERN =
   /payment required|insufficient[ _]credits?|not enough credits|no_more_credits|budget_exceeded|out of (?:free )?credits|credits? (?:are )?(?:exhausted|depleted)|exceeds your plan|free_allowance_exhausted|usage limit reached|not enough funds|client_10100/i;
 /** HTTP 402 (Exa, Firecrawl, Parallel and others), and Tavily's 432 (plan limit) and 433 (pay-as-you-go limit). Tavily's 434 is a capacity error and is absent. */
 const QUOTA_STATUS = /\b(?:402|432|433)\b/;
+/**
+ * A refusal that shares a quota status and says nothing about the balance.
+ * Jina answers HTTP 402 with `TierFeatureConstraintError` (application status
+ * 40202) when a call asks for a feature above the key's plan; its empty
+ * balance is `InsufficientBalanceError`, 40203. Another key on the same plan
+ * gets the same answer, so the key is not held to blame.
+ */
+const PLAN_REFUSAL_PATTERN = /TierFeatureConstraintError|"status"\s*:\s*40202\b/;
 /** Looser wording, trusted only when nothing says the call was rate limited. */
 const QUOTA_LOOSE_PATTERN = /quota (?:exceeded|exhausted)/i;
 /** A short-lived limit: it clears in seconds and must not sideline a key for hours. */
@@ -97,13 +105,15 @@ const AUTH_PATTERN = /invalid[ _]api[ _]key|unauthorized|invalid token|missing a
  * statuses. Other text (an MCP server's error) is searched for the status
  * numbers. A rate-limited call (HTTP 429, or rate-limit wording when no
  * status leads) is `quota` only when it carries one of the vendor phrases in
- * `QUOTA_PATTERN`.
+ * `QUOTA_PATTERN`. A plan refusal (`PLAN_REFUSAL_PATTERN`) is never `quota`,
+ * whatever status it came with.
  */
 export function classifyFault(text: string): KeyFault | undefined {
   const status = text.match(/^\s*HTTP (\d{3})\b/)?.[1];
-  if (QUOTA_PATTERN.test(text)) return "quota";
+  const planRefusal = PLAN_REFUSAL_PATTERN.test(text);
+  if (!planRefusal && QUOTA_PATTERN.test(text)) return "quota";
   const rateLimited = status ? status === "429" : RATE_LIMIT_PATTERN.test(text);
-  if (!rateLimited) {
+  if (!rateLimited && !planRefusal) {
     if (status ? QUOTA_STATUS.test(status) : QUOTA_STATUS.test(text)) return "quota";
     if (QUOTA_LOOSE_PATTERN.test(text)) return "quota";
   }
@@ -182,11 +192,13 @@ function parentOf(
  * missing argument. The agent's arguments are not modified; `args` is a copy
  * when any pin matches.
  *
- * `refusal` is set, and the call must not be made, when a capped argument is
- * present and cannot be compared with the cap: it holds something that is
- * not a number (`null` included), or an argument on its dotted path holds
- * something that is not an object. Forwarding such a call would hand the
- * decision to the upstream's own default.
+ * `refusal` is set, and the call must not be made, in two cases. A pin's
+ * `requireOneOf` names arguments and the call, after defaults, supplies none
+ * of them (`null` and an empty string count as left out). Or a capped
+ * argument is present and cannot be compared with the cap: it holds
+ * something that is not a number (`null` included), or an argument on its
+ * dotted path holds something that is not an object. Forwarding such a call
+ * would hand the decision to the upstream's own default.
  */
 function applyPins(
   upstream: UpstreamConfig,
@@ -205,6 +217,21 @@ function applyPins(
     if (parent && parent[key] === undefined) parent[key] = structuredClone(value);
   }
   const target = `${upstream.name}${NAME_SEPARATOR}${tool}`;
+  for (const required of pins.flatMap((pin) => (pin.requireOneOf?.length ? [pin.requireOneOf] : []))) {
+    const supplied = required.some((path) => {
+      const keys = path.split(".");
+      const given = parentOf(out, keys, false).parent?.[keys[keys.length - 1]];
+      return given !== undefined && given !== null && given !== "";
+    });
+    if (!supplied) {
+      const names = required.map((path) => `"${path}"`).join(" or ");
+      return {
+        args: out,
+        notes,
+        refusal: `${target} needs ${names}: this gateway does not make the call without ${required.length === 1 ? "it" : "one of them"}. Add ${required.length === 1 ? "it" : "one"} and call again.`,
+      };
+    }
+  }
   for (const { path, limit } of pins.flatMap((pin) => pin.max)) {
     const keys = path.split(".");
     const { parent, blocked } = parentOf(out, keys, false);

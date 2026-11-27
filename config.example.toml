@@ -301,7 +301,7 @@ tool_ttl = "6h"
 # [gateway.upstreams.tinyfish]
 # keys = ["doppler:TINY_FISH_API_KEY"]
 #
-# REST operations the hosted server has no tool for (sync and batch runs).
+# REST operations the hosted server has no tool for (a sync run, a step's HTML).
 # [gateway.upstreams.tinyfishapi]
 # keys = ["doppler:TINY_FISH_API_KEY"]
 #

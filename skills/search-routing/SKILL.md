@@ -71,6 +71,10 @@ fills in a cap when you leave it out, and lowers one above its limit:
   of `lite`, `base` or `core`.
 - `tavily__createResearch`: `model` is `mini` unless you say otherwise.
 - `context__post_web_answers`: `mode` is `fast` unless you say otherwise.
+- `brightdata__triggerScrape`: `limit_per_input` is 10 and
+  `limit_multiple_results` is 100 unless you say otherwise; they cannot go
+  above 100 and 1,000. Name `limit_multiple_results` when you send more
+  inputs than that.
 
 Why: these cost 10 to 1,000 times a search. A line starting `Gateway note:`
 in a result says a cap was applied.
@@ -87,7 +91,7 @@ in a result says a cap was applied.
   50 pages unless you pass `limit`. Prefer a map, then scrape the pages you
   chose.
 - `brightdata__listScrapers` without `dataset_id` or `domain`. Why: the full
-  catalogue is several megabytes.
+  catalogue is several megabytes, and the gateway refuses the call.
 - Retrying a call that failed for lack of credit. Why: the gateway has already
   tried the other keys; move to another upstream. On a rate-limit error, wait
   and retry.

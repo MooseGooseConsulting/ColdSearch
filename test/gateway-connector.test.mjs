@@ -496,9 +496,9 @@ test("argument pins fill what the agent left out, lower what is over the cap, an
 test("a malformed pin is rejected with the pattern and setting named", () => {
   const withPin = (pin) => () => resolveGatewayConfig({ upstreams: { exa: { keys: ["env:X"], pin } } });
   assert.throws(withPin(["search"]), /upstreams\.exa\.pin must be a table of tool-name patterns/);
-  assert.throws(withPin({ search: "fast" }), /upstreams\.exa\.pin\."search" must be a table with default and\/or max/);
-  assert.throws(withPin({ search: {} }), /upstreams\.exa\.pin\."search" needs default or max/);
-  assert.throws(withPin({ search: { defaults: { mode: "fast" } } }), /upstreams\.exa\.pin\."search"\.defaults is not a pin setting; use default or max/);
+  assert.throws(withPin({ search: "fast" }), /upstreams\.exa\.pin\."search" must be a table with default, max and\/or require_one_of/);
+  assert.throws(withPin({ search: {} }), /upstreams\.exa\.pin\."search" needs default, max or require_one_of/);
+  assert.throws(withPin({ search: { defaults: { mode: "fast" } } }), /upstreams\.exa\.pin\."search"\.defaults is not a pin setting; use default, max or require_one_of/);
   assert.throws(withPin({ search: { default: "fast" } }), /upstreams\.exa\.pin\."search"\.default must be a table of argument names to values/);
   assert.throws(withPin({ search: { max: [1] } }), /upstreams\.exa\.pin\."search"\.max must be a table of argument names to numbers/);
   assert.throws(withPin({ search: { max: { numResults: "10" } } }), /upstreams\.exa\.pin\."search"\.max\."numResults" must be a number/);
