@@ -241,3 +241,20 @@ tool_ttl = "6h"
 #
 # [gateway.upstreams.firecrawl]
 # keys = ["doppler:FIRECRAWL_API_KEY"]
+
+# ============================================
+# KEY POOLS AND SLOT ROTATION (coldsearch keys)
+# ============================================
+# For a provider you hold several accounts with. `slot` is the one secret
+# every tool reads; its value in Doppler is a reference to one `pool` secret,
+# e.g. ${FIRECRAWL_API_KEY_2}. `coldsearch keys status` shows what each
+# account has left; `coldsearch keys rotate firecrawl` re-points the slot.
+# Secret names only, never a key. See docs/components/keys.md.
+#
+# [keys.firecrawl]
+# slot = "FIRECRAWL_API_KEY"
+# pool = ["FIRECRAWL_API_KEY_1", "FIRECRAWL_API_KEY_2", "FIRECRAWL_API_KEY_3"]
+# project = "example-project"   # Doppler project holding the slot and the pool
+# config = "prd"                # Doppler config holding them
+# policy = "soonest-reset"      # or "in-order" (first pool account above the floor)
+# floor = 50                    # an account at or below this counts as spent

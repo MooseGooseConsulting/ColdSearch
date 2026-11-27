@@ -558,6 +558,9 @@ Commands:
   status                      Show configured providers and usage summary
   mcp [--http]                Serve the MCP gateway in front of providers' own
                               MCP servers (see: coldsearch mcp --help)
+  keys status|rotate          Show what each provider account has left, and
+                              point a provider's slot at another pool key
+                              (see: coldsearch keys --help)
 
 Options:
   Mode Selection:
@@ -1891,6 +1894,13 @@ async function main(): Promise<void> {
     if (args[0] === "mcp") {
       const { runGatewayCli } = await import("./gateway/run.js");
       await runGatewayCli(args.slice(1));
+      return;
+    }
+
+    // Key pool status and slot rotation: own flags and help, like the gateway.
+    if (args[0] === "keys") {
+      const { runKeysCli } = await import("./keys/run.js");
+      process.exitCode = await runKeysCli(args.slice(1));
       return;
     }
 
