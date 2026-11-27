@@ -263,7 +263,10 @@ test("an agent connected over MCP sees namespaced tools, can call them, and can 
 
   assert.match(client.getInstructions(), /search-routing: Pick the cheapest tool/);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((entry) => entry.name).sort(), ["coldsearch_read_skill", "coldsearch_status", "exa__web_search_exa"]);
+  assert.deepEqual(
+    tools.map((entry) => entry.name).sort(),
+    ["coldsearch_crawl", "coldsearch_fetch", "coldsearch_map", "coldsearch_read_skill", "coldsearch_status", "exa__web_search_exa"]
+  );
 
   const called = await client.callTool({ name: "exa__web_search_exa", arguments: { query: "hello" } });
   assert.match(called.content[0].text, /hello/);
@@ -299,7 +302,8 @@ test("lazy mode lists only the gateway's own tools and reaches upstream tools th
   const { tools } = await client.listTools();
   assert.deepEqual(
     tools.map((entry) => entry.name).sort(),
-    ["coldsearch_call_tool", "coldsearch_describe_tool", "coldsearch_find_tools", "coldsearch_status"]
+    // The gateway's own fetch, map and crawl are listed in lazy mode too (test/native.test.mjs covers them).
+    ["coldsearch_call_tool", "coldsearch_crawl", "coldsearch_describe_tool", "coldsearch_fetch", "coldsearch_find_tools", "coldsearch_map", "coldsearch_status"]
   );
 
   const found = await client.callTool({ name: "coldsearch_find_tools", arguments: { query: "crawl site" } });

@@ -99,6 +99,12 @@ coldsearch mcp                      # stdio, one agent
 coldsearch mcp --http --port 8787   # HTTP at /mcp, many agents
 ```
 
+The gateway also has three tools of its own, `coldsearch_fetch`,
+`coldsearch_map` and `coldsearch_crawl`, which read pages, sitemaps and whole
+sites with plain HTTP and so cost no provider credit. They do not run
+JavaScript or pass bot protection; a page that needs either is reported, and
+can be sent to one configured paid tool.
+
 See [the gateway component doc](docs/components/gateway.md) for configuration.
 
 ## Batch runs

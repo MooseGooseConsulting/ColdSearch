@@ -1,8 +1,5 @@
-import { lookup } from "node:dns/promises";
-import http from "node:http";
-import https from "node:https";
-import { isIP } from "node:net";
 import { APP_USER_AGENT } from "../app.js";
+import { requestValidated, validateFetchUrl, type ValidatedFetchTarget } from "../safe-fetch.js";
 import {
   LocalExecutionBackend,
   type ExecutionBackend,
@@ -36,116 +33,8 @@ export interface AgentOptions {
   noCache?: boolean;
 }
 
-interface ValidatedFetchTarget {
-  url: URL;
-  resolvedAddress: string;
-  family: 4 | 6;
-}
-
 const MAX_FETCH_BODY_BYTES = 1024 * 1024;
 const AGENT_FETCH_TIMEOUT_MS = 10000;
-
-function isIPv4InCidr(ip: string, network: string, prefixBits: number): boolean {
-  const ipOctets = ip.split(".").map(Number);
-  const networkOctets = network.split(".").map(Number);
-
-  if (
-    ipOctets.length !== 4 ||
-    networkOctets.length !== 4 ||
-    ipOctets.some(Number.isNaN) ||
-    networkOctets.some(Number.isNaN)
-  ) {
-    return false;
-  }
-
-  const ipValue = ipOctets.reduce((value, octet) => ((value << 8) + octet) >>> 0, 0);
-  const networkValue = networkOctets.reduce(
-    (value, octet) => ((value << 8) + octet) >>> 0,
-    0
-  );
-  const mask = prefixBits === 0 ? 0 : (~((1 << (32 - prefixBits)) - 1)) >>> 0;
-
-  return (ipValue & mask) === (networkValue & mask);
-}
-
-function extractIPv4FromMapped(address: string): string | null {
-  const normalized = address.toLowerCase();
-
-  // Dotted form: ::ffff:127.0.0.1
-  const dotted = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (dotted) return dotted[1];
-
-  // Hex form: ::ffff:7f00:1 (127.0.0.1)
-  if (!normalized.startsWith("::ffff:")) return null;
-  const suffix = normalized.slice("::ffff:".length);
-  const parts = suffix.split(":");
-  if (parts.length !== 2) return null;
-
-  const hi = Number.parseInt(parts[0], 16);
-  const lo = Number.parseInt(parts[1], 16);
-  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
-
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-}
-
-function isBlockedIpAddress(address: string): boolean {
-  const version = isIP(address);
-
-  if (version === 4) {
-    const blockedCidrs: Array<[string, number]> = [
-      ["127.0.0.0", 8],
-      ["10.0.0.0", 8],
-      ["172.16.0.0", 12],
-      ["192.168.0.0", 16],
-      ["169.254.0.0", 16],
-      ["0.0.0.0", 8],
-    ];
-
-    return blockedCidrs.some(([network, prefixBits]) =>
-      isIPv4InCidr(address, network, prefixBits)
-    );
-  }
-
-  if (version === 6) {
-    // Check for IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1)
-    const mappedV4 = extractIPv4FromMapped(address);
-    if (mappedV4 && isBlockedIpAddress(mappedV4)) {
-      return true;
-    }
-
-    const normalized = address.toLowerCase();
-    return (
-      normalized === "::1" ||
-      normalized === "::" ||
-      normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      normalized.startsWith("fe8") ||
-      normalized.startsWith("fe9") ||
-      normalized.startsWith("fea") ||
-      normalized.startsWith("feb")
-    );
-  }
-
-  return false;
-}
-
-function normalizeHostname(hostname: string): string {
-  if (hostname.startsWith("[") && hostname.endsWith("]")) {
-    return hostname.slice(1, -1);
-  }
-  return hostname;
-}
-
-function isBlockedHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    normalized === "metadata.google.internal" ||
-    normalized === "metadata" ||
-    normalized === "169.254.169.254"
-  );
-}
 
 /**
  * Agent research result.
@@ -341,121 +230,40 @@ Be thorough but efficient. Focus on authoritative sources.`;
     throw new Error(`Unsupported fetch content type: ${contentType || "unknown"}`);
   }
 
+  /** The SSRF guard of ADR 004; the checks themselves live in `src/safe-fetch.ts`. */
   private async validateFetchUrl(url: string): Promise<ValidatedFetchTarget> {
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      throw new Error(`Invalid fetch URL: ${url}`);
-    }
-
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      throw new Error(`Unsupported fetch URL protocol: ${parsedUrl.protocol}`);
-    }
-
-    const host = normalizeHostname(parsedUrl.hostname);
-
-    if (isBlockedHostname(host)) {
-      throw new Error(`Refusing to fetch internal hostname: ${host}`);
-    }
-
-    if (isBlockedIpAddress(host)) {
-      throw new Error(`Refusing to fetch non-public IP: ${host}`);
-    }
-
-    const resolvedAddresses = await lookup(host, { all: true, verbatim: true });
-    if (resolvedAddresses.some((entry) => isBlockedIpAddress(entry.address))) {
-      throw new Error(
-        `Refusing to fetch hostname resolving to a non-public IP: ${parsedUrl.hostname}`
-      );
-    }
-
-    const preferredAddress = resolvedAddresses.find(
-      (entry): entry is { address: string; family: 4 | 6 } => entry.family === 4 || entry.family === 6
-    );
-
-    if (!preferredAddress) {
-      throw new Error(`Unable to resolve a public IP for hostname: ${parsedUrl.hostname}`);
-    }
-
-    return {
-      url: parsedUrl,
-      resolvedAddress: preferredAddress.address,
-      family: preferredAddress.family,
-    };
+    return validateFetchUrl(url);
   }
 
   private async fetchValidatedBody(target: ValidatedFetchTarget): Promise<{ contentType: string; body: string }> {
-    const client = target.url.protocol === "https:" ? https : http;
-
-    return await new Promise((resolve, reject) => {
-      const request = client.request(
-        {
-          protocol: target.url.protocol,
-          hostname: target.url.hostname,
-          port: target.url.port || undefined,
-          method: "GET",
-          path: `${target.url.pathname}${target.url.search}`,
-          headers: {
-            "User-Agent": `Mozilla/5.0 (compatible; ${APP_USER_AGENT})`,
-            Accept: "text/html, application/xhtml+xml, text/plain;q=0.9",
-            "Accept-Encoding": "identity",
-          },
-          servername: target.url.hostname,
-          lookup: (_hostname, _options, callback) => {
-            callback(null, target.resolvedAddress, target.family);
-          },
-        },
-        (response) => {
-          const statusCode = response.statusCode ?? 0;
-          if (statusCode < 200 || statusCode >= 300) {
-            response.resume();
-            reject(new Error(`Agent fetch failed with HTTP ${statusCode}`));
-            return;
-          }
-
-          const contentType = response.headers["content-type"] || "";
-          const normalizedContentType = Array.isArray(contentType) ? contentType[0] || "" : contentType;
-          if (
-            !normalizedContentType.includes("text/html") &&
-            !normalizedContentType.includes("application/xhtml+xml") &&
-            !normalizedContentType.startsWith("text/")
-          ) {
-            response.resume();
-            reject(new Error(`Unsupported fetch content type: ${normalizedContentType || "unknown"}`));
-            return;
-          }
-
-          const chunks: Buffer[] = [];
-          let totalBytes = 0;
-
-          response.on("data", (chunk: Buffer) => {
-            totalBytes += chunk.length;
-            if (totalBytes > MAX_FETCH_BODY_BYTES) {
-              response.destroy(new Error(`Agent fetch exceeded ${MAX_FETCH_BODY_BYTES} bytes`));
-              return;
-            }
-
-            chunks.push(chunk);
-          });
-
-          response.on("end", () => {
-            resolve({
-              contentType: normalizedContentType,
-              body: Buffer.concat(chunks).toString("utf8"),
-            });
-          });
-
-          response.on("error", reject);
+    let contentType = "";
+    const response = await requestValidated(target, {
+      label: "Agent fetch",
+      headers: {
+        "User-Agent": `Mozilla/5.0 (compatible; ${APP_USER_AGENT})`,
+        Accept: "text/html, application/xhtml+xml, text/plain;q=0.9",
+        "Accept-Encoding": "identity",
+      },
+      timeoutMs: AGENT_FETCH_TIMEOUT_MS,
+      maxBytes: MAX_FETCH_BODY_BYTES,
+      overflow: "error",
+      // Redirects are not followed here: a 3xx is a non-2xx and is refused.
+      inspect: (statusCode, headers) => {
+        if (statusCode < 200 || statusCode >= 300) {
+          throw new Error(`Agent fetch failed with HTTP ${statusCode}`);
         }
-      );
-
-      request.setTimeout(AGENT_FETCH_TIMEOUT_MS, () => {
-        request.destroy(new Error(`Agent fetch timed out after ${AGENT_FETCH_TIMEOUT_MS}ms`));
-      });
-      request.on("error", reject);
-      request.end();
+        const header = headers["content-type"] || "";
+        contentType = Array.isArray(header) ? header[0] || "" : header;
+        if (
+          !contentType.includes("text/html") &&
+          !contentType.includes("application/xhtml+xml") &&
+          !contentType.startsWith("text/")
+        ) {
+          throw new Error(`Unsupported fetch content type: ${contentType || "unknown"}`);
+        }
+      },
     });
+    return { contentType, body: response.body.toString("utf8") };
   }
 
   /**

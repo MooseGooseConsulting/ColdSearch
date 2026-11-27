@@ -10,6 +10,7 @@ import { safeKeyRef } from "../logging/usage.js";
 import { toolAllowed, type GatewayConfig, type UpstreamConfig } from "./config.js";
 import { connectOpenApi } from "./openapi.js";
 import { extractCost, Ledger, redact, type LedgerEntry, type LedgerSummaryRow } from "./ledger.js";
+import { NativeTools, type NativeHooks } from "./native/index.js";
 
 /** The part of an MCP client the gateway needs from an upstream connection. */
 export interface UpstreamClient {
@@ -57,6 +58,8 @@ export interface GatewayStatus {
     error?: string;
     keys: Array<{ key: string; state: "active" | "standby" | "skipped"; reason?: KeyFault; retry_at?: string }>;
   }>;
+  /** The gateway's own fetch, map and crawl tools; absent when `[gateway.native] enabled = false`. */
+  native?: { tools: string[]; fallback: string | null; delay_ms: number; max_paid_pages: number };
   last_24h: LedgerSummaryRow[];
   last_7d: LedgerSummaryRow[];
 }
@@ -146,10 +149,13 @@ export class GatewayCore {
   private readonly connector: Connector;
   private readonly resolveKey: KeyResolver;
   private readonly now: () => number;
+  /** The gateway's own fetch, map and crawl tools, or undefined when they are turned off. */
+  readonly native?: NativeTools;
 
+  /** `options.native` holds test seams only (see NativeHooks); the CLI never passes it. */
   constructor(
     readonly config: GatewayConfig,
-    options: { connector?: Connector; resolveKey?: KeyResolver; now?: () => number } = {}
+    options: { connector?: Connector; resolveKey?: KeyResolver; now?: () => number; native?: NativeHooks } = {}
   ) {
     this.ledger = new Ledger(config.ledgerPath, config.logArguments, config.payloadDir);
     this.upstreams = new Map(config.upstreams.map((upstream) => [upstream.name, upstream]));
@@ -162,6 +168,7 @@ export class GatewayCore {
     }
     this.now = options.now ?? Date.now;
     this.keyStates = this.loadState();
+    if (config.native.enabled) this.native = new NativeTools(this, config.native, this.now, options.native);
   }
 
   // --- key state -----------------------------------------------------------
@@ -292,8 +299,18 @@ export class GatewayCore {
    * Forward one tool call. Tries keys in order; an out-of-credit or rejected
    * key is marked and the next one is tried. Any other failure is returned to
    * the agent as the upstream reported it. Every attempt is one ledger line.
+   *
+   * `includeHidden` is for calls the gateway makes for itself (the native
+   * tools' paid fallback): the include and exclude lists decide what agents
+   * may call, and the operator may hide a tool from agents and still name it
+   * as the fallback. Nothing an agent sends sets it.
    */
-  async callTool(name: string, args: Record<string, unknown> | undefined, context: CallContext): Promise<CallToolResult> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown> | undefined,
+    context: CallContext,
+    options: { includeHidden?: boolean } = {}
+  ): Promise<CallToolResult> {
     const split = name.indexOf(NAME_SEPARATOR);
     const upstream = split > 0 ? this.upstreams.get(name.slice(0, split)) : undefined;
     if (!upstream) {
@@ -302,7 +319,7 @@ export class GatewayCore {
       );
     }
     const tool = name.slice(split + NAME_SEPARATOR.length);
-    if (!toolAllowed(upstream, tool)) {
+    if (!options.includeHidden && !toolAllowed(upstream, tool)) {
       return errorResult(`Tool "${name}" is not offered by this gateway (hidden by the upstream's include/exclude lists).`);
     }
     const order = this.keyOrder(upstream);
@@ -399,6 +416,12 @@ export class GatewayCore {
           }),
         };
       }),
+      native: this.native && {
+        tools: this.native.list().map((tool) => tool.name),
+        fallback: this.config.native.fallback ?? null,
+        delay_ms: this.config.native.delayMs,
+        max_paid_pages: this.config.native.maxPaidPages,
+      },
       last_24h: this.ledger.summarize(day, this.now()),
       last_7d: this.ledger.summarize(7 * day, this.now()),
     };

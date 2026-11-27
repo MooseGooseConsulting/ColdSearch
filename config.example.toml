@@ -241,3 +241,9 @@ tool_ttl = "6h"
 #
 # [gateway.upstreams.firecrawl]
 # keys = ["doppler:FIRECRAWL_API_KEY"]
+#
+# The gateway's own fetch, map and crawl tools are on by default. `fallback`
+# names the paid tool for pages they cannot read (JavaScript, bot protection).
+# [gateway.native]
+# fallback = "firecrawl__scrapeAndExtractFromUrl"
+# fallback_arguments = { url = "{url}", formats = ["markdown"] }
