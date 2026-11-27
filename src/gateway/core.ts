@@ -7,7 +7,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { APP_VERSION } from "../app.js";
 import { KeyPoolManager } from "../engine/keypool.js";
 import { safeKeyRef } from "../logging/usage.js";
-import { toolAllowed, type GatewayConfig, type UpstreamConfig } from "./config.js";
+import { matchesPattern, toolAllowed, type GatewayConfig, type UpstreamConfig } from "./config.js";
 import { connectOpenApi } from "./openapi.js";
 import { extractCost, Ledger, redact, type LedgerEntry, type LedgerSummaryRow } from "./ledger.js";
 
@@ -67,17 +67,47 @@ export const NAME_SEPARATOR = "__";
 const CALL_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * Error text that means "this account has no credit left", as documented by
- * the vendors: HTTP 402 (Exa, Firecrawl, Parallel), Tavily's 432, and their
- * error codes. Rate limiting (429) is deliberately absent: it clears in
- * seconds and must not sideline a key for hours.
+ * Vendor wording for "this account or key has no credit left". Each holds
+ * whatever HTTP status came with it:
+ * - `Payment Required`, `Insufficient credits` (Firecrawl, Parallel, Context.dev, TinyFish `INSUFFICIENT_CREDITS`)
+ * - `NO_MORE_CREDITS`, `API_KEY_BUDGET_EXCEEDED`, `TEAM_BUDGET_EXCEEDED` (Exa error tags)
+ * - `exceeds your plan's set usage limit` (Tavily, with HTTP 432)
+ * - `Not enough credits` (Serper, with HTTP 400)
+ * - `free_allowance_exhausted` (TinyFish, with HTTP 429 for Search and Fetch and as a 402 code elsewhere)
+ * - `Usage limit reached`, `out of free credits`, `not enough funds`, `client_10100` (Bright Data;
+ *   the last is its `x-brd-err-code` response header)
  */
 const QUOTA_PATTERN =
-  /\b402\b|\b432\b|payment required|insufficient[ _]credits?|no_more_credits|out of credits|credits? (?:are )?(?:exhausted|depleted)|quota (?:exceeded|exhausted)|exceeds your plan|budget_exceeded/i;
-const AUTH_PATTERN = /\b401\b|invalid[ _]api[ _]key|unauthorized|invalid token|missing authorization/i;
+  /payment required|insufficient[ _]credits?|not enough credits|no_more_credits|budget_exceeded|out of (?:free )?credits|credits? (?:are )?(?:exhausted|depleted)|exceeds your plan|free_allowance_exhausted|usage limit reached|not enough funds|client_10100/i;
+/** HTTP 402 (Exa, Firecrawl, Parallel and others), and Tavily's 432 (plan limit) and 433 (pay-as-you-go limit). Tavily's 434 is a capacity error and is absent. */
+const QUOTA_STATUS = /\b(?:402|432|433)\b/;
+/** Looser wording, trusted only when nothing says the call was rate limited. */
+const QUOTA_LOOSE_PATTERN = /quota (?:exceeded|exhausted)/i;
+/** A short-lived limit: it clears in seconds and must not sideline a key for hours. */
+const RATE_LIMIT_PATTERN = /\b429\b|rate[ _-]?limit|too many requests/i;
+/** A rejected key. `SUBSCRIPTION_TOKEN_INVALID` is Brave's code, sent with HTTP 422. */
+const AUTH_PATTERN = /invalid[ _]api[ _]key|unauthorized|invalid token|missing authorization|subscription_token_invalid/i;
 
+/**
+ * Decide whether an error means the key is out of credit (`quota`) or was
+ * rejected (`auth`); anything else is undefined and is not held against the key.
+ *
+ * Text that starts with `HTTP <status>:`, as every `openapi` upstream error
+ * does, is judged by that status, and numbers further in are not read as
+ * statuses. Other text (an MCP server's error) is searched for the status
+ * numbers. A rate-limited call (HTTP 429, or rate-limit wording when no
+ * status leads) is `quota` only when it carries one of the vendor phrases in
+ * `QUOTA_PATTERN`.
+ */
 export function classifyFault(text: string): KeyFault | undefined {
+  const status = text.match(/^\s*HTTP (\d{3})\b/)?.[1];
   if (QUOTA_PATTERN.test(text)) return "quota";
+  const rateLimited = status ? status === "429" : RATE_LIMIT_PATTERN.test(text);
+  if (!rateLimited) {
+    if (status ? QUOTA_STATUS.test(status) : QUOTA_STATUS.test(text)) return "quota";
+    if (QUOTA_LOOSE_PATTERN.test(text)) return "quota";
+  }
+  if (status ? status === "401" : /\b401\b/.test(text)) return "auth";
   if (AUTH_PATTERN.test(text)) return "auth";
   return undefined;
 }
@@ -101,7 +131,8 @@ function errorPayload(result: CallToolResult): string | undefined {
   if (!text.startsWith("{") || text.length > 2000) return undefined;
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
-    return parsed && typeof parsed === "object" && parsed.error !== undefined ? text : undefined;
+    // `"error": null` (or false, or "") on a successful body is not an error.
+    return parsed && typeof parsed === "object" && parsed.error ? text : undefined;
   } catch {
     return undefined;
   }
@@ -109,6 +140,83 @@ function errorPayload(result: CallToolResult): string | undefined {
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The object that holds the last key of a dotted argument path. With `create`
+ * a missing step is added as an empty object. Undefined when a step is
+ * missing, or is something other than an object.
+ */
+function parentOf(args: Record<string, unknown>, keys: string[], create: boolean): Record<string, unknown> | undefined {
+  let node = args;
+  for (const key of keys.slice(0, -1)) {
+    if (node[key] === undefined && create) node[key] = {};
+    const next = node[key];
+    if (!isPlainObject(next)) return undefined;
+    node = next;
+  }
+  return node;
+}
+
+/**
+ * Apply an upstream's argument pins to one call. Every pin whose pattern
+ * matches the tool applies, in config order. A default fills an argument the
+ * agent left out (so the first matching pin's default wins); a max lowers a
+ * number above it and adds a note for the agent. A max does not fill a
+ * missing argument. The agent's arguments are not modified; `args` is a copy
+ * when any pin matches.
+ *
+ * `refusal` is set, and the call must not be made, when a capped argument
+ * holds something that is not a number: it cannot be compared with the cap.
+ */
+function applyPins(
+  upstream: UpstreamConfig,
+  tool: string,
+  args: Record<string, unknown> | undefined
+): { args: Record<string, unknown> | undefined; notes: string[]; refusal?: string } {
+  const pins = upstream.pins.filter((pin) => matchesPattern(tool, pin.pattern));
+  if (pins.length === 0) return { args, notes: [] };
+  const out = structuredClone(args ?? {});
+  const notes: string[] = [];
+
+  for (const { path, value } of pins.flatMap((pin) => pin.defaults)) {
+    const keys = path.split(".");
+    const parent = parentOf(out, keys, true);
+    const key = keys[keys.length - 1];
+    if (parent && parent[key] === undefined) parent[key] = structuredClone(value);
+  }
+  for (const { path, limit } of pins.flatMap((pin) => pin.max)) {
+    const keys = path.split(".");
+    const parent = parentOf(out, keys, false);
+    const key = keys[keys.length - 1];
+    const given = parent?.[key];
+    if (!parent || given === undefined || given === null) continue;
+    const amount = typeof given === "number" ? given : typeof given === "string" && given.trim() ? Number(given) : Number.NaN;
+    if (Number.isNaN(amount)) {
+      return {
+        args: out,
+        notes,
+        refusal: `Argument "${path}" must be a number: this gateway allows at most ${limit} for ${upstream.name}${NAME_SEPARATOR}${tool}.`,
+      };
+    }
+    if (amount > limit) {
+      parent[key] = limit;
+      notes.push(
+        `Gateway note: "${path}" was lowered from ${amount} to ${limit}, the most this gateway allows for ${upstream.name}${NAME_SEPARATOR}${tool}.`
+      );
+    }
+  }
+  return { args: out, notes };
+}
+
+/** The result with the gateway's notes added after the upstream's own content. */
+function withNotes(result: CallToolResult, notes: string[]): CallToolResult {
+  if (notes.length === 0) return result;
+  return { ...result, content: [...(result.content ?? []), ...notes.map((note) => ({ type: "text" as const, text: note }))] };
 }
 
 /** Streamable HTTP to a vendor's hosted MCP server. */
@@ -289,9 +397,11 @@ export class GatewayCore {
   }
 
   /**
-   * Forward one tool call. Tries keys in order; an out-of-credit or rejected
-   * key is marked and the next one is tried. Any other failure is returned to
-   * the agent as the upstream reported it. Every attempt is one ledger line.
+   * Forward one tool call. The upstream's argument pins are applied first, so
+   * the ledger and the upstream both see the arguments as sent. Tries keys in
+   * order; an out-of-credit or rejected key is marked and the next one is
+   * tried. Any other failure is returned to the agent as the upstream
+   * reported it. Every attempt is one ledger line.
    */
   async callTool(name: string, args: Record<string, unknown> | undefined, context: CallContext): Promise<CallToolResult> {
     const split = name.indexOf(NAME_SEPARATOR);
@@ -305,6 +415,9 @@ export class GatewayCore {
     if (!toolAllowed(upstream, tool)) {
       return errorResult(`Tool "${name}" is not offered by this gateway (hidden by the upstream's include/exclude lists).`);
     }
+    const pinned = applyPins(upstream, tool, args);
+    if (pinned.refusal) return errorResult(pinned.refusal);
+    const sent = pinned.args;
     const order = this.keyOrder(upstream);
     let last: CallToolResult = errorResult(`No keys configured for upstream "${upstream.name}".`);
 
@@ -327,8 +440,8 @@ export class GatewayCore {
       let response: unknown;
       try {
         const client = await this.connect(upstream, keyRef);
-        entry.args = this.ledger.formatArgs(args, this.secrets);
-        const result = (await client.callTool({ name: tool, arguments: args }, undefined, {
+        entry.args = this.ledger.formatArgs(sent, this.secrets);
+        const result = (await client.callTool({ name: tool, arguments: sent }, undefined, {
           timeout: CALL_TIMEOUT_MS,
           resetTimeoutOnProgress: true,
         })) as CallToolResult;
@@ -358,17 +471,20 @@ export class GatewayCore {
         response = { thrown: message };
       }
 
-      entry.payload = this.ledger.writePayload(entry, { name: tool, arguments: args }, response, this.secrets);
+      entry.payload = this.ledger.writePayload(entry, { name: tool, arguments: sent }, response, this.secrets);
 
       this.ledger.append(entry);
-      if (entry.ok || !fault || !keyRef) return last;
+      if (entry.ok || !fault || !keyRef) return withNotes(last, pinned.notes);
       this.markKey(upstream.name, keyRef, fault);
     }
 
     const tried = order.length;
     const detail = resultText(last);
-    return errorResult(
-      `${upstream.name}: all ${tried} configured key${tried === 1 ? "" : "s"} failed (out of credit or rejected). Last error: ${detail}`
+    return withNotes(
+      errorResult(
+        `${upstream.name}: all ${tried} configured key${tried === 1 ? "" : "s"} failed (out of credit or rejected). Last error: ${detail}`
+      ),
+      pinned.notes
     );
   }
 

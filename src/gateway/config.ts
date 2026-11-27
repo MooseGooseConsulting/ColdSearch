@@ -32,6 +32,25 @@ export interface UpstreamConfig {
   include: string[];
   /** Upstream tools matching one of these patterns are hidden and refused. `*` is a wildcard. */
   exclude: string[];
+  /** Argument defaults and caps applied to matching tools before a call is forwarded, in config order. */
+  pins: ArgumentPin[];
+  /** Longest an event-stream response is read, counted from when the request was sent. `openapi` only. */
+  streamTimeoutMs: number;
+  /** Most bytes of an event-stream response that are read. `openapi` only. */
+  streamMaxBytes: number;
+}
+
+/**
+ * Arguments the operator fixes for the tools one pattern matches. Paths are
+ * argument names; a dot reaches into a nested object (`budget.maxCostDollars`).
+ */
+export interface ArgumentPin {
+  /** Tool-name pattern, matched like `include` and `exclude`. */
+  pattern: string;
+  /** Value used for an argument the agent left out. */
+  defaults: Array<{ path: string; value: unknown }>;
+  /** Highest value a numeric argument may have; a larger one is lowered to it. */
+  max: Array<{ path: string; limit: number }>;
 }
 
 export interface GatewayConfig {
@@ -79,6 +98,10 @@ export const UPSTREAM_PRESETS: Record<string, Preset> = {
 };
 
 const UPSTREAM_NAME = /^[a-z][a-z0-9]{0,23}$/;
+
+/** Five minutes: the limit the connector already put on any one request. */
+const DEFAULT_STREAM_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_STREAM_MAX_BYTES = 4 * 1024 * 1024;
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
@@ -141,6 +164,69 @@ function patternList(value: unknown, field: string): string[] {
     throw new Error(`[gateway] ${field} must be a list of tool-name patterns`);
   }
   return value as string[];
+}
+
+const PIN_SETTINGS = ["default", "max"];
+const PIN_PATH = /^[^.\s]+(?:\.[^.\s]+)*$/;
+
+function isTable(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Read an upstream's `pin` table: tool-name pattern to `{ default, max }`.
+ * `default` maps argument paths to any value; `max` maps argument paths to
+ * numbers. Throws naming the pattern and the setting that is wrong.
+ */
+function pinList(value: unknown, field: string): ArgumentPin[] {
+  if (value === undefined) return [];
+  if (!isTable(value)) {
+    throw new Error(`[gateway] ${field} must be a table of tool-name patterns to { default = {...}, max = {...} }`);
+  }
+  const pins: ArgumentPin[] = [];
+  for (const [pattern, entry] of Object.entries(value)) {
+    const at = `${field}."${pattern}"`;
+    if (!pattern.trim()) throw new Error(`[gateway] ${field} has an empty tool-name pattern`);
+    if (!isTable(entry)) throw new Error(`[gateway] ${at} must be a table with default and/or max`);
+    const stray = Object.keys(entry).find((key) => !PIN_SETTINGS.includes(key));
+    if (stray !== undefined) {
+      throw new Error(`[gateway] ${at}.${stray} is not a pin setting; use default or max`);
+    }
+    if (entry.default === undefined && entry.max === undefined) {
+      throw new Error(`[gateway] ${at} needs default or max`);
+    }
+    for (const setting of PIN_SETTINGS) {
+      if (entry[setting] !== undefined && !isTable(entry[setting])) {
+        const holds = setting === "max" ? "numbers" : "values";
+        throw new Error(`[gateway] ${at}.${setting} must be a table of argument names to ${holds}`);
+      }
+    }
+    const paths = (setting: string): Array<[string, unknown]> => {
+      const entries = Object.entries((entry[setting] as Record<string, unknown> | undefined) ?? {});
+      for (const [path] of entries) {
+        if (!PIN_PATH.test(path)) {
+          throw new Error(`[gateway] ${at}.${setting}."${path}" is not an argument name or dotted path such as "budget.maxCostDollars"`);
+        }
+      }
+      return entries;
+    };
+    const max = paths("max").map(([path, limit]) => {
+      if (typeof limit !== "number" || !Number.isFinite(limit)) {
+        throw new Error(`[gateway] ${at}.max."${path}" must be a number`);
+      }
+      return { path, limit };
+    });
+    pins.push({ pattern, defaults: paths("default").map(([path, item]) => ({ path, value: item })), max });
+  }
+  return pins;
+}
+
+function byteCount(value: unknown, fallback: number, field: string): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`[gateway] ${field} must be a whole number of bytes, at least 1`);
+  }
+  return value;
 }
 
 /** True when `tool` matches a pattern; `*` matches any run of characters. */
@@ -233,6 +319,9 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
       keys: keys as string[],
       include: patternList(block.include, `upstreams.${name}.include`),
       exclude: patternList(block.exclude, `upstreams.${name}.exclude`),
+      pins: pinList(block.pin, `upstreams.${name}.pin`),
+      streamTimeoutMs: parseDurationMs(block.stream_timeout, DEFAULT_STREAM_TIMEOUT_MS, `upstreams.${name}.stream_timeout`),
+      streamMaxBytes: byteCount(block.stream_max_bytes, DEFAULT_STREAM_MAX_BYTES, `upstreams.${name}.stream_max_bytes`),
     });
   }
   if (upstreams.length === 0) {
