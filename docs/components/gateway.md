@@ -78,7 +78,8 @@ Preset blocks need only `keys`. Any other name needs `url`, plus
 `kind = "openapi"` and `spec` (a URL or file path) for an API-document
 upstream. Key references use
 the same `doppler:` and `env:` forms as provider key pools
-(`docs/KEY_MANAGEMENT.md`). A gateway-only config needs no `[capabilities]`
+(`docs/KEY_MANAGEMENT.md`). Unlike a provider key pool, a gateway `keys` list
+refuses a key written as a value. A gateway-only config needs no `[capabilities]`
 or `[providers]` sections.
 
 ## What agents see
@@ -140,7 +141,8 @@ One JSON line per attempt, in a file created with mode 0600:
 ```
 
 `key` is the reference, never the value, and resolved key values are replaced
-with `[redacted]` in `args` and `error`. `error_class` is `quota`, `auth` or
+with `[redacted]` in `args` and `error`, and in the result or error handed
+back to the agent. `error_class` is `quota`, `auth` or
 `upstream`. `cost` holds `usd` or `credits` when the provider reports one in
 the response. In live runs Exa's API did (`costDollars`) and Firecrawl's did on
 scrape and search (`creditsUsed`). Parallel's and Tavily's search responses
