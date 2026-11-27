@@ -1,0 +1,117 @@
+# SearXNG — authored for the ColdSearch gateway on 2026-11-27.
+#
+# SearXNG publishes no API document. Routes and parameters here were read from
+# https://docs.searxng.org/dev/search_api.html and from the upstream source
+# (searx/webapp.py, searx/webutils.py, searx/webadapter.py, branch master).
+# Nothing here was run against an instance.
+#
+# There is no `servers` entry: the address is the deployment's own and comes
+# from `url` in the config block. Only GET forms are listed, because the POST
+# forms take form-encoded bodies, which the gateway does not send.
+#
+# The instance must allow JSON: `search.formats` in its settings.yml has to
+# include `json`, or every search answers 403 with an HTML page.
+openapi: 3.1.0
+info:
+  title: SearXNG API (authored for ColdSearch)
+  version: "2026-11-27"
+  description: Written from the SearXNG documentation and source; not a project document.
+paths:
+  /search:
+    get:
+      operationId: search
+      summary: Metasearch across the instance's engines
+      description: >-
+        Results merged from the engines the instance has enabled. No per-call cost. Engines that blocked or timed out are
+        named in unresponsive_engines of an otherwise successful response.
+        Source: https://docs.searxng.org/dev/search_api.html and searx/webapp.py in the SearXNG source, read 2026-11-27.
+        This operation is unverified against the live API.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, description: "Search query. Engine syntax such as site: is passed through." }
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [json]
+            description: Always "json". Without it the instance answers with an HTML page.
+        - name: categories
+          in: query
+          schema: { type: string, description: 'Comma-separated categories, for example "general,news". See the config operation.' }
+        - name: engines
+          in: query
+          schema: { type: string, description: 'Comma-separated engine names, for example "duckduckgo,brave".' }
+        - name: language
+          in: query
+          schema: { type: string, description: 'Language code, for example "en" or "de-DE".' }
+        - name: pageno
+          in: query
+          schema: { type: integer, minimum: 1, default: 1, description: "Result page." }
+        - name: time_range
+          in: query
+          schema: { type: string, enum: [day, month, year], description: "Only results from this period. Not every engine supports it." }
+        - name: safesearch
+          in: query
+          schema: { type: integer, enum: [0, 1, 2], description: "0 off, 1 moderate, 2 strict." }
+        - name: timeout_limit
+          in: query
+          schema: { type: number, description: "Seconds to wait for engines. The instance may cap it." }
+      responses:
+        "200":
+          description: '{query, results[], answers[], corrections[], infoboxes[], suggestions[], unresponsive_engines[]}'
+          content:
+            application/json:
+              schema: { type: object }
+        "403":
+          description: The instance does not allow the json format (search.formats in settings.yml).
+  /autocompleter:
+    get:
+      operationId: autocomplete
+      summary: Query suggestions
+      description: >-
+        Suggestions for a partial query, as a JSON array [query, [suggestions], ...].
+        Source: searx/webapp.py in the SearXNG source, read 2026-11-27.
+        This operation is unverified against the live API.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, description: "Partial query to complete." }
+      responses:
+        "200":
+          description: A JSON array in the OpenSearch suggestions shape.
+          content:
+            application/x-suggestions+json:
+              schema: { type: array }
+  /config:
+    get:
+      operationId: config
+      summary: What this instance has enabled
+      description: >-
+        Categories, engines (with what each supports), plugins, locales, the default safe-search level and whether the
+        bot-detection limiter is on. Read it to see which categories and engines the search operation accepts.
+        Source: searx/webapp.py in the SearXNG source, read 2026-11-27.
+        This operation is unverified against the live API.
+      responses:
+        "200":
+          description: '{categories[], engines[], plugins[], instance_name, locales, default_locale, safe_search, version, limiter, ...}'
+          content:
+            application/json:
+              schema: { type: object }
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Whether the instance is up
+      description: >-
+        Answers 200 with plain text when the instance is running.
+        Source: searx/webapp.py in the SearXNG source, read 2026-11-27.
+        This operation is unverified against the live API.
+      responses:
+        "200":
+          description: Plain text.
+          content:
+            text/plain:
+              schema: { type: string }

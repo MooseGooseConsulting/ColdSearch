@@ -228,16 +228,126 @@ tool_ttl = "6h"
 # ============================================
 # MCP GATEWAY (coldsearch mcp)
 # ============================================
-# One MCP endpoint in front of providers' own MCP servers. Each upstream's
-# `keys` list is the drain order: the next key is used when one runs out of
-# credit. Presets cover exa, firecrawl, parallel, tavily, brightdata, tinyfish
-# and context; see docs/components/gateway.md for every option.
+# One MCP endpoint in front of providers' APIs and hosted MCP servers. Each
+# upstream's `keys` list is the drain order: the next key is used when one runs
+# out of credit.
+#
+# A block that names a preset needs only `keys`. The preset supplies the
+# connection details and a default tool list: it hides destructive, billing,
+# account, feedback, deprecated and unusable tools and pins expensive
+# defaults. `coldsearch mcp --list-tools` shows what a config exposes;
+# docs/PROVIDERS.md ("Gateway upstreams") has the table, and
+# docs/components/gateway.md every option.
+#
+# Per block, to change the default tool list:
+#   include = [...]   exclude = [...]   pin = {...}   each REPLACES the preset's
+#   curation = "none"                   drop all three and see everything
+#   allow_credential_tools = true       also offer tools that return keys or passwords
 #
 # [gateway]
 # mode = "all"            # "lazy" for clients that load every tool schema
 #
+# --- Exa: search, contents, answer, agent runs -------------------------------
 # [gateway.upstreams.exa]
 # keys = ["doppler:EXA_API_KEY"]
 #
+# Hosted MCP server, with the opt-in web_search_advanced_exa tool.
+# [gateway.upstreams.examcp]
+# keys = ["doppler:EXA_API_KEY"]
+#
+# Team credit balance. Needs a service key from the Exa dashboard, not an API key.
+# [gateway.upstreams.exaadmin]
+# keys = ["doppler:EXA_SERVICE_KEY"]
+#
+# --- Firecrawl: scrape, crawl, map, search, agent, browser sessions ----------
 # [gateway.upstreams.firecrawl]
 # keys = ["doppler:FIRECRAWL_API_KEY"]
+#
+# Hosted MCP server, limited to what only it has: Alexandria, people, companies, jobs.
+# [gateway.upstreams.firecrawlmcp]
+# keys = ["doppler:FIRECRAWL_API_KEY"]
+#
+# --- Parallel: search, extract, decisions, task runs, vertical searches ------
+# [gateway.upstreams.parallel]
+# keys = ["doppler:PARALLEL_API_KEY"]
+#
+# Hosted MCP server, with the flight and product tools it does not list by default.
+# [gateway.upstreams.parallelmcp]
+# keys = ["doppler:PARALLEL_API_KEY"]
+#
+# --- Tavily: search, extract, crawl, map, research ---------------------------
+# [gateway.upstreams.tavily]
+# keys = ["doppler:TAVILY_API_KEY"]
+#
+# [gateway.upstreams.tavilymcp]
+# keys = ["doppler:TAVILY_API_KEY"]
+#
+# What the key in use is. Enterprise plans only.
+# [gateway.upstreams.tavilykeys]
+# keys = ["doppler:TAVILY_API_KEY"]
+#
+# --- Bright Data: search-engine and page unlock, scraper catalogue -----------
+# The REST API. unlockUrl needs a zone name on every call: create one SERP
+# zone and one Web Unlocker zone in the Bright Data control panel first.
+# [gateway.upstreams.brightdata]
+# keys = ["doppler:BRIGHT_DATA_API_KEY"]
+#
+# Hosted MCP server (this was the `brightdata` preset before; same key).
+# [gateway.upstreams.brightdatamcp]
+# keys = ["doppler:BRIGHT_DATA_API_KEY"]
+#
+# --- TinyFish: search, fetch, web automation ---------------------------------
+# Hosted MCP server: the main TinyFish upstream.
+# [gateway.upstreams.tinyfish]
+# keys = ["doppler:TINY_FISH_API_KEY"]
+#
+# REST operations the hosted server has no tool for (sync and batch runs).
+# [gateway.upstreams.tinyfishapi]
+# keys = ["doppler:TINY_FISH_API_KEY"]
+#
+# TinyAnswer. Must be enabled for the account; refuses team keys.
+# [gateway.upstreams.tinyfishanswer]
+# keys = ["doppler:TINY_FISH_API_KEY"]
+#
+# --- Context.dev: scrape, map, crawl, search, answers, brand data ------------
+# The REST API (this name was the hosted MCP server before; same key).
+# [gateway.upstreams.context]
+# keys = ["doppler:CONTEXT_DEV_API_KEY"]
+#
+# Hosted MCP server, limited to parse-document.
+# [gateway.upstreams.contextmcp]
+# keys = ["doppler:CONTEXT_DEV_API_KEY"]
+#
+# --- Jina: reader, search, embeddings, rerank --------------------------------
+# [gateway.upstreams.jina]
+# keys = ["doppler:JINA_API_KEY"]
+#
+# Hosted MCP server: arXiv and SSRN search, PDF extraction, screenshots.
+# [gateway.upstreams.jinamcp]
+# keys = ["doppler:JINA_API_KEY"]
+#
+# --- Kagi: search and extract. No free allowance ------------------------------
+# [gateway.upstreams.kagi]
+# keys = ["doppler:KAGI_API_KEY"]
+#
+# --- Perplexity: search, page context, decisions ------------------------------
+# [gateway.upstreams.perplexity]
+# keys = ["doppler:PERPLEXITY_API_KEY"]
+#
+# --- Serper: Google search, news, scholar, patents, maps, page scrape ---------
+# [gateway.upstreams.serper]
+# keys = ["doppler:SERPER_API_KEY"]
+#
+# --- Brave: one key per plan ---------------------------------------------------
+# Search plan: web, news, video, image, place search and LLM context.
+# [gateway.upstreams.brave]
+# keys = ["doppler:BRAVE_SEARCH_API_KEY"]
+#
+# Answers plan.
+# [gateway.upstreams.braveanswers]
+# keys = ["doppler:BRAVE_ANSWERS_API_KEY"]
+#
+# --- SearXNG: your own instance. Keyless; the address is required -------------
+# Its settings.yml must list `json` under search.formats.
+# [gateway.upstreams.searxng]
+# url = "http://localhost:8080"

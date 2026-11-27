@@ -1,0 +1,344 @@
+# Serper (serper.dev) — authored for the ColdSearch gateway on 2026-11-27.
+#
+# Serper publishes no API document; its reference is a login-gated playground.
+# This file was reconstructed from the vendor's public web client (the
+# playground page's script bundles) and the example responses on its homepage.
+# No operation here was run with a key: without one every Serper path except
+# /locations answers 403. Each operation says where it comes from.
+#
+# Three hosts: search verticals and the account on google.serper.dev (the
+# gateway preset's base URL), the page scrape on scrape.serper.dev and the
+# location list on api.serper.dev. The last two carry their own `servers`.
+openapi: 3.1.0
+info:
+  title: Serper API (authored for ColdSearch)
+  version: "2026-11-27"
+  description: Google search results as JSON. Reconstructed from the vendor's public web client; not a vendor document.
+servers:
+  - url: https://google.serper.dev
+security:
+  - apiKey: []
+paths:
+  /search:
+    post:
+      operationId: search
+      summary: Google web search
+      description: >-
+        Organic results with knowledge graph, people-also-ask and related searches. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /images:
+    post:
+      operationId: images
+      summary: Google image search
+      description: >-
+        Image results with source page and thumbnail. 1 credit, doubled when num is above 10.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /videos:
+    post:
+      operationId: videos
+      summary: Google video search
+      description: >-
+        Video results with channel, duration and date. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /places:
+    post:
+      operationId: places
+      summary: Google places search
+      description: >-
+        Local businesses with address, coordinates, rating and phone number. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequestWithoutNum" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /maps:
+    post:
+      operationId: maps
+      summary: Google Maps search
+      description: >-
+        Places from Google Maps around a point, or one place by placeId or cid. 3 credits.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q: { type: string, description: "Search query." }
+                hl: { $ref: "#/components/schemas/Language" }
+                ll: { type: string, description: 'Map centre and zoom as "@latitude,longitude,zoom", for example "@40.7128,-74.0060,14z".' }
+                placeId: { type: string, description: "Google place id." }
+                cid: { type: string, description: "Google customer id of a place." }
+                page: { $ref: "#/components/schemas/Page" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /reviews:
+    post:
+      operationId: reviews
+      summary: Google reviews of one place
+      description: >-
+        Reviews for a place named by one of cid, fid or placeId. 1 credit.
+        Source: Serper playground client code (https://serper.dev/playground), read 2026-11-27; the vendor shows no example response, so the response shape is unconfirmed.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cid: { type: string, description: "Google customer id of the place. Give one of cid, fid or placeId." }
+                fid: { type: string, description: "Google feature id of the place." }
+                placeId: { type: string, description: "Google place id." }
+                gl: { $ref: "#/components/schemas/Country" }
+                hl: { $ref: "#/components/schemas/Language" }
+                sortBy:
+                  type: string
+                  enum: [mostRelevant, newest, highestRating, lowestRating]
+                topicId: { type: string, description: "Restrict to one review topic." }
+                nextPageToken: { type: string, description: "Token from the previous page of reviews." }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /news:
+    post:
+      operationId: news
+      summary: Google News search
+      description: >-
+        News results with source and date. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /shopping:
+    post:
+      operationId: shopping
+      summary: Google Shopping search
+      description: >-
+        Products with price, store, rating and offers. 2 credits.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /lens:
+    post:
+      operationId: lens
+      summary: Google Lens search by image URL
+      description: >-
+        Pages that show an image, given the image's URL. 3 credits.
+        Source: Serper playground client code (https://serper.dev/playground), read 2026-11-27; the vendor shows no example response, so the response shape is unconfirmed.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: "URL of the image to look up." }
+                location: { $ref: "#/components/schemas/Location" }
+                gl: { $ref: "#/components/schemas/Country" }
+                hl: { $ref: "#/components/schemas/Language" }
+                tbs: { $ref: "#/components/schemas/TimeFilter" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /scholar:
+    post:
+      operationId: scholar
+      summary: Google Scholar search
+      description: >-
+        Papers with publication info, year and citation count. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequestWithoutNum" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /patents:
+    post:
+      operationId: patents
+      summary: Google Patents search
+      description: >-
+        Patents with dates, inventor, assignee, publication number and PDF link. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /autocomplete:
+    post:
+      operationId: autocomplete
+      summary: Google autocomplete suggestions
+      description: >-
+        Query suggestions for a partial query. 1 credit.
+        Source: Serper playground client code and homepage example (https://serper.dev/playground, https://serper.dev/), read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [q]
+              properties:
+                q: { type: string, description: "Partial query to complete." }
+                location: { $ref: "#/components/schemas/Location" }
+                gl: { $ref: "#/components/schemas/Country" }
+                hl: { $ref: "#/components/schemas/Language" }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /account:
+    get:
+      operationId: account
+      summary: Credit balance and rate limit of the key
+      description: >-
+        Returns {"balance": credits left, "rateLimit": queries per second}. No credits.
+        Source: two third-party users of the route (https://quotacanary.com/directory/serper, https://github.com/superdesigndev/treg), read 2026-11-27; it is absent from the vendor's own client.
+        This operation is unverified against the live API.
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /:
+    post:
+      operationId: webpage
+      summary: Scrape one page to text or markdown
+      description: >-
+        Fetches a URL and returns its text, optional markdown and metadata. 2, 6 or 10 credits by page difficulty;
+        the vendor says the credits used are returned in the response.
+        Source: Serper playground client code (https://serper.dev/playground), read 2026-11-27, which posts to the root path of scrape.serper.dev; the response fields are unconfirmed.
+        This operation is unverified against the live API.
+      servers:
+        - url: https://scrape.serper.dev
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: "Page to scrape." }
+                includeMarkdown: { type: boolean, description: "Also return the page as markdown." }
+                includeImages: { type: boolean }
+                includeLinks: { type: boolean }
+                includeVideos: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+  /locations:
+    get:
+      operationId: locations
+      summary: Look up location names accepted by the location argument
+      description: >-
+        Returns [{name, canonicalName, googleId, countryCode, targetType}]. No credits and no key needed.
+        Source: https://api.serper.dev/locations, which answered a request sent without a key on 2026-11-27.
+      servers:
+        - url: https://api.serper.dev
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Part of a location name, for example "Austin".
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Most locations to return.
+          schema: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Results" }
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+  responses:
+    Results:
+      description: JSON result. An out-of-credit key is reported as HTTP 400 "Not enough credits" (third-party reports).
+      content:
+        application/json:
+          schema: { type: [object, array] }
+  schemas:
+    Location:
+      type: string
+      description: Location name as returned by the locations operation, for example "Austin, Texas, United States".
+    Country:
+      type: string
+      description: Two-letter country code. The vendor's client defaults to "us".
+    Language:
+      type: string
+      description: Two-letter language code. The vendor's client defaults to "en".
+    Page:
+      type: integer
+      description: Result page, starting at 1.
+    TimeFilter:
+      type: string
+      description: 'Google time filter: "qdr:h" (past hour), "qdr:d" (day), "qdr:w" (week), "qdr:m" (month), "qdr:y" (year).'
+    SearchRequest:
+      type: object
+      required: [q]
+      properties:
+        q: { type: string, description: "Search query. Google operators such as site: work." }
+        location: { $ref: "#/components/schemas/Location" }
+        gl: { $ref: "#/components/schemas/Country" }
+        hl: { $ref: "#/components/schemas/Language" }
+        num: { type: integer, description: "Number of results." }
+        page: { $ref: "#/components/schemas/Page" }
+        tbs: { $ref: "#/components/schemas/TimeFilter" }
+        autocorrect: { type: boolean, description: "Let Google correct the query." }
+    SearchRequestWithoutNum:
+      type: object
+      required: [q]
+      properties:
+        q: { type: string, description: "Search query." }
+        location: { $ref: "#/components/schemas/Location" }
+        gl: { $ref: "#/components/schemas/Country" }
+        hl: { $ref: "#/components/schemas/Language" }
+        page: { $ref: "#/components/schemas/Page" }
+        tbs: { $ref: "#/components/schemas/TimeFilter" }
+        autocorrect: { type: boolean, description: "Let Google correct the query." }

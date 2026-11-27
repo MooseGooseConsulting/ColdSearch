@@ -511,7 +511,7 @@ test("a malformed pin is rejected with the pattern and setting named", () => {
   assert.deepEqual(exa.pins, [
     { pattern: "create*", defaults: [{ path: "effort", value: "low" }], max: [{ path: "budget.maxCostDollars", limit: 1 }] },
   ]);
-  assert.deepEqual(resolveGatewayConfig({ upstreams: { exa: { keys: ["env:X"] } } }).upstreams[0].pins, []);
+  assert.deepEqual(resolveGatewayConfig({ upstreams: { custom: { url: "https://mcp.example.com/mcp", keys: ["env:X"] } } }).upstreams[0].pins, []);
 });
 
 test("a cap refuses an argument it cannot compare: null, or a dotted name that runs through something that is not an object", async () => {

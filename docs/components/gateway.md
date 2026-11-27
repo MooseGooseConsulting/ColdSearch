@@ -15,18 +15,32 @@ argument pins, and the Tavily 433, Serper, Brave, TinyFish and Bright Data
 signals under [Keys](#keys) are covered by tests against local servers. They
 have not been run against the vendors.
 
+The presets added after that first run, and every preset's
+[default tool list](#default-tool-lists), come from the vendors' published
+documents and documentation. The tool lists were matched against the
+operation names those documents produce; no operation was called with a key.
+`docs/PROVIDERS.md` ("Gateway upstreams") has the table per preset.
+
 ## Two kinds of upstream
 
 | Kind | Tools come from | Use for |
 |------|-----------------|---------|
-| `openapi` | The vendor's published OpenAPI documents: one tool per operation, with every path, query, header and body parameter | Vendors that publish one. Default for `exa`, `firecrawl`, `parallel`, `tavily` |
-| `mcp` | The vendor's hosted MCP server, passed through unchanged | Vendors with no API document, or tools only their MCP server has. Default for `brightdata`, `tinyfish`, `context` |
+| `openapi` | OpenAPI documents, the vendor's own or one shipped in `specs/`: one tool per operation, with every path, query, header and body parameter | Vendors with an HTTP API. `exa`, `exaadmin`, `firecrawl`, `parallel`, `tavily`, `tavilykeys`, `brightdata`, `tinyfishapi`, `tinyfishanswer`, `context`, `jina`, `kagi`, `perplexity`, `serper`, `brave`, `braveanswers`, `searxng` |
+| `mcp` | The vendor's hosted MCP server, passed through unchanged | Tools only the hosted server has. `examcp`, `firecrawlmcp`, `parallelmcp`, `tavilymcp`, `brightdatamcp`, `tinyfish`, `contextmcp`, `jinamcp` |
 
 `openapi` is the default where it exists because hosted MCP servers expose a
 small part of the API. Exa's lists 3 tools and its search takes 3 parameters;
 its API document has 64 operations and its search takes 23. The hosted MCP
-servers stay reachable under the presets `examcp`, `firecrawlmcp`,
-`parallelmcp` and `tavilymcp`, and both kinds can be configured side by side.
+servers stay reachable under the `<name>mcp` presets, and both kinds can be
+configured side by side. TinyFish is the exception: its hosted server is the
+main upstream (`tinyfish`), and `tinyfishapi` adds the REST operations that
+server has no tool for.
+
+`brightdata` and `context` named the hosted MCP servers in the first version.
+They now name the REST APIs, with the same key: Bright Data's hosted server is
+`brightdatamcp` and Context.dev's is `contextmcp`. A block under the old name
+keeps working and gets the REST tools, whose names differ (`unlockUrl`, not
+`search_engine`).
 
 ## Run it
 
@@ -44,6 +58,33 @@ unless `COLDSEARCH_GATEWAY_TOKEN` is set; clients then send
 
 Operator messages go to stderr. In stdio mode stdout carries the protocol.
 
+### See what a config offers
+
+```bash
+coldsearch mcp --config ~/.config/coldsearch/config.toml --list-tools
+coldsearch mcp --list-tools --json
+```
+
+Prints, for each upstream, how many tools the provider offers, how many the
+config exposes, the exposed names, how many are hidden for each reason, and
+which tools have pinned arguments. Then it exits. It reads tool lists only and
+calls no tool: an `openapi` upstream is listed from its documents without
+resolving a key, and an `mcp` upstream by connecting with the first key that
+works and asking for its list. An upstream that cannot be read is reported
+with the reason and does not stop the others.
+
+```
+tavily (openapi, https://docs.tavily.com/documentation/api-reference/openapi.json)
+  offered 10, exposed 6, hidden 4
+  exposed: search, extract, crawl, map, createResearch, getResearch
+  hidden: account 3, feedback 1
+  pinned: createResearch, search, extract, crawl, map, getResearch
+```
+
+`--json` gives the same as a list of objects with `upstream`, `kind`,
+`source`, `curation`, `offered`, `exposed`, `hidden` (each tool with its
+reason), `pinned` and, when the list could not be read, `error`.
+
 ## Configure it
 
 ```toml
@@ -58,22 +99,29 @@ mode = "all"                      # or "lazy"; see below
 # exhausted_cooldown = "6h"       # how long an out-of-credit key is skipped
 # tool_list_ttl = "10m"
 
-[gateway.upstreams.exa]
-keys = ["doppler:EXA_API_KEY", "doppler:EXA_API_KEY_2"]
-
 [gateway.upstreams.firecrawl]
 keys = ["doppler:FIRECRAWL_API_KEY"]
 
-# Hide tools agents should not have. `*` is a wildcard; `include` works the
-# same way and, when set, hides everything it does not match.
-[gateway.upstreams.tinyfish]
-keys = ["doppler:TINY_FISH_API_KEY"]
-exclude = ["top_up_wallet", "delete_*", "*_profile*"]
-
-# Fix arguments for tools whose own defaults are expensive; see "Argument pins".
 [gateway.upstreams.parallel]
 keys = ["doppler:PARALLEL_API_KEY"]
-pin = { "post_v1_search" = { default = { mode = "fast" } } }
+
+# A preset already hides what an agent should not hold and pins expensive
+# defaults; see "Default tool lists". A block's own list replaces the
+# preset's. `*` is a wildcard; `include`, when set, hides everything it does
+# not match.
+[gateway.upstreams.tinyfish]
+keys = ["doppler:TINY_FISH_API_KEY"]
+exclude = ["top_up_wallet", "delete_*", "*monitor*", "*_profile*"]
+
+# Fix arguments for tools whose own defaults are expensive; see "Argument pins".
+# A block's pin table replaces the preset's whole table, so repeat what you keep.
+[gateway.upstreams.exa]
+keys = ["doppler:EXA_API_KEY", "doppler:EXA_API_KEY_2"]
+pin = { "createAgentRun" = { default = { effort = "minimal" }, max = { "budget.maxCostDollars" = 1 } } }
+
+# A self-hosted SearXNG: the preset has everything but the address.
+[gateway.upstreams.searxng]
+url = "http://localhost:8080"
 
 # Several API documents under one upstream, each on the host it names itself.
 [gateway.upstreams.example]
@@ -95,9 +143,12 @@ auth_prefix = "Bearer "
 keys = ["env:INTERNAL_MCP_KEY"]
 ```
 
-Preset blocks need only `keys`. Any other name needs `url`, plus
-`kind = "openapi"` and `spec` (a URL or file path, or a list of them) for an
-API-document upstream. Key references use
+Preset blocks need only `keys` (`searxng`, which is keyless, needs only
+`url`). Any other name needs `url`, plus `kind = "openapi"` and `spec` (a URL
+or file path, or a list of them) for an API-document upstream. A spec written
+`package:<path>` names a file shipped with ColdSearch, such as
+`package:specs/brave.yaml`, and is found wherever the process was started.
+Key references use
 the same `doppler:` and `env:` forms as provider key pools
 (`docs/KEY_MANAGEMENT.md`). A gateway-only config needs no `[capabilities]`
 or `[providers]` sections.
@@ -111,8 +162,9 @@ operation's id, or the method and path when the id is missing or long
 the operation's header parameters. Descriptions
 and schemas are the provider's own. An operation the provider adds to its API
 document appears within an hour, an MCP tool within `tool_list_ttl`, with no
-ColdSearch change. A tool hidden by
-an upstream's `include` or `exclude` list is neither listed nor callable.
+ColdSearch change, unless the preset's default tool list hides it. A tool
+hidden by an upstream's `include` or `exclude` list, the preset's or the
+block's, is neither listed nor callable.
 
 The gateway adds its own tools:
 
@@ -124,9 +176,12 @@ The gateway adds its own tools:
 
 ### `all` and `lazy`
 
-With the six verified upstreams, `all` mode lists 245 tools whose schemas total
-about 680 KB. That suits a client that defers tool schemas until needed. For a
-client that loads every schema into context, use `lazy`: it lists five gateway
+With the six upstreams of the first version and no tool lists, `all` mode
+listed 245 tools whose schemas totalled about 680 KB. The default tool lists
+cut that (`--list-tools` shows the count for a config), but a config with many
+upstreams still lists over a hundred. That suits a client that defers tool
+schemas until needed. For a client that loads every schema into context, use
+`lazy`: it lists five gateway
 tools (under 2 KB), and the agent finds an upstream tool by keyword, reads its
 schema, then calls it by name. `--mode` overrides the config per process, so
 one config can serve both kinds of client.
@@ -222,6 +277,120 @@ bytes reach neither the agent nor the payload file. A body declared as an
 image, audio, video, font, PDF, zip or gzip is treated this way without being
 kept in memory. A body with a generic or missing content type is returned as
 text when it is valid UTF-8 and described as binary when it is not.
+
+## Default tool lists
+
+A preset carries more than connection details. It also says which of the
+provider's tools an agent gets and which arguments are pinned, so a block that
+names an upstream and its keys is safe to hand to an agent as it stands. The
+lists live in `src/gateway/profiles.ts`; `docs/PROVIDERS.md` ("Gateway
+upstreams") shows what each preset offers, exposes and hides.
+
+A preset hides a tool for one of these reasons:
+
+| Reason | What it covers |
+|--------|----------------|
+| `credentials` | The response carries a key, a password or a signing secret |
+| `destructive` | Deletes or clears something that cannot be brought back |
+| `billing` | Moves money: a top-up, auto-recharge, payment methods |
+| `account` | Manages or reports on the account, team, zones, keys, webhooks or policies, or lists every job of the team |
+| `feedback` | Sends text to the vendor: feedback, a support assistant |
+| `deprecated` | Deprecated, retired, or announced to stop working |
+| `unusable` | Cannot work through the gateway: a file upload, a second credential, a plan the key lacks, a remote browser no call can drive |
+| `schedule` | A standing schedule that spends until cancelled, and the tools that only read or change one |
+| `spend` | One call can spend a large amount and no pin can bound it |
+| `duplicate` | A second form of an operation the same upstream offers |
+| `housekeeping` | Service plumbing with nothing in it for an agent |
+
+Cancelling or closing something the agent itself started (a crawl, a run, a
+browser session) is never hidden. A preset written as an allowlist
+(`brightdata`, `perplexity`, `firecrawlmcp` and others) hides everything its
+`include` list does not name; `--list-tools` reports those as `not-included`.
+
+A preset hides by name. A tool the vendor adds later is offered unless the
+preset is an allowlist, so check `--list-tools` after a vendor release.
+
+### Changing a preset's lists
+
+```toml
+# Replace the preset's hidden tools with your own list.
+[gateway.upstreams.tavily]
+keys = ["doppler:TAVILY_API_KEY"]
+exclude = ["post_org_usage"]
+
+# See everything the provider offers.
+[gateway.upstreams.firecrawl]
+keys = ["doppler:FIRECRAWL_API_KEY"]
+curation = "none"
+```
+
+- `include`, `exclude` and `pin` in a block each **replace** the preset's
+  value for that one setting. They are not merged with it. A block that sets
+  `exclude` drops every tool the preset hid and hides only what it lists; the
+  preset's `include` and `pin` stay in force because the block did not set
+  them. `exclude = []` hides nothing, and `pin = {}` pins nothing.
+- `curation = "none"` drops the preset's `include`, `exclude` and `pin`
+  together. The block's own lists, if any, still apply. The default is
+  `curation = "preset"`.
+- Tools hidden for `credentials` are the exception. They stay hidden under a
+  block's own lists and under `curation = "none"`, and a call to one is
+  refused. `allow_credential_tools = true` lifts that for the block. The
+  response of such a tool reaches the agent and the payload file, so a key or
+  password it returns is then in both.
+- The lists name the tools of the preset's own kind. A block that changes a
+  preset's `kind` gets none of them.
+- An upstream without a preset has no default lists; only the block's apply.
+
+The tools hidden for `credentials` are: `exa` `createMonitor` and
+`webhooks_create` (a webhook signing secret); `exaadmin` `list_api_keys`,
+`create_api_key`, `get_api_key`, `update_api_key`, `rotate_api_key` and
+`get_api_key_usage`; `tavilykeys` `post_generate_keys`; `brightdata`
+`listZonePasswords`, `addZonePassword` and `removeZonePassword`; `context`
+`rotateMonitorWebhookSecret`. Firecrawl's partner API, which mints keys, has
+no preset.
+
+### Pinned defaults
+
+| Preset | Tool | Pinned | Why |
+|--------|------|--------|-----|
+| `exa` | `createAgentRun` | `effort` defaults to `low`; `budget.maxCostDollars` defaults to 2 and is capped at 5 | The API default, `auto`, may spend $5 and `ultra` $20; a fixed effort has no cap on contact enrichment |
+| `firecrawl` | `startAgent` | `maxCredits` defaults to 200, capped at 500 | The API default is 2,500 credits |
+| `firecrawl` | `crawlUrls` | `limit` defaults to 50, capped at 1,000 | The API default is 10,000 pages at a credit each |
+| `firecrawlmcp` | `people_company_search`, `people_company_enrich` | `max_credits` defaults to 100, capped at 200 | Vendor defaults are 1,000 credits and no cap |
+| `firecrawlmcp` | `jobs_search` | `max_credits` defaults to 50, capped at 200 | Vendor default is 200 credits |
+| `parallel` | `post_v1_search`, `post_v1_images_search`, `post_v1_places_search` | `mode` defaults to `fast` | The API default, `advanced`, costs five times as much |
+| `parallel` | `post_v1_responses` | `reasoning.effort` defaults to `low` | The API default, `medium`, costs five times as much |
+| `parallel` | `get_v1_tasks_runs_run_id_result` | `timeout` defaults to 240, capped at 280 | The API waits 600 s; the gateway gives a request 300 s |
+| `tavily` | `createResearch`; `tavilymcp` `tavily_research` | `model` defaults to `mini` | `auto` may pick `pro`, up to 250 credits |
+| `tavily` | `search`, `extract`, `crawl`, `map`, `getResearch` | `include_usage` defaults to `true` | Tavily reports a call's cost only when asked, and the ledger records it |
+| `context` | `post_web_answers` | `mode` defaults to `fast` | The API default, `ultra`, is 100 credits; `fast` is 10 |
+| `searxng` | `search` | `format` defaults to `json` | Without it the instance answers with an HTML page |
+
+The numbers are a starting point chosen from the vendors' price lists, not
+measured. A `default` leaves an argument the agent supplied alone, so an agent
+can still ask for Parallel's `advanced` mode or Tavily's `pro` model by
+naming it. Only a `max` binds.
+
+### Shipped documents
+
+`specs/` holds the OpenAPI documents ColdSearch authors because the vendor
+publishes none, or an incomplete one:
+
+| File | Operations | Used by | Written from |
+|------|------------|---------|--------------|
+| `specs/serper.yaml` | 15, on three hosts | `serper` | The vendor's public web client; Serper publishes no reference |
+| `specs/brave.yaml` | 16 | `brave`, `braveanswers` | Brave's reference pages; its one published document has 8 operations with reduced parameters |
+| `specs/searxng.yaml` | 4, GET only | `searxng` | The SearXNG documentation and source |
+| `specs/firecrawl-additions.yaml` | 6 | `firecrawl`, listed before the published document | Firecrawl's public source and documentation |
+| `specs/parallel-suggest.yaml` | 2 | `parallel`, listed after the published document | Parallel's Ingest API page |
+
+Each operation's description names the page it was written from, and says
+"unverified against the live API" unless a request confirmed it. Only
+Serper's keyless `locations` operation was confirmed. The Firecrawl additions
+replace three published operations (the multipart `parseFile` with the JSON
+`parseUploadedFile`, and fuller forms of
+`interactWithScrapeBrowserSession` and `getHistoricalCreditUsage`) and add
+`createParseUploadUrl`, `getAgentThread` and `getConcurrency`.
 
 ## Argument pins
 
@@ -386,3 +555,21 @@ descriptions are also sent in the server instructions at connect time.
   run's status operation.
 - A pin applies to arguments by name. It cannot change an argument inside a
   list, and a `max` does not stop an agent from leaving the argument out.
+- A pin cannot rule out one value of an argument. A tool whose price is set
+  by a value the agent chooses (Parallel's `generator = "pro"`, a task
+  group's run count) is hidden by its preset instead.
+- `firecrawl` and `parallel` list two documents each, so the published one
+  goes to the host it names, whatever `url` says (see
+  [Which host a call goes to](#which-host-a-call-goes-to)). To point either
+  preset at another host, such as a self-hosted Firecrawl, set `spec` to one
+  document as well as `url`.
+- One upstream holds one operation per method, base URL and path. Firecrawl
+  runs Alexandria capabilities through the same `POST /scrape` as a page
+  scrape, so a second, Alexandria-shaped tool cannot sit beside
+  `scrapeAndExtractFromUrl` in the `firecrawl` upstream; `firecrawlmcp`
+  offers `alexandria_library_read` for that.
+- Brave issues one key per plan. `brave` reaches the Search plan and
+  `braveanswers` the Answers plan; the Autosuggest and Spellcheck operations
+  are in `specs/brave.yaml` and need a block of their own with
+  `spec = "package:specs/brave.yaml"`, that plan's key, and
+  `include = ["suggest"]` or `["spellcheck"]`.

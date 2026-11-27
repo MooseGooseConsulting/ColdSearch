@@ -1,0 +1,75 @@
+# Parallel Ingest API — authored for the ColdSearch gateway on 2026-11-27.
+#
+# Parallel's published document (https://docs.parallel.ai/public-openapi.json)
+# has 41 operations and leaves out the two suggest routes its documentation
+# describes at https://docs.parallel.ai/task-api/ingest-api.md. This file
+# supplies them; the `parallel` preset lists it after the published document.
+# Neither operation was run with a key, and the documentation states no price.
+#
+# There is no `servers` entry: calls go to the upstream's `url`
+# (https://api.parallel.ai in the preset).
+openapi: 3.1.0
+info:
+  title: Parallel Ingest API (authored for ColdSearch)
+  version: "2026-11-27"
+  description: The two suggest routes missing from Parallel's published document. Not a vendor document.
+security:
+  - apiKey: []
+paths:
+  /v1beta/tasks/suggest:
+    post:
+      operationId: post_v1beta_tasks_suggest
+      summary: Turn a plain-language intent into a task spec
+      description: >-
+        Returns a task spec (input and output schema) to pass to a task run. Give previous_task to refine an earlier one.
+        Source: https://docs.parallel.ai/task-api/ingest-api.md, read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_intent]
+              properties:
+                user_intent: { type: string, description: "What the task should find out, in plain language." }
+                previous_task: { type: object, description: "A task spec returned earlier, to refine." }
+      responses:
+        "200":
+          description: The suggested task spec.
+          content:
+            application/json:
+              schema: { type: object }
+  /v1beta/tasks/suggest-processor:
+    post:
+      operationId: post_v1beta_tasks_suggest_processor
+      summary: Recommend a processor for a task spec
+      description: >-
+        Names the processor that fits a task spec. Never returns lite. The processor sets the price of a task run.
+        Source: https://docs.parallel.ai/task-api/ingest-api.md, read 2026-11-27.
+        This operation is unverified against the live API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_spec]
+              properties:
+                task_spec: { type: object, description: "The task spec to choose a processor for." }
+                choose_processors_from:
+                  type: array
+                  items: { type: string }
+                  description: 'Processors to choose among, for example ["base", "core", "pro"].'
+      responses:
+        "200":
+          description: The recommended processor.
+          content:
+            application/json:
+              schema: { type: object }
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: x-api-key

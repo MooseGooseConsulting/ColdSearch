@@ -1,7 +1,11 @@
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG_DIR_NAME } from "../app.js";
+import { UPSTREAM_PRESETS, type HideReason } from "./profiles.js";
+
+// The presets and the tool report are part of this module's surface.
+export * from "./profiles.js";
 
 /** How the gateway presents upstream tools to the connecting agent. */
 export type GatewayMode = "all" | "lazy";
@@ -32,12 +36,26 @@ export interface UpstreamConfig {
   include: string[];
   /** Upstream tools matching one of these patterns are hidden and refused. `*` is a wildcard. */
   exclude: string[];
+  /** Why each `exclude` pattern is there: the preset's reasons, and `config` for the block's own list. */
+  hidden: HiddenTools[];
+  /** `preset` when the preset's tool lists and pins are in force for this upstream, otherwise `none`. */
+  curation: Curation;
   /** Argument defaults and caps applied to matching tools before a call is forwarded, in config order. */
   pins: ArgumentPin[];
   /** Longest an event-stream response is read, counted from when the request was sent. `openapi` only. */
   streamTimeoutMs: number;
   /** Most bytes of an event-stream response that are read. `openapi` only. */
   streamMaxBytes: number;
+}
+
+/** Whether a preset's default tool lists and pins apply to a block. */
+export type Curation = "preset" | "none";
+
+/** Patterns hidden for one reason. `config` marks the block's own `exclude` list. */
+export interface HiddenTools {
+  reason: HideReason | "config";
+  patterns: string[];
+  note: string;
 }
 
 /**
@@ -68,35 +86,6 @@ export interface GatewayConfig {
   upstreams: UpstreamConfig[];
 }
 
-type Preset = Pick<UpstreamConfig, "kind" | "url" | "auth" | "authName" | "authPrefix"> & { spec?: string | string[] };
-
-const bearer = { auth: "header", authName: "Authorization", authPrefix: "Bearer " } as const;
-const apiKey = { auth: "header", authName: "x-api-key", authPrefix: "" } as const;
-
-/**
- * Connection details for upstreams the gateway knows, checked on 2026-11-27.
- *
- * Vendors that publish an OpenAPI document default to `openapi`, because their
- * hosted MCP servers expose a small part of the API (Exa's lists 3 tools with
- * 3 search parameters; its API document has 64 operations). The `<name>mcp`
- * presets reach the hosted MCP servers for anything only they offer. A config
- * block may override any field, and unknown names work when the block
- * supplies `url` (and `spec` for `openapi`).
- */
-export const UPSTREAM_PRESETS: Record<string, Preset> = {
-  exa: { kind: "openapi", url: "https://api.exa.ai", spec: "https://exa.ai/docs/exa-spec.yaml", ...apiKey },
-  firecrawl: { kind: "openapi", url: "https://api.firecrawl.dev/v2", spec: "https://docs.firecrawl.dev/api-reference/v2-openapi.json", ...bearer },
-  parallel: { kind: "openapi", url: "https://api.parallel.ai", spec: "https://docs.parallel.ai/public-openapi.json", ...apiKey },
-  tavily: { kind: "openapi", url: "https://api.tavily.com", spec: "https://docs.tavily.com/documentation/api-reference/openapi.json", ...bearer },
-  examcp: { kind: "mcp", url: "https://mcp.exa.ai/mcp", ...apiKey },
-  firecrawlmcp: { kind: "mcp", url: "https://mcp.firecrawl.dev/v2/mcp", ...bearer },
-  parallelmcp: { kind: "mcp", url: "https://mcp.parallel.ai/mcp", ...bearer },
-  tavilymcp: { kind: "mcp", url: "https://mcp.tavily.com/mcp/", ...bearer },
-  brightdata: { kind: "mcp", url: "https://mcp.brightdata.com/mcp", auth: "query", authName: "token", authPrefix: "" },
-  tinyfish: { kind: "mcp", url: "https://agent.tinyfish.ai/mcp", ...bearer },
-  context: { kind: "mcp", url: "https://mcp.context.dev/mcp", ...bearer },
-};
-
 const UPSTREAM_NAME = /^[a-z][a-z0-9]{0,23}$/;
 
 /** Five minutes: the limit the connector already put on any one request. */
@@ -111,9 +100,32 @@ function configDir(): string {
   return join(homedir(), ".config", DEFAULT_CONFIG_DIR_NAME);
 }
 
+/** The installed package's root: the directory that holds `dist/`, `skills/` and `specs/`. */
+export function packageRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
 /** `skills/` at the package root, next to `dist/`. */
 export function defaultSkillsDir(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
+  return join(packageRoot(), "skills");
+}
+
+const PACKAGE_PREFIX = "package:";
+
+/**
+ * Turn a spec location into what the connector reads. `package:<path>` names
+ * a file shipped with ColdSearch and becomes its absolute path, wherever the
+ * process was started; the path must stay inside the package. Anything else
+ * (an https URL, a file path) is returned as given.
+ */
+export function resolveSpecLocation(location: string, field: string): string {
+  if (!location.startsWith(PACKAGE_PREFIX)) return location;
+  const relative = location.slice(PACKAGE_PREFIX.length);
+  const parts = relative.split(/[\\/]/);
+  if (!relative || isAbsolute(relative) || parts.includes("..") || parts.includes("")) {
+    throw new Error(`[gateway] ${field} "${location}" must be package:<path inside the ColdSearch package>, such as "package:specs/brave.yaml"`);
+  }
+  return join(packageRoot(), ...parts);
 }
 
 function parseDurationMs(value: unknown, fallbackMs: number, field: string): number {
@@ -143,7 +155,7 @@ function specList(value: unknown, field: string): string[] {
   if (list.some((item) => typeof item !== "string" || !item.trim())) {
     throw new Error(`[gateway] ${field} must be a URL or file path, or a list of them`);
   }
-  return list as string[];
+  return (list as string[]).map((item) => resolveSpecLocation(item, field));
 }
 
 function headerTable(value: unknown, field: string): Record<string, string> {
@@ -229,6 +241,18 @@ function byteCount(value: unknown, fallback: number, field: string): number {
   return value;
 }
 
+function curationSetting(value: unknown, field: string): Curation {
+  if (value === undefined || value === "preset") return "preset";
+  if (value === "none") return "none";
+  throw new Error(`[gateway] ${field} must be "preset" or "none"`);
+}
+
+function booleanSetting(value: unknown, field: string): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error(`[gateway] ${field} must be true or false`);
+  return value;
+}
+
 /** True when `tool` matches a pattern; `*` matches any run of characters. */
 export function matchesPattern(tool: string, pattern: string): boolean {
   const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
@@ -276,7 +300,11 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
 
     const url = asString(block.url, `upstreams.${name}.url`) ?? preset?.url;
     if (!url) {
-      throw new Error(`[gateway] upstreams.${name} has no preset, so it needs a url`);
+      throw new Error(
+        preset
+          ? `[gateway] upstreams.${name}.url is required: the "${name}" preset has no default address, because it is your own deployment's (for example "http://localhost:8080")`
+          : `[gateway] upstreams.${name} has no preset, so it needs a url`
+      );
     }
     try {
       new URL(url);
@@ -306,6 +334,23 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
       throw new Error(`[gateway] upstreams.${name} needs at least one entry in keys (or auth = "none")`);
     }
 
+    // The preset's tool lists name the tools of its own kind, so a block that
+    // changes the kind gets none of them.
+    const curation = curationSetting(block.curation, `upstreams.${name}.curation`);
+    const sameKind = preset !== undefined && preset.kind === kind;
+    const curated = sameKind && curation === "preset" ? preset : undefined;
+    const allowCredentials = booleanSetting(block.allow_credential_tools, `upstreams.${name}.allow_credential_tools`);
+
+    const hidden: HiddenTools[] = [];
+    const presetHides = sameKind ? preset.hide ?? [] : [];
+    if (!allowCredentials) hidden.push(...presetHides.filter((rule) => rule.reason === "credentials"));
+    if (block.exclude !== undefined) {
+      const patterns = patternList(block.exclude, `upstreams.${name}.exclude`);
+      if (patterns.length > 0) hidden.push({ reason: "config", patterns, note: "this block's exclude list" });
+    } else if (curated) {
+      hidden.push(...presetHides.filter((rule) => rule.reason !== "credentials"));
+    }
+
     upstreams.push({
       name,
       kind,
@@ -317,9 +362,15 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
       authPrefix:
         typeof block.auth_prefix === "string" ? block.auth_prefix : preset?.authPrefix ?? "Bearer ",
       keys: keys as string[],
-      include: patternList(block.include, `upstreams.${name}.include`),
-      exclude: patternList(block.exclude, `upstreams.${name}.exclude`),
-      pins: pinList(block.pin, `upstreams.${name}.pin`),
+      include:
+        block.include !== undefined ? patternList(block.include, `upstreams.${name}.include`) : [...(curated?.include ?? [])],
+      exclude: hidden.flatMap((rule) => rule.patterns),
+      hidden,
+      curation: curated ? "preset" : "none",
+      pins:
+        block.pin !== undefined
+          ? pinList(block.pin, `upstreams.${name}.pin`)
+          : pinList(curated?.pin, `the "${name}" preset's pin`),
       streamTimeoutMs: parseDurationMs(block.stream_timeout, DEFAULT_STREAM_TIMEOUT_MS, `upstreams.${name}.stream_timeout`),
       streamMaxBytes: byteCount(block.stream_max_bytes, DEFAULT_STREAM_MAX_BYTES, `upstreams.${name}.stream_max_bytes`),
     });
