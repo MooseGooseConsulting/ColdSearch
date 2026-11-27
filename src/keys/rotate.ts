@@ -1,6 +1,7 @@
 import type { KeyProviderConfig } from "./config.js";
 import { dopplerStore, referenceTo, referencedSecret } from "./doppler.js";
 import { keysError } from "./errors.js";
+import { hasBalanceEndpoint } from "./readers.js";
 import {
   gatherProviderStatus,
   readSlot,
@@ -21,8 +22,12 @@ function periodEnd(account: AccountStatus): number | undefined {
 /**
  * Apply the provider's policy to a status reading.
  *
- * - `in-order`: the first account in pool order that is above the floor; an
- *   account whose allowance is unknown counts as above.
+ * - `in-order`: the first account in pool order that is above the floor.
+ *   For a provider with no usage endpoint (exa, parallel) no allowance is
+ *   ever known, and unknown counts as above. For a provider that has one, an
+ *   account whose read failed is passed over: a rejected key, an HTTP error
+ *   or a timeout says nothing about what is left, and counting it as above
+ *   would move the slot onto a revoked or drained account.
  * - `soonest-reset`: among accounts known to be above the floor, the one
  *   whose period ends soonest, so allowance about to lapse is used first.
  *   When no such account reports a period end, the one with the most left.
@@ -52,12 +57,21 @@ export function chooseRotationTarget(status: ProviderKeyStatus): RotationChoice 
     status.points_at && account.keys.includes(status.points_at) ? status.points_at : account.keys[0];
 
   if (policy === "in-order") {
-    const position = accounts.findIndex((account) => account.spent !== true);
+    const unmetered = !hasBalanceEndpoint(status.provider);
+    const position = accounts.findIndex((account) => account.spent === false || (unmetered && account.spent === null));
     if (position === -1) return noneLeft();
     const account = accounts[position];
-    const skipped = position === 0 ? "" : `; ${position} earlier in the pool at or below the floor`;
-    const state = account.remaining === null ? "allowance unknown, which counts as above the floor" : `${account.remaining} left`;
-    return { target: keyOf(account), why: `in-order: first pool account above the floor of ${floor} (${state}${skipped})` };
+    const earlier = accounts.slice(0, position);
+    const spentEarlier = earlier.filter((item) => item.spent === true).length;
+    const unreadEarlier = earlier.length - spentEarlier;
+    const notes = [
+      account.remaining === null
+        ? `allowance unknown, which counts as above the floor because ${status.provider} has no balance endpoint`
+        : `${account.remaining} left`,
+      ...(spentEarlier > 0 ? [`${spentEarlier} earlier in the pool at or below the floor`] : []),
+      ...(unreadEarlier > 0 ? [`${unreadEarlier} earlier in the pool could not be read`] : []),
+    ];
+    return { target: keyOf(account), why: `in-order: first pool account above the floor of ${floor} (${notes.join("; ")})` };
   }
 
   const above = accounts.filter((account) => account.spent === false);
@@ -116,7 +130,6 @@ export interface RotationResult {
  */
 export async function rotateSlot(
   config: KeyProviderConfig,
-  ledgerPath: string | undefined,
   options: RotateOptions = {},
   deps: KeysDeps = {}
 ): Promise<RotationResult> {
@@ -135,7 +148,8 @@ export async function rotateSlot(
     slot = await readSlot(store, config);
     choice = { target: options.to, why: "chosen with --to" };
   } else {
-    const gathered = await gatherProviderStatus(config, ledgerPath, deps);
+    // No ledger: a policy chooses on allowance readings, never on recorded spend.
+    const gathered = await gatherProviderStatus(config, undefined, deps);
     store = gathered.store;
     for (const [name, value] of gathered.values) values.set(name, value);
     const { status } = gathered;

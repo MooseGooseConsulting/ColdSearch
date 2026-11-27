@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   chooseRotationTarget,
   collectKeyStatus,
+  ledgerSpend,
   readAllowance,
   referencedSecret,
   resolveKeysConfig,
@@ -36,9 +37,22 @@ const FIRECRAWL = {
   [KEYS.FIRECRAWL_API_KEY_4]: { remainingCredits: 60, planCredits: 1000, billingPeriodStart: "2026-11-05T19:30:00.789Z", billingPeriodEnd: "2026-12-05T19:30:00.789Z" },
 };
 
+/** Temp directories made by this file, removed when the test process exits. */
+const tempDirs = [];
+process.on("exit", () => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+function tempDir(prefix) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
 /**
  * A stand-in for the providers' usage endpoints, one path prefix per provider.
- * `overrides` replaces the firecrawl bodies; every request is recorded.
+ * `overrides` replaces the firecrawl bodies; a number in place of a body is
+ * answered as that HTTP status. The returned `firecrawl` map can be changed
+ * between requests. Every request is recorded.
  */
 async function usageServer(overrides = {}) {
   const requests = [];
@@ -51,6 +65,7 @@ async function usageServer(overrides = {}) {
       res.end(typeof body === "string" ? body : JSON.stringify(body));
     };
     if (req.url === "/firecrawl/v2/team/credit-usage") {
+      if (typeof firecrawl[bearer] === "number") return send(firecrawl[bearer], { success: false });
       return firecrawl[bearer] ? send(200, { success: true, data: firecrawl[bearer] }) : send(401, { success: false, error: `Unauthorized: ${bearer}` });
     }
     if (req.url === "/tavily/usage") {
@@ -61,11 +76,13 @@ async function usageServer(overrides = {}) {
     if (req.url === "/serper/account") {
       return req.headers["x-api-key"] === KEYS.SERPER_API_KEY_1 ? send(200, { balance: 2420, rateLimit: 50 }) : send(403, {});
     }
+    // A Serper account answer shaped some other way than the reader expects.
+    if (req.url === "/serper-reshaped/account") return send(200, { credits: 2420, rateLimit: 50 });
     if (req.url === "/broken/v2/team/credit-usage") return send(200, "<html>not json</html>");
     return send(404, {});
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${server.address().port}`, requests, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { url: `http://127.0.0.1:${server.address().port}`, requests, firecrawl, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 /**
@@ -99,7 +116,7 @@ if (verb === "get") {
 
 /** A temp directory holding the stand-in doppler, its secrets, a config file and helpers to run the CLI against them. */
 function sandbox(secrets, configToml, { installDoppler = true } = {}) {
-  const dir = mkdtempSync(path.join(tmpdir(), "cs-keys-"));
+  const dir = tempDir("cs-keys-");
   const bin = path.join(dir, "bin");
   mkdirSync(bin);
   if (installDoppler) {
@@ -185,9 +202,9 @@ function memoryStore(secrets, { ignoreWrites = false } = {}) {
   return { store, writes, reads, secrets };
 }
 
-function status(policy, floor, accounts, pointsAt = null) {
+function status(policy, floor, accounts, pointsAt = null, provider = "firecrawl") {
   return {
-    provider: "firecrawl",
+    provider,
     policy,
     floor,
     points_at: pointsAt,
@@ -196,7 +213,7 @@ function status(policy, floor, accounts, pointsAt = null) {
       remaining,
       period_end,
       spent: remaining === null ? null : remaining <= floor,
-      unknown: remaining === null ? "usage endpoint returned HTTP 500" : null,
+      unknown: remaining !== null ? null : provider === "firecrawl" ? "usage endpoint returned HTTP 500" : `${provider} has no balance endpoint for an ordinary key`,
     })),
   };
 }
@@ -271,6 +288,9 @@ test("a reader that cannot read says why without quoting the key or the response
     assert.match(reasons.at(-1).unknown, /did not return JSON/);
     reasons.push(await readAllowance("serper", KEYS.SERPER_API_KEY_1, `${server.url}/nowhere`));
     assert.match(reasons.at(-1).unknown, /returned HTTP 404/);
+    // Serper's account shape is not vendor-documented; any other shape must read as unknown, not as a number.
+    reasons.push(await readAllowance("serper", KEYS.SERPER_API_KEY_1, `${server.url}/serper-reshaped`));
+    assert.deepEqual(reasons.at(-1), { unknown: "account response has no balance" });
   } finally {
     await server.close();
   }
@@ -397,14 +417,28 @@ test("soonest-reset picks the account above the floor whose period ends first, t
   assert.match(chooseRotationTarget(blind).why, /no firecrawl account is known to be above the floor of 0: 1 of 2 could not be read .* pass --to/);
 });
 
-test("in-order picks the first pool account above the floor and counts an unknown allowance as above", () => {
+test("in-order picks the first pool account above the floor, and passes over an account whose read failed", () => {
   const order = status("in-order", 100, [["A", 100], ["B", 101], ["C", 9000]]);
   assert.equal(chooseRotationTarget(order).target, "B");
   assert.match(chooseRotationTarget(order).why, /in-order: first pool account above the floor of 100 \(101 left; 1 earlier in the pool at or below the floor\)/);
 
-  const unknownFirst = status("in-order", 100, [["A", 50], ["B", null], ["C", 9000]]);
-  assert.equal(chooseRotationTarget(unknownFirst).target, "B");
-  assert.match(chooseRotationTarget(unknownFirst).why, /allowance unknown, which counts as above the floor/);
+  // B's usage endpoint answered HTTP 500. That says nothing about B's allowance, so B is not chosen.
+  const unreadFirst = status("in-order", 100, [["A", 50], ["B", null], ["C", 9000]]);
+  assert.equal(chooseRotationTarget(unreadFirst).target, "C");
+  assert.match(
+    chooseRotationTarget(unreadFirst).why,
+    /in-order: first pool account above the floor of 100 \(9000 left; 1 earlier in the pool at or below the floor; 1 earlier in the pool could not be read\)/
+  );
+
+  // Nothing readable is above the floor: no choice, and the way out is named.
+  const blind = status("in-order", 100, [["A", null], ["B", 50], ["C", null]]);
+  assert.equal(chooseRotationTarget(blind).target, null);
+  assert.match(chooseRotationTarget(blind).why, /no firecrawl account is known to be above the floor of 100: 2 of 3 could not be read \(usage endpoint returned HTTP 500\).* pass --to/);
+
+  // exa has no usage endpoint, so its allowance is never known; there unknown counts as above.
+  const unmetered = status("in-order", 0, [["A", null], ["B", null]], "B", "exa");
+  assert.equal(chooseRotationTarget(unmetered).target, "A");
+  assert.match(chooseRotationTarget(unmetered).why, /allowance unknown, which counts as above the floor because exa has no balance endpoint/);
 
   // The default floor of 0: an account with exactly nothing left is spent.
   assert.equal(chooseRotationTarget(status("in-order", 0, [["A", 0], ["B", 1]])).target, "B");
@@ -495,7 +529,7 @@ test("keys rotate changes nothing and exits non-zero when every account is at or
 });
 
 test("exa has no balance endpoint: pool keys are not read, spend comes from the gateway ledger, and in-order rotates", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "cs-keys-ledger-"));
+  const dir = tempDir("cs-keys-ledger-");
   const ledger = path.join(dir, "ledger.jsonl");
   const line = (upstream, key, usd) =>
     JSON.stringify({ ts: "2026-11-20T10:00:00.000Z", session: "s", upstream, tool: "search", key, attempt: 1, ok: true, duration_ms: 5, ...(usd === undefined ? {} : { cost: { usd } }) });
@@ -543,7 +577,7 @@ policy = "in-order"
   assert.match(table.stdout, /ledger: \$0\.25 over 2 calls made with EXA_API_KEY itself/);
   assert.match(table.stdout, /\* +EXA_API_KEY_2 +\? +- +- +exa has no balance endpoint for an ordinary key; ledger: \$0\.50 over 1 call$/m);
 
-  // Unknown counts as above the floor, so in-order goes to the first pool key.
+  // exa has no balance endpoint, so unknown counts as above the floor and in-order goes to the first pool key.
   const rotated = await box.run(["rotate", "exa"]);
   assert.equal(rotated.code, 0, rotated.stderr);
   assert.match(rotated.stdout, /was: EXA_API_KEY_2\n {2}now: EXA_API_KEY_1\n {2}why: in-order: first pool account above the floor of 0 \(allowance unknown/);
@@ -558,7 +592,7 @@ test("a slot holding its own value is overwritten only when a pool secret holds 
 
   // The slot's key exists nowhere else: a reference written over it would lose it.
   const orphan = memoryStore({ EXA_API_KEY: "test-key-only-copy-5555", EXA_API_KEY_1: KEYS.EXA_API_KEY_1, EXA_API_KEY_2: KEYS.EXA_API_KEY_2 });
-  const refused = await rotateSlot(config, undefined, { to: "EXA_API_KEY_1" }, orphan);
+  const refused = await rotateSlot(config, { to: "EXA_API_KEY_1" }, orphan);
   assert.equal(refused.outcome, "refused");
   assert.match(refused.why, /EXA_API_KEY holds its own value and no pool secret holds the same one/);
   assert.equal(orphan.writes.length, 0);
@@ -566,14 +600,14 @@ test("a slot holding its own value is overwritten only when a pool secret holds 
 
   // The slot's key is also EXA_API_KEY_2, so nothing is lost by pointing the slot elsewhere.
   const twin = memoryStore({ EXA_API_KEY: KEYS.EXA_API_KEY_2, EXA_API_KEY_1: KEYS.EXA_API_KEY_1, EXA_API_KEY_2: KEYS.EXA_API_KEY_2 });
-  const moved = await rotateSlot(config, undefined, {}, twin);
+  const moved = await rotateSlot(config, {}, twin);
   assert.equal(moved.outcome, "rotated");
   assert.equal(moved.was, "its own value, the same as EXA_API_KEY_2");
   assert.deepEqual(twin.writes, [{ name: "EXA_API_KEY", value: "${EXA_API_KEY_1}" }]);
 
   // A slot that cannot be read is left alone, whatever the policy says.
   const absent = memoryStore({ EXA_API_KEY_1: KEYS.EXA_API_KEY_1, EXA_API_KEY_2: KEYS.EXA_API_KEY_2 });
-  const untouched = await rotateSlot(config, undefined, {}, absent);
+  const untouched = await rotateSlot(config, {}, absent);
   assert.equal(untouched.outcome, "refused");
   assert.match(untouched.why, /the slot could not be read, so it was left alone/);
   assert.equal(absent.writes.length, 0);
@@ -586,13 +620,13 @@ test("a write that does not read back as the reference, or a target that does no
 
   const stuck = memoryStore({ EXA_API_KEY: "${EXA_API_KEY_2}", EXA_API_KEY_1: KEYS.EXA_API_KEY_1, EXA_API_KEY_2: KEYS.EXA_API_KEY_2 }, { ignoreWrites: true });
   await assert.rejects(
-    rotateSlot(config, undefined, {}, stuck),
+    rotateSlot(config, {}, stuck),
     /EXA_API_KEY was written but does not read back as a reference to EXA_API_KEY_1; check it in Doppler example-project\/prd now/
   );
 
   // Pointing a slot at a secret that is not there would hand consumers the literal reference text.
   const dangling = memoryStore({ EXA_API_KEY: "${EXA_API_KEY_2}", EXA_API_KEY_2: KEYS.EXA_API_KEY_2 });
-  await assert.rejects(rotateSlot(config, undefined, {}, dangling), /Could not read EXA_API_KEY_1/);
+  await assert.rejects(rotateSlot(config, {}, dangling), /Could not read EXA_API_KEY_1/);
   assert.equal(dangling.writes.length, 0);
 });
 
@@ -610,4 +644,155 @@ test("collectKeyStatus hands back every key value it read so callers can redact"
   } finally {
     await server.close();
   }
+});
+
+test("in-order never moves the slot onto a firecrawl account whose usage read failed", async () => {
+  const server = await usageServer();
+  const pool = ["FIRECRAWL_API_KEY_1", "FIRECRAWL_API_KEY_3", "FIRECRAWL_API_KEY_4"];
+  const config = resolveKeysConfig({
+    firecrawl: { slot: "FIRECRAWL_API_KEY", pool, project: "example-project", config: "prd", policy: "in-order", floor: 50, base_url: `${server.url}/firecrawl` },
+  }).providers[0];
+  const secrets = (slotTarget, overrides = {}) => ({
+    FIRECRAWL_API_KEY: `\${${slotTarget}}`,
+    FIRECRAWL_API_KEY_1: KEYS.FIRECRAWL_API_KEY_1,
+    FIRECRAWL_API_KEY_3: KEYS.FIRECRAWL_API_KEY_3,
+    FIRECRAWL_API_KEY_4: KEYS.FIRECRAWL_API_KEY_4,
+    ...overrides,
+  });
+  try {
+    // The first pool key was revoked: its usage endpoint answers 401. The slot is on a healthy account and stays there.
+    const revoked = memoryStore(secrets("FIRECRAWL_API_KEY_3", { FIRECRAWL_API_KEY_1: "test-key-revoked-8888" }));
+    const kept = await rotateSlot(config, {}, revoked);
+    assert.equal(kept.outcome, "unchanged");
+    assert.equal(kept.target, "FIRECRAWL_API_KEY_3");
+    assert.match(kept.why, /already points at FIRECRAWL_API_KEY_3 .*940 left; 1 earlier in the pool could not be read/);
+    assert.equal(revoked.writes.length, 0);
+
+    // The first account is drained, so the slot moves to the second.
+    server.firecrawl[KEYS.FIRECRAWL_API_KEY_1] = { ...FIRECRAWL[KEYS.FIRECRAWL_API_KEY_1], remainingCredits: 0 };
+    const drained = memoryStore(secrets("FIRECRAWL_API_KEY_1"));
+    const moved = await rotateSlot(config, {}, drained);
+    assert.equal(moved.outcome, "rotated");
+    assert.deepEqual(drained.writes, [{ name: "FIRECRAWL_API_KEY", value: "${FIRECRAWL_API_KEY_3}" }]);
+
+    // On the next run the drained account's usage endpoint fails. The slot must not go back to it.
+    server.firecrawl[KEYS.FIRECRAWL_API_KEY_1] = 500;
+    const next = await rotateSlot(config, {}, drained);
+    assert.equal(next.outcome, "unchanged");
+    assert.equal(drained.secrets.FIRECRAWL_API_KEY, "${FIRECRAWL_API_KEY_3}");
+    assert.equal(drained.writes.length, 1);
+
+    // Only the unreadable account could still qualify: refuse and name --to, rather than guess.
+    server.firecrawl[KEYS.FIRECRAWL_API_KEY_3] = { ...FIRECRAWL[KEYS.FIRECRAWL_API_KEY_3], remainingCredits: 50 };
+    server.firecrawl[KEYS.FIRECRAWL_API_KEY_4] = { ...FIRECRAWL[KEYS.FIRECRAWL_API_KEY_4], remainingCredits: 0 };
+    const refused = await rotateSlot(config, {}, drained);
+    assert.equal(refused.outcome, "refused");
+    assert.equal(refused.target, null);
+    assert.match(refused.why, /no firecrawl account is known to be above the floor of 50: 1 of 3 could not be read \(usage endpoint returned HTTP 500\).* pass --to/);
+    assert.equal(drained.writes.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a Serper account answer without a numeric balance reads as unknown, and rotate refuses instead of guessing", async () => {
+  const server = await usageServer();
+  try {
+    const config = resolveKeysConfig({
+      serper: { slot: "SERPER_API_KEY", pool: ["SERPER_API_KEY_1", "SERPER_API_KEY_2"], project: "example-project", config: "prd", base_url: `${server.url}/serper-reshaped` },
+    });
+    const memory = memoryStore({ SERPER_API_KEY: "${SERPER_API_KEY_1}", SERPER_API_KEY_1: KEYS.SERPER_API_KEY_1, SERPER_API_KEY_2: "test-key-serper-two-0002" });
+    const { report } = await collectKeyStatus(config, undefined, memory);
+    assert.deepEqual(report.providers[0].accounts.map((account) => [account.remaining, account.unknown]), [
+      [null, "account response has no balance"],
+      [null, "account response has no balance"],
+    ]);
+    for (const policy of ["soonest-reset", "in-order"]) {
+      const refused = await rotateSlot({ ...config.providers[0], policy }, {}, memory);
+      assert.equal(refused.outcome, "refused");
+      assert.match(refused.why, /no serper account is known to be above the floor of 0: 2 of 2 could not be read \(account response has no balance\).* pass --to/);
+    }
+    assert.equal(memory.writes.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a ledger that is missing or cannot be read is reported as such, never as zero spend", async () => {
+  const dir = tempDir("cs-keys-ledger-");
+  const exaToml = (ledger) => `[keys]
+ledger = "${ledger}"
+
+[keys.exa]
+slot = "EXA_API_KEY"
+pool = ["EXA_API_KEY_1", "EXA_API_KEY_2"]
+project = "example-project"
+config = "prd"
+policy = "in-order"
+
+[keys.parallel]
+slot = "PARALLEL_API_KEY"
+pool = ["PARALLEL_API_KEY_1"]
+project = "example-project"
+config = "prd"
+policy = "in-order"
+`;
+  const secrets = { EXA_API_KEY: "${EXA_API_KEY_2}", EXA_API_KEY_1: KEYS.EXA_API_KEY_1, EXA_API_KEY_2: KEYS.EXA_API_KEY_2, PARALLEL_API_KEY: "${PARALLEL_API_KEY_1}", PARALLEL_API_KEY_1: "test-key-parallel-one-0001" };
+
+  // No file at the configured path.
+  const missingPath = path.join(dir, "does-not-exist.jsonl");
+  const missing = sandbox({ ...secrets }, exaToml(missingPath));
+  const json = await missing.run(["status", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  for (const provider of JSON.parse(json.stdout).providers) {
+    assert.equal(provider.ledger_note, `no ledger file at ${missingPath}`);
+    assert.deepEqual([provider.slot_ledger_usd, provider.slot_ledger_calls], [null, null]);
+    for (const account of provider.accounts) assert.deepEqual([account.ledger_usd, account.ledger_calls], [null, null]);
+  }
+  const table = await missing.run(["status", "--provider", "exa"]);
+  assert.equal(table.code, 0, table.stderr);
+  assert.ok(table.stdout.includes(`  ledger not read: no ledger file at ${missingPath}\n`), table.stdout);
+  assert.match(table.stdout, /\* +EXA_API_KEY_2 +\? +- +- +exa has no balance endpoint for an ordinary key$/m);
+  assert.ok(!table.stdout.includes("$0.00"), "a missing ledger must not be shown as zero spend");
+
+  // Rotation does not use the ledger, so a missing one does not stand in its way.
+  const rotated = await missing.run(["rotate", "exa"]);
+  assert.equal(rotated.code, 0, rotated.stderr);
+  assert.equal(missing.store().EXA_API_KEY, "${EXA_API_KEY_1}");
+
+  // A path that exists but cannot be read as a file.
+  const unreadable = await ledgerSpend(dir);
+  assert.equal(unreadable.unread, `the ledger at ${dir} could not be read (EISDIR)`);
+
+  // An empty ledger that is there is a real zero, and one run reads the file for every provider that needs it.
+  const emptyPath = path.join(dir, "empty.jsonl");
+  writeFileSync(emptyPath, "");
+  const empty = sandbox({ ...secrets }, exaToml(emptyPath));
+  const zero = await empty.run(["status", "--json"]);
+  assert.equal(zero.code, 0, zero.stderr);
+  for (const provider of JSON.parse(zero.stdout).providers) {
+    assert.equal(provider.ledger_note, null);
+    assert.deepEqual([provider.slot_ledger_usd, provider.slot_ledger_calls], [0, 0]);
+    for (const account of provider.accounts) assert.deepEqual([account.ledger_usd, account.ledger_calls], [0, 0]);
+  }
+});
+
+test("ledger spend is summed across read chunks, multi-byte text and a last line with no newline", async () => {
+  const dir = tempDir("cs-keys-ledger-");
+  const ledger = path.join(dir, "ledger.jsonl");
+  // Each line holds multi-byte text, so 64 KiB chunk boundaries fall inside characters and inside lines.
+  const line = (key, usd) =>
+    JSON.stringify({ ts: "2026-11-20T10:00:00.000Z", session: "s", upstream: "exa", tool: "search", key, attempt: 1, ok: false, duration_ms: 5, error: "résumé — 検索 ".repeat(8), ...(usd === undefined ? {} : { cost: { usd } }) });
+  const lines = [];
+  for (let i = 0; i < 4000; i++) lines.push(line(i % 4 === 0 ? "env:EXA_API_KEY_2" : "doppler:EXA_API_KEY_1", i % 2 === 0 ? 0.25 : undefined));
+  lines.splice(1234, 0, "not json", "null", "5", JSON.stringify({ ts: "2026-11-20T10:00:00.000Z", upstream: "exa" }));
+  writeFileSync(ledger, lines.join("\n"));
+  assert.ok(Buffer.byteLength(lines.join("\n")) > 5 * 64 * 1024, "the ledger must span several read chunks");
+
+  const reading = await ledgerSpend(ledger);
+  assert.equal(reading.unread, undefined);
+  assert.deepEqual(Object.fromEntries(reading.totals), {
+    EXA_API_KEY_1: { usd: 250, calls: 3000 },
+    EXA_API_KEY_2: { usd: 250, calls: 1000 },
+  });
 });

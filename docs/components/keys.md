@@ -65,11 +65,19 @@ is enough for these commands.
 |----------|---------|-----------|-------|------------|
 | `firecrawl` | `GET /v2/team/credit-usage` | `data.remainingCredits` | `data.planCredits` | `data.billingPeriodEnd` |
 | `tavily` | `GET /usage` | `account.plan_limit - account.plan_usage` | `account.plan_limit` | not reported |
-| `serper` | `GET /account` | `balance` | not reported | not reported |
+| `serper` | `GET /account` (unconfirmed, see below) | `balance` | not reported | not reported |
 | `exa`, `parallel` | none: no balance endpoint for an ordinary key | unknown | | |
 
 Firecrawl's `planCredits` leaves out coupon and pay-as-you-go credits, so
 remaining can be higher than the limit.
+
+The Firecrawl and Tavily rows follow the vendors' reference documentation. The
+Serper row does not: Serper publishes no reference outside its login-gated
+playground, and `GET /account` returning a top-level numeric `balance` is known
+from third-party sources only. It has not been checked against a live account.
+If the answer has no numeric `balance`, every Serper account reads as unknown
+with the note `account response has no balance`, and `keys rotate serper`
+refuses to choose until you pass `--to`.
 
 For `exa` and `parallel` the pool keys are not read from Doppler at all. When
 `[keys] ledger` is set, status shows what the [gateway](gateway.md) ledger
@@ -78,6 +86,12 @@ number of calls, over the whole ledger file. That is spend through the gateway
 only, and only where the provider reported a cost. Calls the gateway made with
 the slot itself (`doppler:EXA_API_KEY`) are shown on their own line, because
 the slot may have pointed at different accounts over that time.
+
+Set `[keys] ledger` to the same file the gateway writes (`[gateway] ledger`).
+When there is no file at that path, or it cannot be read, status says so on a
+`ledger not read:` line and shows no ledger figures. `$0.00 over 0 calls`
+therefore always means a ledger that was read and holds no entry for that key.
+`keys rotate` does not read the ledger.
 
 ### One account behind two keys
 
@@ -113,6 +127,7 @@ that does not apply is `null`.
 | `points_at` | string or null | Pool secret the slot references; set only for `pool-reference` |
 | `slot_note` | string or null | What the slot holds instead, or why it could not be read |
 | `slot_ledger_usd`, `slot_ledger_calls` | number or null | Ledger spend made with the slot's own reference |
+| `ledger_note` | string or null | Why the ledger figures are null although `[keys] ledger` is set: no file at that path, or it could not be read. Null when the ledger was read or not looked up |
 | `accounts[].keys` | string[] | Pool secrets that draw on this account, in pool order |
 | `accounts[].in_slot` | boolean | The slot references one of `keys` |
 | `accounts[].remaining`, `limit` | number or null | As the provider reports them |
@@ -120,7 +135,7 @@ that does not apply is `null`.
 | `accounts[].period_end` | string or null | ISO 8601, as the provider reports it |
 | `accounts[].spent` | boolean or null | `remaining` is at or below `floor`; null when `remaining` is unknown |
 | `accounts[].unknown` | string or null | Why `remaining` is null |
-| `accounts[].ledger_usd`, `ledger_calls` | number or null | Ledger spend against these keys; set only for `exa` and `parallel` with a ledger configured |
+| `accounts[].ledger_usd`, `ledger_calls` | number or null | Ledger spend against these keys; set only for `exa` and `parallel` with a ledger configured and readable |
 
 Status exits 0 when it could report, including when some accounts are unknown.
 
@@ -146,7 +161,11 @@ How the target is chosen:
 |------|--------|
 | `--to NAME` | That secret. It must be in `pool`. The policy and the floor are not consulted, and no usage endpoint is called |
 | `soonest-reset` | Among accounts known to be above the floor, the one whose period ends soonest, so allowance about to lapse is used first. When none of them reports a period end, the one with the most left. An account whose allowance is unknown is never chosen |
-| `in-order` | The first account in pool order that is above the floor. An account whose allowance is unknown counts as above |
+| `in-order` | The first account in pool order that is known to be above the floor. An account whose allowance could not be read (key rejected, HTTP error, timeout, missing secret) is passed over. For `exa` and `parallel`, which have no balance endpoint, unknown counts as above |
+
+A failed read says nothing about what an account has left, so neither policy
+moves the slot onto one. Otherwise a revoked key, or a drained account whose
+usage request happened to fail, would be chosen and handed to every consumer.
 
 Use `in-order` for `exa` and `parallel`. Their allowance is always unknown, so
 `soonest-reset` can never choose, and `in-order` always chooses the first pool
@@ -162,7 +181,7 @@ What rotate will not do:
 | The slot already points at the target | Says so, writes nothing, exit 0 |
 | `--dry-run` | Prints `would be:` in place of `now:`, writes nothing, exit 0 |
 | Every account is at or below the floor | Writes nothing, exit 1 |
-| `soonest-reset` and no account is known to be above the floor because some could not be read | Writes nothing, exit 1, and names `--to` |
+| No account is known to be above the floor because some could not be read | Writes nothing, exit 1, and names `--to`. Both policies, except `in-order` for `exa` and `parallel` |
 | The slot cannot be read | Writes nothing, exit 1 |
 | The slot holds a key of its own that no pool secret also holds | Writes nothing, exit 1. A reference written over it would lose that key; store it under a pool name first |
 | The target secret is missing or empty | Error before any write. A slot pointing at a missing secret hands consumers the literal text `${NAME}` |
@@ -199,3 +218,6 @@ whatever scheduler you already have.
 - Each status run makes one Doppler read per pool key plus one for the slot,
   and one usage request per pool key. Firecrawl's documentation does not say
   whether its usage request costs credits.
+- The gateway ledger is append-only and nothing trims it. A status run that
+  shows ledger spend reads the whole file once, in fixed-size pieces, so
+  memory stays flat but the run takes longer as the file grows.

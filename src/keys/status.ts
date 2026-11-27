@@ -1,5 +1,7 @@
-import { Ledger } from "../gateway/ledger.js";
-import type { KeyProviderConfig, KeysConfig, RotationPolicy } from "./config.js";
+import { open } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
+import type { LedgerEntry } from "../gateway/ledger.js";
+import type { KeyProvider, KeyProviderConfig, KeysConfig, RotationPolicy } from "./config.js";
 import { keysError } from "./errors.js";
 import { dopplerStore, referencedSecret, type DopplerScope, type SecretStore } from "./doppler.js";
 import { hasBalanceEndpoint, isUnknown, noEndpointReason, readAllowance, type Allowance } from "./readers.js";
@@ -27,14 +29,14 @@ export interface AccountStatus {
   spent: boolean | null;
   /** Why `remaining` is null; null when it was read. */
   unknown: string | null;
-  /** Spend the gateway ledger recorded against these keys' references; null when not looked up. */
+  /** Spend the gateway ledger recorded against these keys' references; null when not looked up or the ledger could not be read. */
   ledger_usd: number | null;
   ledger_calls: number | null;
 }
 
 /** One provider's slot and accounts. This is the `--json` shape of `keys status`. */
 export interface ProviderKeyStatus {
-  provider: string;
+  provider: KeyProvider;
   project: string;
   config: string;
   slot: string;
@@ -49,6 +51,12 @@ export interface ProviderKeyStatus {
   /** Ledger spend recorded against the slot's own reference, which no single account can claim. */
   slot_ledger_usd: number | null;
   slot_ledger_calls: number | null;
+  /**
+   * Why the ledger figures are null although a ledger was asked for: the file
+   * is missing or could not be read. Null when it was read or not looked up.
+   * Without this a ledger that is not there would read as no spend.
+   */
+  ledger_note: string | null;
 }
 
 export interface KeyStatusReport {
@@ -102,21 +110,69 @@ interface Spend {
   calls: number;
 }
 
+/** Recorded spend per secret name, or why the ledger could not be read. */
+export type LedgerReading = { totals: Map<string, Spend> } | { unread: string };
+
+const LEDGER_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Total recorded spend per secret name over the whole gateway ledger. A
  * ledger entry's `key` is a reference (`doppler:NAME`, `env:NAME`); spend is
  * counted against NAME whichever upstream it was used for.
+ *
+ * Never throws. A ledger that is missing or cannot be read is returned as
+ * `{ unread }` with the reason, because for the providers this serves the
+ * ledger is the only figure shown and "no file" must not read as "no spend".
+ * The file is read in fixed-size chunks, so memory stays flat however large
+ * an append-only ledger has grown; lines that are not ledger entries are
+ * skipped.
  */
-export function ledgerSpend(ledgerPath: string): Map<string, Spend> {
+export async function ledgerSpend(ledgerPath: string): Promise<LedgerReading> {
   const totals = new Map<string, Spend>();
-  for (const row of new Ledger(ledgerPath, false).summarize(Number.POSITIVE_INFINITY)) {
-    const name = row.key.replace(/^(doppler|env):/, "");
+  const count = (line: string): void => {
+    if (!line) return;
+    let entry: Partial<LedgerEntry> | null;
+    try {
+      entry = JSON.parse(line) as Partial<LedgerEntry> | null;
+    } catch {
+      return;
+    }
+    if (!entry || typeof entry !== "object" || typeof entry.key !== "string") return;
+    const name = entry.key.replace(/^(doppler|env):/, "");
     const total = totals.get(name) ?? { usd: 0, calls: 0 };
-    total.usd += row.usd;
-    total.calls += row.calls;
+    const usd = entry.cost?.usd;
+    total.usd += typeof usd === "number" && Number.isFinite(usd) ? usd : 0;
+    total.calls += 1;
     totals.set(name, total);
+  };
+
+  try {
+    const handle = await open(ledgerPath, "r");
+    try {
+      const decoder = new StringDecoder("utf8");
+      const chunk = Buffer.allocUnsafe(LEDGER_CHUNK_BYTES);
+      let rest = "";
+      for (;;) {
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+        if (bytesRead === 0) break;
+        const lines = (rest + decoder.write(chunk.subarray(0, bytesRead))).split("\n");
+        rest = lines.pop() ?? "";
+        for (const line of lines) count(line);
+      }
+      count(rest + decoder.end());
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    return {
+      unread:
+        err.code === "ENOENT"
+          ? `no ledger file at ${ledgerPath}`
+          : `the ledger at ${ledgerPath} could not be read (${err.code ?? err.message})`,
+    };
   }
-  return totals;
+  return { totals };
 }
 
 /**
@@ -124,19 +180,20 @@ export function ledgerSpend(ledgerPath: string): Map<string, Spend> {
  *
  * Never throws for a provider or Doppler failure: what could not be read is
  * reported in place, with the reason. For a provider with no balance endpoint
- * the pool keys are not resolved at all, and spend comes from the gateway
- * ledger when `ledgerPath` is given.
+ * the pool keys are not resolved at all, and spend comes from `ledger` when
+ * one is given: a `ledgerSpend` call the caller started, so one run reads the
+ * file once however many providers use it.
  */
 export async function gatherProviderStatus(
   config: KeyProviderConfig,
-  ledgerPath: string | undefined,
+  ledger: Promise<LedgerReading> | undefined,
   deps: KeysDeps = {}
 ): Promise<GatheredStatus> {
   const store = (deps.store ?? dopplerStore)({ project: config.project, config: config.config });
   const values = new Map<string, string>();
   const metered = hasBalanceEndpoint(config.provider);
 
-  const [slot, readings] = await Promise.all([
+  const [slot, readings, ledgerReading] = await Promise.all([
     readSlot(store, config),
     Promise.all(
       config.pool.map(async (name): Promise<Allowance> => {
@@ -151,9 +208,11 @@ export async function gatherProviderStatus(
         return readAllowance(config.provider, value, config.baseUrl);
       })
     ),
+    metered ? undefined : ledger,
   ]);
 
-  const spend = !metered && ledgerPath ? ledgerSpend(ledgerPath) : undefined;
+  const spend = ledgerReading && "totals" in ledgerReading ? ledgerReading.totals : undefined;
+  const ledgerNote = ledgerReading && "unread" in ledgerReading ? ledgerReading.unread : null;
 
   // Keys whose readings prove one account share a row; everything else stands alone.
   const groups = new Map<string, { keys: string[]; reading: Allowance }>();
@@ -200,6 +259,7 @@ export async function gatherProviderStatus(
       accounts,
       slot_ledger_usd: slotSpend?.usd ?? null,
       slot_ledger_calls: slotSpend?.calls ?? null,
+      ledger_note: ledgerNote,
     },
   };
 }
@@ -217,7 +277,10 @@ export async function collectKeyStatus(
       `[keys] no [keys.${provider}] block in the config; configured: ${config.providers.map((item) => item.provider).join(", ")}`
     );
   }
-  const gathered = await Promise.all(chosen.map((item) => gatherProviderStatus(item, config.ledgerPath, deps)));
+  // Only providers with no balance endpoint show ledger spend; read the file once for all of them.
+  const ledger =
+    config.ledgerPath && chosen.some((item) => !hasBalanceEndpoint(item.provider)) ? ledgerSpend(config.ledgerPath) : undefined;
+  const gathered = await Promise.all(chosen.map((item) => gatherProviderStatus(item, ledger, deps)));
   return {
     report: { providers: gathered.map((item) => item.status) },
     secrets: gathered.flatMap((item) => [...item.values.values(), ...(item.slotValue ? [item.slotValue] : [])]),
@@ -244,6 +307,7 @@ export function formatKeyStatus(report: KeyStatusReport): string {
   const blocks = report.providers.map((provider) => {
     const target = provider.points_at ?? `(${provider.slot_note})`;
     const lines = [`${provider.provider}: ${provider.slot} -> ${target}   policy ${provider.policy}, floor ${provider.floor}`];
+    if (provider.ledger_note) lines.push(`  ledger not read: ${provider.ledger_note}`);
     if (provider.slot_ledger_calls) {
       lines.push(`  ledger: ${spendText(provider.slot_ledger_usd ?? 0, provider.slot_ledger_calls)} made with ${provider.slot} itself`);
     }

@@ -120,7 +120,12 @@ async function readTavily(key: string, baseUrl: string): Promise<Allowance> {
   return { remaining: limit - usage, limit, unit: "credits" };
 }
 
-/** Serper: `GET /account`. A prepaid balance with no plan size and no period. */
+/**
+ * Serper: `GET /account`. A prepaid balance with no plan size and no period.
+ * Serper publishes no reference documentation; this path and its top-level
+ * numeric `balance` are known from third-party sources only and unconfirmed
+ * against a live account. Any other shape is returned as unknown.
+ */
 async function readSerper(key: string, baseUrl: string): Promise<Allowance> {
   const body = await getJson(`${baseUrl}/account`, { "X-API-KEY": key }, key);
   if (isReason(body)) return body;

@@ -123,7 +123,7 @@ export async function runKeysCli(args: string[], deps: KeysDeps = {}): Promise<n
       `[keys] no [keys.${options.provider}] block in the config; configured: ${config.providers.map((item) => item.provider).join(", ")}`
     );
   }
-  const result = await rotateSlot(provider, config.ledgerPath, { to: options.to, dryRun: options.dryRun }, deps);
+  const result = await rotateSlot(provider, { to: options.to, dryRun: options.dryRun }, deps);
   const text = redact(formatRotation(result), result.secrets);
   if (result.outcome === "refused") {
     console.error(text);
