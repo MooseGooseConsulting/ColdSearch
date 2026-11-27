@@ -85,6 +85,22 @@ keys = []
 baseUrl = "https://search.example.internal"
 ```
 
+## MCP gateway
+
+`coldsearch mcp` serves one MCP endpoint in front of the search providers.
+Agents connect once and get every operation of the Exa, Firecrawl, Parallel
+and Tavily APIs as a tool (built from their published API documents), plus the
+hosted MCP tools of Bright Data and TinyFish, under `<upstream>__<tool>`. The
+gateway holds the keys, moves to the next key when one runs out of credit,
+records every request and response, and serves the curated skills in `skills/`.
+
+```bash
+coldsearch mcp                      # stdio, one agent
+coldsearch mcp --http --port 8787   # HTTP at /mcp, many agents
+```
+
+See [the gateway component doc](docs/components/gateway.md) for configuration.
+
 ## Batch runs
 
 `coldsearch batch` is a resumable JSONL runner for `search`, `extract`, `crawl`,

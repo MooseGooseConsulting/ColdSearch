@@ -109,6 +109,15 @@ export class KeyPoolManager {
     return { value, ref: safeKeyRef(keyRef, provider) };
   }
 
+  /**
+   * Resolve one key reference (`env:`, `doppler:` or literal) without a
+   * registered pool. The MCP gateway uses this for its upstream key lists;
+   * Doppler lookups share the same in-process cache as pool resolution.
+   */
+  resolveRef(keyRef: string): Promise<string> {
+    return this.resolveKeyRef(keyRef);
+  }
+
   private getEffectiveKeyRefs(provider: string, pool: KeyPool): string[] {
     if (Array.isArray(pool.keys) && pool.keys.length > 0) {
       return pool.keys;

@@ -35,7 +35,8 @@ Normalized capabilities (`search`, `extract`, `crawl`) are **category views** ov
 | Search history / research memory | Current | Durable execution records; recent/search/show exploration; stored fanout inspection and related prior work |
 | Usage and audit logging | Current | JSONL usage log; richer flow logs and trace correlation Planned |
 | Agent mode | Current | ReAct loop; OpenAI-compatible LLM dispatch |
-| Service / API / MCP entrypoints | Planned | Same core, thin wrappers |
+| MCP gateway | Current | `coldsearch mcp`: fronts providers' own MCP servers, holds keys, logs every call, serves curated skills; see `docs/components/gateway.md` |
+| Service / API entrypoints for normalized capabilities | Planned | Same core, thin wrappers |
 | Execution backend seam | Current | `LocalExecutionBackend` owns in-process execution and is the seam for future backends |
 | Remote / hybrid worker implementation | Deferred | Async jobs behind CLI; centralized secrets; see `plans/2026-06-22-epic-5-remote-agentic-execution.md` |
 | Batch enrichment | Planned | JSONL batch in/out with dedup and cache |

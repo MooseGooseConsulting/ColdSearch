@@ -224,3 +224,20 @@ tool_ttl = "6h"
 #base_url = "https://api.isoquant.ai/v1"
 #reasoning_effort = "medium"
 #key_ref = "doppler:ISOQUANT_API_KEY"
+
+# ============================================
+# MCP GATEWAY (coldsearch mcp)
+# ============================================
+# One MCP endpoint in front of providers' own MCP servers. Each upstream's
+# `keys` list is the drain order: the next key is used when one runs out of
+# credit. Presets cover exa, firecrawl, parallel, tavily, brightdata, tinyfish
+# and context; see docs/components/gateway.md for every option.
+#
+# [gateway]
+# mode = "all"            # "lazy" for clients that load every tool schema
+#
+# [gateway.upstreams.exa]
+# keys = ["doppler:EXA_API_KEY"]
+#
+# [gateway.upstreams.firecrawl]
+# keys = ["doppler:FIRECRAWL_API_KEY"]

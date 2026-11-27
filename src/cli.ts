@@ -556,6 +556,8 @@ Commands:
                               Run a resumable JSONL batch of search/extract/
                               crawl/provider-tool records
   status                      Show configured providers and usage summary
+  mcp [--http]                Serve the MCP gateway in front of providers' own
+                              MCP servers (see: coldsearch mcp --help)
 
 Options:
   Mode Selection:
@@ -1882,6 +1884,14 @@ async function main(): Promise<void> {
     if (args.length === 0) {
       printHelp();
       process.exit(1);
+    }
+
+    // The MCP gateway has its own flags and owns stdout in stdio mode, so it
+    // is dispatched before the shared flag parser.
+    if (args[0] === "mcp") {
+      const { runGatewayCli } = await import("./gateway/run.js");
+      await runGatewayCli(args.slice(1));
+      return;
     }
 
     const options = parseArgs(args);
