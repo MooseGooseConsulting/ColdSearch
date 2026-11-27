@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -90,8 +90,8 @@ function keysConfig(usageUrl) {
   });
 }
 
-/** A gateway core over one fake `exa` upstream, with its ledger and state in `dir`. */
-function makeCore(dir) {
+/** A gateway core over fake upstreams (one `exa` unless given), with its ledger and state in `dir`. */
+function makeCore(dir, upstreams = { exa: { keys: ["env:EXA_KEY_A", "env:EXA_KEY_B"] } }) {
   const connector = async () => ({
     listTools: async () => ({ tools: [{ name: "search", description: "search", inputSchema: { type: "object" } }] }),
     callTool: async () => ({ content: [{ type: "text", text: JSON.stringify({ costDollars: { total: 0.007 } }) }] }),
@@ -101,7 +101,7 @@ function makeCore(dir) {
     ledger: path.join(dir, "ledger.jsonl"),
     state: path.join(dir, "state.json"),
     skills_dir: path.join(dir, "skills"),
-    upstreams: { exa: { keys: ["env:EXA_KEY_A", "env:EXA_KEY_B"] } },
+    upstreams,
   });
   return new GatewayCore(config, { connector, resolveKey: async () => UPSTREAM_KEY });
 }
@@ -134,6 +134,100 @@ function entry(agoMs, fields = {}) {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** One request with exactly the headers given, `Host` included, which `fetch` would not let a caller choose. */
+function rawRequest(base, route, { method = "GET", headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request(base + route, { method, headers }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString("utf8") }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** A stand-in for a browser's DOM node, with only what the dashboard script uses. */
+class FakeNode {
+  constructor(tagName, text) {
+    this.tagName = tagName;
+    this.text = text;
+    this.children = [];
+    this.attributes = {};
+    this.listeners = {};
+    this.style = {};
+    this.hidden = false;
+    this.className = "";
+    this.value = "";
+  }
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+  setAttribute(name, value) {
+    this.attributes[name] = value;
+    if (name === "class") this.className = value;
+  }
+  addEventListener(name, listener) {
+    (this.listeners[name] ??= []).push(listener);
+  }
+  focus() {}
+  get textContent() {
+    return this.text ?? this.children.map((child) => child.textContent).join("");
+  }
+  set textContent(value) {
+    this.children = value === "" ? [] : [new FakeNode("#text", String(value))];
+  }
+  /** Every descendant with this tag, in document order. */
+  all(tagName) {
+    return this.children.flatMap((child) => [...(child.tagName === tagName ? [child] : []), ...child.all(tagName)]);
+  }
+}
+
+/**
+ * Run the served dashboard script against the gateway at `base`, as a tab
+ * holding `token` would. The script is the one in the served page, the
+ * elements are the ids the served page has, and its fetches go to the real
+ * endpoints; only the DOM is a stand-in. Returns the elements by id.
+ */
+async function openPage(base, token) {
+  const html = await (await fetch(`${base}/dashboard`)).text();
+  const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
+  const byId = new Map([...html.matchAll(/<(\w+)[^>]*\sid="([^"]+)"([^>]*)>/g)].map(([tag, name, id]) => {
+    const node = new FakeNode(name);
+    node.hidden = /\shidden\b/.test(tag);
+    return [id, node];
+  }));
+  const stored = new Map(token ? [["coldsearch.gateway.token", token]] : []);
+  vm.runInNewContext(script, {
+    document: {
+      visibilityState: "visible",
+      // An id the page does not have is null, as in a browser, so a script that asks for one fails here too.
+      getElementById: (id) => byId.get(id) ?? null,
+      createElement: (tagName) => new FakeNode(tagName),
+      createTextNode: (text) => new FakeNode("#text", String(text)),
+    },
+    sessionStorage: {
+      getItem: (key) => stored.get(key) ?? null,
+      setItem: (key, value) => stored.set(key, value),
+      removeItem: (key) => stored.delete(key),
+    },
+    fetch: (route, init) => fetch(base + route, init),
+    setInterval: () => 0,
+  });
+  return Object.fromEntries(byId);
+}
+
+/** Wait for the page to show something; fails naming it when it never does. */
+async function until(check, what) {
+  for (let i = 0; i < 300; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`the page never showed ${what}`);
+}
 
 test("the JSON endpoints need the bearer token; the page shell and the health check do not", async () => {
   const dir = tempDir();
@@ -428,5 +522,204 @@ test("/dashboard is one self-contained page that holds no token, no key and no d
   } finally {
     await stop();
     await usage.close();
+  }
+});
+
+test("a gateway started without a token serves no /api/ data, whatever Host, Origin or token the request carries", async () => {
+  const dir = tempDir();
+  const usage = await usageServer();
+  const core = makeCore(dir);
+  await core.callTool("exa__search", { query: "a-private-query" }, { session: "s1", client: "test/1.0" });
+  // A secret store that counts its reads: a refused request must not reach it.
+  const fake = memoryStore("FIRECRAWL_API_KEY_4");
+  let storeReads = 0;
+  const store = () => {
+    const real = fake.store();
+    return {
+      ...real,
+      get: (name) => ((storeReads += 1), real.get(name)),
+      getRaw: (name) => ((storeReads += 1), real.getRaw(name)),
+    };
+  };
+  const { base, stop } = await serve(core, { token: undefined, keys: keysConfig(usage.url), keysDeps: { store } });
+  const port = new URL(base).port;
+  try {
+    const callers = [
+      {},
+      { Host: `127.0.0.1:${port}`, Origin: base },
+      // A page whose hostname was re-pointed at 127.0.0.1 sends its own name as Host and Origin.
+      { Host: `attacker.example:${port}`, Origin: `http://attacker.example:${port}` },
+      { Host: `127.0.0.1:${port}`, Authorization: "Bearer anything" },
+    ];
+    const routes = [
+      ["GET", "/api/status"],
+      ["GET", "/api/ledger?since=3650d&limit=1000"],
+      ["GET", "/api/keys"],
+      ["POST", "/api/keys/rotate"],
+      ["OPTIONS", "/api/ledger"],
+      ["GET", "/api/nothing"],
+    ];
+    for (const headers of callers) {
+      for (const [method, route] of routes) {
+        const response = await rawRequest(base, route, { method, headers });
+        const who = `${method} ${route} as ${JSON.stringify(headers)}`;
+        assert.equal(response.status, 403, who);
+        assert.equal(response.headers["x-coldsearch-api"], "token-required", who);
+        assert.match(JSON.parse(response.text).error, /COLDSEARCH_GATEWAY_TOKEN/, who);
+        for (const text of ["a-private-query", "EXA_KEY_A", "FIRECRAWL_API_KEY", "example-project", dir]) {
+          assert.ok(!response.text.includes(text), `${who} returned ${text}`);
+        }
+      }
+    }
+    assert.equal(storeReads, 0, "a refused request read the secret store");
+
+    // What needs no token still answers, and /mcp keeps its loopback rule: it is not refused for want of a token.
+    assert.equal((await fetch(`${base}/dashboard`)).status, 200);
+    assert.equal((await fetch(`${base}/healthz`)).status, 200);
+    assert.equal((await fetch(`${base}/mcp`)).status, 400);
+
+    // The page says the endpoints are off and does not ask for a token no one can give.
+    const page = await openPage(base, "");
+    await until(() => !page.gate.hidden, "that the gateway has no token");
+    assert.match(page["gate-note"].textContent, /COLDSEARCH_GATEWAY_TOKEN/);
+    assert.equal(page["gate-ask"].hidden, true);
+    assert.equal(page.app.hidden, true);
+    assert.equal(storeReads, 0);
+  } finally {
+    await stop();
+    await usage.close();
+  }
+});
+
+test("/api/status totals come from one pass over the ledger, agree with /api/ledger, and skip lines that are not entries", async () => {
+  const dir = tempDir();
+  const core = makeCore(dir);
+  const lines = [
+    entry(10 * DAY, { tool: "outside-both-windows" }),
+    entry(3 * DAY, { ok: false, error_class: "quota", key: "env:EXA_KEY_B" }),
+    "not a ledger line",
+    "null",
+    JSON.stringify({ ts: "not a time", upstream: "exa", tool: "search", key: "env:EXA_KEY_A", ok: true }),
+    entry(2 * DAY, { cost: { usd: 0.25 } }),
+    entry(5 * MINUTE, { cost: { usd: 0.5, credits: 3 } }),
+    entry(20 * MINUTE, { upstream: "tavily", key: "env:TAVILY_KEY", ok: false, error_class: "upstream" }),
+  ];
+  // No newline after the last line, as when the gateway is read mid-write.
+  writeFileSync(path.join(dir, "ledger.jsonl"), lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line))).join("\n"));
+  const { base, stop } = await serve(core);
+  const get = async (route) => (await fetch(base + route, { headers: AUTH })).json();
+  const figures = (rows) => rows.map((row) => [row.upstream, row.key, row.calls, row.errors, row.quota_errors, row.usd, row.credits]);
+  try {
+    const status = await get("/api/status");
+    assert.ok(!("ledger_error" in status));
+    assert.deepEqual(figures(status.last_24h), [
+      ["exa", "env:EXA_KEY_A", 1, 0, 0, 0.5, 3],
+      ["tavily", "env:TAVILY_KEY", 1, 1, 0, 0, 0],
+    ]);
+    assert.deepEqual(figures(status.last_7d), [
+      ["exa", "env:EXA_KEY_A", 2, 0, 0, 0.75, 3],
+      ["exa", "env:EXA_KEY_B", 1, 1, 1, 0, 0],
+      ["tavily", "env:TAVILY_KEY", 1, 1, 0, 0, 0],
+    ]);
+    // The Upstreams table and the Recent calls table are read separately; they must count the same calls.
+    const calls = (rows) => rows.reduce((sum, row) => sum + row.calls, 0);
+    assert.equal(calls(status.last_24h), (await get("/api/ledger?since=24h")).matched);
+    assert.equal(calls(status.last_7d), (await get("/api/ledger?since=7d")).matched);
+  } finally {
+    await stop();
+  }
+});
+
+test("a ledger that cannot be read is named in /api/status, not counted as no calls, and the key states are still returned", async () => {
+  const dir = tempDir();
+  const core = makeCore(dir);
+  // A directory where the ledger file should be: every read of it fails, and the path is not missing.
+  mkdirSync(path.join(dir, "ledger.jsonl"));
+  const { base, stop } = await serve(core);
+  try {
+    const response = await fetch(`${base}/api/status`, { headers: AUTH });
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.match(status.ledger_error, /ledger\.jsonl could not be read \(EISDIR\)/);
+    assert.deepEqual([status.last_24h, status.last_7d], [[], []]);
+    assert.deepEqual(status.upstreams[0].keys.map((key) => key.state), ["active", "standby"]);
+
+    // Recent calls reads the same file and refuses in its own way; neither reports an empty ledger.
+    const recent = await fetch(`${base}/api/ledger`, { headers: AUTH });
+    assert.equal(recent.status, 500);
+    assert.match((await recent.json()).error, /could not be read/);
+  } finally {
+    await stop();
+  }
+});
+
+test("reading the status does not hold the gateway's thread for the length of the ledger", async () => {
+  const dir = tempDir();
+  const core = makeCore(dir);
+  // About 1.5 MB, so the reader needs more than twenty reads to get through it.
+  const lines = [];
+  for (let i = 0; i < 3000; i++) lines.push(JSON.stringify(entry((i + 1) * 1000, { args: "x".repeat(400) })));
+  writeFileSync(path.join(dir, "ledger.jsonl"), lines.join("\n") + "\n");
+
+  // Count event-loop turns that pass while the status is being read. Other requests are served on those turns;
+  // a reader that loads and parses the file in one go would give them none.
+  let turns = 0;
+  let reading = true;
+  const turn = () => {
+    if (!reading) return;
+    turns += 1;
+    setImmediate(turn);
+  };
+  setImmediate(turn);
+  let status;
+  try {
+    status = await core.readStatus();
+  } finally {
+    reading = false;
+  }
+
+  assert.equal(status.last_24h[0].calls, 3000);
+  assert.ok(turns >= 10, `only ${turns} event-loop turns passed during the read`);
+});
+
+test("the Upstreams table does not call a key or upstream missing from the config when it is in it", async () => {
+  const dir = tempDir();
+  const core = makeCore(dir, {
+    exa: { keys: ["env:EXA_KEY_A"] },
+    // An upstream that takes no key: its key list is empty and its calls are recorded under "<name>:keyless".
+    searx: { url: "http://127.0.0.1:9/mcp", auth: "none" },
+  });
+  await core.callTool("searx__search", { query: "q" }, { session: "s1", client: "test/1.0" });
+  await core.callTool("exa__search", { query: "q" }, { session: "s1", client: "test/1.0" });
+  // Calls from before a config change: a key no longer listed, and an upstream no longer configured.
+  const ledgerPath = path.join(dir, "ledger.jsonl");
+  const old = [
+    entry(2 * HOUR, { key: "env:EXA_KEY_REMOVED" }),
+    entry(2 * HOUR, { upstream: "retired", key: "retired:keyless" }),
+  ];
+  writeFileSync(ledgerPath, old.map((line) => JSON.stringify(line)).join("\n") + "\n", { flag: "a" });
+
+  const { base, stop } = await serve(core);
+  try {
+    const status = await (await fetch(`${base}/api/status`, { headers: AUTH })).json();
+    assert.deepEqual(status.upstreams.find((upstream) => upstream.name === "searx").keys, []);
+    assert.ok(status.last_7d.some((row) => row.key === "searx:keyless"));
+
+    const page = await openPage(base, TOKEN);
+    await until(() => page["upstreams-body"].all("tr").length > 2, "the Upstreams table");
+    // Each body row as [name or key, state].
+    const rows = Object.fromEntries(
+      page["upstreams-body"].all("tr").map((row) => row.all("td").map((cell) => cell.textContent)).filter((cells) => cells.length).map((cells) => [cells[0], cells[1]])
+    );
+    assert.equal(rows["searx:keyless"], "no key: this upstream takes none");
+    assert.equal(rows["env:EXA_KEY_A"], "active");
+    assert.equal(rows["env:EXA_KEY_REMOVED"], "not in the config now");
+    assert.equal(rows.retired, "not in the config now");
+    assert.equal(rows["retired:keyless"], "not in the config now");
+    assert.match(rows.searx, /tools/);
+    assert.equal(page.alert.hidden, true);
+    assert.equal(page.app.hidden, false);
+  } finally {
+    await stop();
   }
 });

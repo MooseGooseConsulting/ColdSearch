@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadConfig } from "../config.js";
 import { resolveKeysConfig, type KeysConfig } from "../keys/config.js";
 import type { KeysDeps } from "../keys/status.js";
-import { createGatewayApi, serveDashboard } from "./api.js";
+import { createGatewayApi, refuseApiWithoutToken, serveDashboard } from "./api.js";
 import { resolveGatewayConfig, type GatewayConfig, type GatewayMode } from "./config.js";
 import { GatewayCore } from "./core.js";
 import { createGatewayServer } from "./server.js";
@@ -31,7 +31,8 @@ Options:
   -h, --help          Show this help
 
 HTTP mode requires COLDSEARCH_GATEWAY_TOKEN when the bind address is not
-loopback; clients then send "Authorization: Bearer <token>".
+loopback; clients then send "Authorization: Bearer <token>". The dashboard's
+data (/api/) needs the token on every bind address, loopback included.
 `;
 
 interface GatewayCliOptions {
@@ -125,9 +126,9 @@ export interface HttpGatewayOptions {
  * page shell and `/healthz` a liveness answer; neither holds data, so both
  * are served without the token. Resolves once the server is listening.
  *
- * Rotation is refused without a token even on loopback: with no token, any
- * page that could get a browser to treat this port as its own origin could
- * send the rotation request.
+ * `/mcp` may run without a token on loopback. `/api/*` may not: started
+ * without a token it refuses every request (see `refuseApiWithoutToken`),
+ * and `allowRotate` without a token stops the start.
  */
 export async function startHttpGateway(
   core: GatewayCore,
@@ -173,6 +174,10 @@ export async function startHttpGateway(
     const isApi = path.startsWith("/api/");
     if (path !== "/mcp" && !isApi) {
       send(res, 404, { error: "Not found; the MCP endpoint is /mcp and the dashboard is /dashboard" });
+      return;
+    }
+    if (isApi && !options.token) {
+      refuseApiWithoutToken(res);
       return;
     }
     if (options.token && !tokenMatches(req.headers.authorization, options.token)) {
@@ -260,6 +265,9 @@ export async function runGatewayCli(args: string[]): Promise<void> {
       `dashboard at ${base}/dashboard; key pools ${keys ? keys.providers.map((item) => item.provider).join(", ") : "not configured"}; ` +
         `rotation over HTTP ${options.allowRotate ? "enabled" : "disabled"}`
     );
+    if (!token) {
+      note("no COLDSEARCH_GATEWAY_TOKEN set: /mcp answers anything on this machine without one, and the dashboard's data (/api/) is off until one is set");
+    }
     const stop = () => {
       server.close();
       void core.close().finally(() => process.exit(0));

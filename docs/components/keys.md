@@ -197,6 +197,8 @@ whatever scheduler you already have.
 
 A gateway in HTTP mode whose config also has a `[keys]` section shows these
 pools on its dashboard and serves `keys status --json` at `GET /api/keys`.
+Both need the gateway to have been started with `COLDSEARCH_GATEWAY_TOKEN`
+set.
 Started with `--allow-rotate`, it also offers `keys rotate` as a button and as
 `POST /api/keys/rotate`, with a dry-run preview first. The gateway process
 then needs the `doppler` CLI and access to the project, as these commands do.

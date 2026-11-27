@@ -8,7 +8,9 @@ import { createHash } from "node:crypto";
  * - The page is a shell. It holds no data, no token and no key reference;
  *   everything shown is fetched from `/api/*` after the operator types the
  *   bearer token, which is kept in `sessionStorage` (gone when the tab closes)
- *   and sent as `Authorization` on those fetches only.
+ *   and sent as `Authorization` on those fetches only. A gateway started
+ *   without a token serves no `/api/` data, and the page says so instead of
+ *   asking for a token.
  * - Every value from the API is written with `textContent`, never parsed as
  *   HTML: tool names, client names and error text come from agents and
  *   providers and are not trusted.
@@ -219,6 +221,13 @@ const SCRIPT = `
         showGate(token ? "The gateway did not accept that token." : "");
         throw new AuthRequired();
       }
+      if (res.status === 403 && res.headers.get("X-Coldsearch-Api") === "token-required") {
+        // The gateway was started without a token: no token typed here can open it, so do not ask for one.
+        return readJson(res).then(function (body) {
+          showGate(body.error || "This gateway's /api/ endpoints are off.", true);
+          throw new AuthRequired();
+        });
+      }
       return res;
     });
   }
@@ -230,11 +239,12 @@ const SCRIPT = `
     });
   }
 
-  function showGate(message) {
+  function showGate(message, off) {
     byId("app").hidden = true;
     byId("gate").hidden = false;
+    byId("gate-ask").hidden = Boolean(off);
     byId("gate-note").textContent = message || "";
-    byId("token-input").focus();
+    if (!off) byId("token-input").focus();
   }
   function showApp() { byId("gate").hidden = true; byId("app").hidden = false; }
   function alertText(message) {
@@ -253,7 +263,9 @@ const SCRIPT = `
       state.status = results[0];
       state.ledger = results[1];
       showApp();
-      alertText("");
+      alertText(state.status.ledger_error
+        ? "The totals under Upstreams are missing, not zero: " + state.status.ledger_error + "."
+        : "");
       renderTop();
       renderUpstreams();
       renderCalls();
@@ -512,13 +524,16 @@ const SCRIPT = `
     var week = index(status.last_7d);
     var rows = [];
     var seen = {};
-    function group(name, tools, error, keys) {
+    function group(name, tools, error, keys, configured) {
       seen[name] = true;
       var d = day[name] || { total: blank(), keys: {} };
       var w = week[name] || { total: blank(), keys: {} };
+      var groupState = !configured ? "not in the config now"
+        : error ? [el("span", { class: "dot error" }), "error: " + error]
+        : tools === null ? "tools not listed yet" : fmt(tools) + " tools";
       rows.push(el("tr", { class: "group-row" },
         el("td", null, name),
-        el("td", { class: "wrap" }, error ? [el("span", { class: "dot error" }), "error: " + error] : tools === null ? "tools not listed yet" : fmt(tools) + " tools"),
+        el("td", { class: "wrap" + (configured ? "" : " muted") }, groupState),
         figures(d.total, true), figures(w.total, true)));
       var listed = {};
       keys.forEach(function (key) {
@@ -530,15 +545,17 @@ const SCRIPT = `
       });
       Object.keys(w.keys).forEach(function (ref) {
         if (listed[ref]) return;
+        // An upstream that takes no key has an empty key list, and the ledger files its calls under "<name>:keyless".
+        var keyless = configured && !keys.length && ref === name + ":keyless";
         rows.push(el("tr", { class: "key-row" },
           el("td", null, el("code", null, ref)),
-          el("td", { class: "wrap muted" }, "not in the config now"),
+          el("td", { class: "wrap" + (keyless ? "" : " muted") }, keyless ? "no key: this upstream takes none" : "not in the config now"),
           figures(d.keys[ref], true), figures(w.keys[ref], true)));
       });
     }
-    status.upstreams.forEach(function (upstream) { group(upstream.name, upstream.tools, upstream.error, upstream.keys); });
+    status.upstreams.forEach(function (upstream) { group(upstream.name, upstream.tools, upstream.error, upstream.keys, true); });
     Object.keys(week).forEach(function (name) {
-      if (!seen[name]) group(name, null, "", []);
+      if (!seen[name]) group(name, null, "", [], false);
     });
     var heads = ["Calls", "Errors", "Quota errors", "Cost"];
     var table = el("table", null,
@@ -673,11 +690,13 @@ export const DASHBOARD_HTML = `<!doctype html>
 <body>
 <div id="gate" hidden>
   <h1>ColdSearch gateway</h1>
-  <p class="note">Enter the gateway's bearer token. It is kept for this tab only and sent to this gateway only.</p>
-  <form id="gate-form">
-    <input id="token-input" type="password" autocomplete="off" aria-label="Gateway token" placeholder="Gateway token">
-    <button type="submit" class="primary">Open dashboard</button>
-  </form>
+  <div id="gate-ask">
+    <p class="note">Enter the gateway's bearer token. It is kept for this tab only and sent to this gateway only.</p>
+    <form id="gate-form">
+      <input id="token-input" type="password" autocomplete="off" aria-label="Gateway token" placeholder="Gateway token">
+      <button type="submit" class="primary">Open dashboard</button>
+    </form>
+  </div>
   <p class="note" id="gate-note" role="status"></p>
 </div>
 <main id="app" hidden>

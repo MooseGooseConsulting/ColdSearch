@@ -161,7 +161,7 @@ export function createGatewayServer(core: GatewayCore, skills: GatewaySkill[]): 
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
 
     if (name === STATUS_TOOL) {
-      return text(JSON.stringify(core.status(), null, 2));
+      return text(JSON.stringify(await core.readStatus(), null, 2));
     }
     if (name === SKILL_TOOL) {
       const skill = skills.find((candidate) => candidate.name === args.name);

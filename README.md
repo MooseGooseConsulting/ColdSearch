@@ -103,7 +103,8 @@ See [the gateway component doc](docs/components/gateway.md) for configuration.
 
 With `--http` the gateway also serves a dashboard at `/dashboard`: what each
 provider account has left, calls and cost per upstream and key, and the most
-recent calls. Started with `--allow-rotate`, the page can also re-point a
+recent calls. The page's data needs `COLDSEARCH_GATEWAY_TOKEN` to be set, on
+`127.0.0.1` too. Started with `--allow-rotate`, the page can also re-point a
 provider's key slot. See [Dashboard](docs/components/gateway.md#dashboard).
 
 ## Key pools

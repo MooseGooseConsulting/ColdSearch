@@ -23,6 +23,8 @@ export interface GatewayApiOptions {
 export const ROTATE_CONFIRM_HEADER = "x-coldsearch-confirm";
 /** Response header on `GET /api/keys`: `enabled` or `disabled`, so a client knows whether rotation is offered. */
 export const ROTATE_STATE_HEADER = "X-Coldsearch-Rotate";
+/** Response header on the 403 every `/api/` request gets from a gateway started without a token; its value is `token-required`. */
+export const API_STATE_HEADER = "X-Coldsearch-Api";
 
 const DEFAULT_SINCE = "24h";
 const DEFAULT_LIMIT = 200;
@@ -91,7 +93,8 @@ function keysErrorStatus(error: unknown): number | undefined {
 /**
  * Serve `GET /dashboard`: the page shell. It holds no data and no token, so
  * it is served without one; everything it shows comes from `/api/*` calls
- * the page makes with the token the operator types in.
+ * the page makes with the token the operator types in. On a gateway started
+ * without a token the page says that its data endpoints are off.
  */
 export function serveDashboard(req: IncomingMessage, res: ServerResponse): void {
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -106,6 +109,29 @@ export function serveDashboard(req: IncomingMessage, res: ServerResponse): void 
     "X-Content-Type-Options": "nosniff",
   });
   res.end(req.method === "HEAD" ? undefined : DASHBOARD_HTML);
+}
+
+/**
+ * Answer an `/api/` request on a gateway that was started without a token.
+ *
+ * `/api/` serves every agent's call arguments from a ledger file kept at mode
+ * 0600, and the key pools' secret names and balances. On loopback with no
+ * token, any local account could read those over HTTP, and so could a web
+ * page that gets a browser to resolve its own hostname to 127.0.0.1. So the
+ * endpoints answer only to a token, on every bind address; `/mcp` keeps its
+ * own rule.
+ */
+export function refuseApiWithoutToken(res: ServerResponse): void {
+  sendJson(
+    res,
+    403,
+    {
+      error:
+        "This gateway was started without a token, so its /api/ endpoints are off. " +
+        "Set COLDSEARCH_GATEWAY_TOKEN and restart it to use the dashboard; /mcp is not affected",
+    },
+    { [API_STATE_HEADER]: "token-required" }
+  );
 }
 
 /**
@@ -124,9 +150,9 @@ export function createGatewayApi(
   /** Providers with a rotation in flight: a second request must not race the first one's read-then-write. */
   const rotating = new Set<string>();
 
-  const status = (req: IncomingMessage, res: ServerResponse): void => {
+  const status = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     requireMethod(req, "GET", "/api/status");
-    sendJson(res, 200, core.status());
+    sendJson(res, 200, await core.readStatus());
   };
 
   const ledger = async (req: IncomingMessage, res: ServerResponse, query: URLSearchParams): Promise<void> => {
@@ -228,7 +254,7 @@ export function createGatewayApi(
     try {
       switch (path) {
         case "/api/status":
-          status(req, res);
+          await status(req, res);
           return;
         case "/api/ledger":
           await ledger(req, res, query);

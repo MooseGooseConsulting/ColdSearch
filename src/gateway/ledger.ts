@@ -122,6 +122,25 @@ export interface LedgerPage {
 
 const READ_CHUNK_BYTES = 64 * 1024;
 
+/** Add one ledger entry to the totals for its upstream and key. */
+function addToSummary(rows: Map<string, LedgerSummaryRow>, entry: LedgerEntry): void {
+  const id = `${entry.upstream}\u0000${entry.key}`;
+  const row =
+    rows.get(id) ??
+    { upstream: entry.upstream, key: entry.key, calls: 0, errors: 0, quota_errors: 0, usd: 0, credits: 0, last_call: entry.ts };
+  row.calls += 1;
+  if (!entry.ok) row.errors += 1;
+  if (entry.error_class === "quota") row.quota_errors += 1;
+  row.usd += entry.cost?.usd ?? 0;
+  row.credits += entry.cost?.credits ?? 0;
+  if (entry.ts > row.last_call) row.last_call = entry.ts;
+  rows.set(id, row);
+}
+
+function sortedSummary(rows: Map<string, LedgerSummaryRow>): LedgerSummaryRow[] {
+  return [...rows.values()].sort((a, b) => a.upstream.localeCompare(b.upstream) || a.key.localeCompare(b.key));
+}
+
 /**
  * Append-only JSONL record of every call the gateway forwards. The file is
  * created 0600 because arguments can hold queries the operator considers
@@ -199,27 +218,17 @@ export class Ledger {
   }
 
   /**
-   * The newest entries matching `query`, newest first.
+   * Call `visit` with every ledger entry, in file order.
    *
-   * Reads ledger lines only. An entry's `payload` field is returned as the
-   * file name it is; the payload files themselves are never opened. The
-   * ledger is read in fixed-size pieces and at most `2 * limit` entries are
-   * held at a time, so memory does not grow with the file. Order comes from
-   * `ts`, not line position: a line is written when its call ends, so a long
-   * call sits below shorter ones that started after it.
-   *
-   * A ledger that does not exist yet is an empty page, because the gateway
+   * The file is read in fixed-size pieces and each read is awaited, so memory
+   * does not grow with the file and other requests are served between pieces.
+   * A ledger that does not exist yet has no entries, because the gateway
    * creates the file with its first call. Any other read failure throws,
-   * naming the path. Lines that are not ledger entries are skipped.
+   * naming the path. Lines that are not ledger entries, or whose `ts` is not
+   * a time, are skipped.
    */
-  async recent(query: LedgerQuery): Promise<LedgerPage> {
-    const cutoff = (query.now ?? Date.now()) - query.sinceMs;
-    const limit = Math.max(1, Math.floor(query.limit));
-    let kept: Array<{ at: number; line: number; entry: LedgerEntry }> = [];
-    let matched = 0;
+  private async scan(visit: (entry: LedgerEntry, at: number, line: number) => void): Promise<void> {
     let lineNumber = 0;
-    const newestFirst = (a: { at: number; line: number }, b: { at: number; line: number }) => b.at - a.at || b.line - a.line;
-
     const consider = (line: string): void => {
       lineNumber += 1;
       if (!line) return;
@@ -231,11 +240,7 @@ export class Ledger {
       }
       if (!entry || typeof entry !== "object" || typeof entry.upstream !== "string" || typeof entry.tool !== "string") return;
       const at = typeof entry.ts === "string" ? Date.parse(entry.ts) : Number.NaN;
-      if (!Number.isFinite(at) || at < cutoff) return;
-      if (query.upstream !== undefined && entry.upstream !== query.upstream) return;
-      matched += 1;
-      kept.push({ at, line: lineNumber, entry });
-      if (kept.length >= limit * 2) kept = kept.sort(newestFirst).slice(0, limit);
+      if (Number.isFinite(at)) visit(entry, at, lineNumber);
     };
 
     try {
@@ -257,10 +262,57 @@ export class Ledger {
       }
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
-      if (err.code === "ENOENT") return { entries: [], matched: 0 };
+      if (err.code === "ENOENT") return;
       throw new Error(`the ledger at ${this.path} could not be read (${err.code ?? err.message})`);
     }
+  }
+
+  /**
+   * The newest entries matching `query`, newest first.
+   *
+   * Reads ledger lines only. An entry's `payload` field is returned as the
+   * file name it is; the payload files themselves are never opened. At most
+   * `2 * limit` entries are held at a time. Order comes from `ts`, not line
+   * position: a line is written when its call ends, so a long call sits below
+   * shorter ones that started after it.
+   *
+   * A ledger not written yet is an empty page; a ledger that cannot be read
+   * throws (see `scan`).
+   */
+  async recent(query: LedgerQuery): Promise<LedgerPage> {
+    const cutoff = (query.now ?? Date.now()) - query.sinceMs;
+    const limit = Math.max(1, Math.floor(query.limit));
+    let kept: Array<{ at: number; line: number; entry: LedgerEntry }> = [];
+    let matched = 0;
+    const newestFirst = (a: { at: number; line: number }, b: { at: number; line: number }) => b.at - a.at || b.line - a.line;
+
+    await this.scan((entry, at, line) => {
+      if (at < cutoff) return;
+      if (query.upstream !== undefined && entry.upstream !== query.upstream) return;
+      matched += 1;
+      kept.push({ at, line, entry });
+      if (kept.length >= limit * 2) kept = kept.sort(newestFirst).slice(0, limit);
+    });
     return { entries: kept.sort(newestFirst).slice(0, limit).map((item) => item.entry), matched };
+  }
+
+  /**
+   * Totals per upstream and key for each window in `windowsMs`: one list per
+   * window, in the order given, each counting entries newer than that long
+   * before `now`. The file is read once however many windows are asked for.
+   *
+   * Unlike `summarize`, this does not hold the whole file in memory or keep
+   * the thread for the length of the read, and a ledger that cannot be read
+   * throws instead of counting as empty. A ledger not written yet is empty.
+   */
+  async totals(windowsMs: number[], now: number = Date.now()): Promise<LedgerSummaryRow[][]> {
+    const windows = windowsMs.map((ms) => ({ cutoff: now - ms, rows: new Map<string, LedgerSummaryRow>() }));
+    await this.scan((entry, at) => {
+      for (const window of windows) {
+        if (at >= window.cutoff) addToSummary(window.rows, entry);
+      }
+    });
+    return windows.map((window) => sortedSummary(window.rows));
   }
 
   /** Totals per upstream and key for entries newer than `sinceMs` ago. */
@@ -282,18 +334,8 @@ export class Ledger {
         continue;
       }
       if (Date.parse(entry.ts) < cutoff) continue;
-      const id = `${entry.upstream}\u0000${entry.key}`;
-      const row =
-        rows.get(id) ??
-        { upstream: entry.upstream, key: entry.key, calls: 0, errors: 0, quota_errors: 0, usd: 0, credits: 0, last_call: entry.ts };
-      row.calls += 1;
-      if (!entry.ok) row.errors += 1;
-      if (entry.error_class === "quota") row.quota_errors += 1;
-      row.usd += entry.cost?.usd ?? 0;
-      row.credits += entry.cost?.credits ?? 0;
-      if (entry.ts > row.last_call) row.last_call = entry.ts;
-      rows.set(id, row);
+      addToSummary(rows, entry);
     }
-    return [...rows.values()].sort((a, b) => a.upstream.localeCompare(b.upstream) || a.key.localeCompare(b.key));
+    return sortedSummary(rows);
   }
 }
