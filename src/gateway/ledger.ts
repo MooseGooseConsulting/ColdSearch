@@ -50,9 +50,42 @@ function numberAt(text: string, pattern: RegExp): number | undefined {
 }
 
 /**
- * Pull the vendor-reported cost out of a tool result. Vendors put it in
- * different places: Parallel in `_meta["parallel/usage"].cost_usd`, Exa as
- * `costDollars.total` and Firecrawl as `creditsUsed` inside the returned JSON.
+ * Where vendors report credits spent, as paths into the returned JSON, in the
+ * order they are tried. `creditsUsed` anywhere in the body is tried before
+ * all of these.
+ */
+const CREDIT_PATHS: string[][] = [
+  // Firecrawl: an Alexandria execution's total, and a provider-routed scrape.
+  // Read at these paths only, because a catalogue lookup lists a `creditsCost`
+  // price for every capability and none of those is a charge.
+  ["data", "creditsCost"],
+  ["data", "metadata", "provider", "creditsCost"],
+  // Context.dev, on every response.
+  ["key_metadata", "credits_consumed"],
+  // Tavily, when the call passed `include_usage: true`.
+  ["usage", "credits"],
+  // Serper, at the top level of the response only.
+  ["credits"],
+];
+
+function numberAtPath(body: unknown, path: string[]): number | undefined {
+  let node = body;
+  for (const key of path) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[key];
+  }
+  return typeof node === "number" && Number.isFinite(node) ? node : undefined;
+}
+
+/**
+ * Pull the vendor-reported cost out of a tool result. Dollars and credits
+ * are kept apart and never converted.
+ *
+ * - `usd`: Parallel's `_meta["parallel/usage"].cost_usd`, Exa's `costDollars.total`.
+ * - `credits`: Firecrawl's `creditsUsed`, or failing that the first of
+ *   `CREDIT_PATHS` that holds a number in a JSON body (Firecrawl
+ *   `creditsCost`, Context.dev, Tavily, Serper).
+ *
  * Returns undefined when the result carries none of these.
  */
 export function extractCost(result: unknown): CallCost | undefined {
@@ -70,7 +103,11 @@ export function extractCost(result: unknown): CallCost | undefined {
   }
 
   const parts: string[] = [];
-  if (record.structuredContent !== undefined) parts.push(JSON.stringify(record.structuredContent));
+  const bodies: unknown[] = [];
+  if (record.structuredContent !== undefined) {
+    parts.push(JSON.stringify(record.structuredContent));
+    bodies.push(record.structuredContent);
+  }
   if (Array.isArray(record.content)) {
     for (const item of record.content) {
       if (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string") {
@@ -84,6 +121,25 @@ export function extractCost(result: unknown): CallCost | undefined {
     const credits = numberAt(text, /"creditsUsed"\s*:\s*([0-9.]+)/);
     if (cost.usd === undefined && usd !== undefined) cost.usd = usd;
     if (credits !== undefined) cost.credits = credits;
+  }
+
+  if (cost.credits === undefined) {
+    for (const part of parts.slice(bodies.length)) {
+      if (!part.trimStart().startsWith("{")) continue;
+      try {
+        bodies.push(JSON.parse(part));
+      } catch {
+        // Not a JSON body; nothing to read a path from.
+      }
+    }
+    search: for (const path of CREDIT_PATHS) {
+      for (const body of bodies) {
+        const credits = numberAtPath(body, path);
+        if (credits === undefined) continue;
+        cost.credits = credits;
+        break search;
+      }
+    }
   }
 
   return cost.usd === undefined && cost.credits === undefined ? undefined : cost;
