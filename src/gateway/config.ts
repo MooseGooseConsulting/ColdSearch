@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG_DIR_NAME } from "../app.js";
+import { globMatch } from "./glob.js";
 
 /** How the gateway presents upstream tools to the connecting agent. */
 export type GatewayMode = "all" | "lazy";
@@ -34,6 +35,19 @@ export interface UpstreamConfig {
   exclude: string[];
 }
 
+/** Settings for the gateway's own fetch, map and crawl tools (`[gateway.native]`). */
+export interface NativeConfig {
+  enabled: boolean;
+  /** Gateway tool name (`<upstream>__<tool>`) that reads a page the gateway could not; undefined means no paid fallback. */
+  fallback?: string;
+  /** Arguments for the fallback tool. Every "{url}" in a string of it, alone or inside longer text, is replaced with the page's URL. */
+  fallbackArguments: Record<string, unknown>;
+  /** Pause between the end of one request to a host and the start of the next. */
+  delayMs: number;
+  /** Most pages one crawl may send to the fallback tool. */
+  maxPaidPages: number;
+}
+
 export interface GatewayConfig {
   mode: GatewayMode;
   ledgerPath: string;
@@ -47,6 +61,7 @@ export interface GatewayConfig {
   /** How long an upstream's tool list is reused before it is fetched again. */
   toolListTtlMs: number;
   upstreams: UpstreamConfig[];
+  native: NativeConfig;
 }
 
 type Preset = Pick<UpstreamConfig, "kind" | "url" | "auth" | "authName" | "authPrefix"> & { spec?: string | string[] };
@@ -79,6 +94,8 @@ export const UPSTREAM_PRESETS: Record<string, Preset> = {
 };
 
 const UPSTREAM_NAME = /^[a-z][a-z0-9]{0,23}$/;
+/** The ledger records the gateway's own fetch, map and crawl calls under this upstream name. */
+export const RESERVED_UPSTREAM_NAME = "coldsearch";
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
@@ -145,14 +162,77 @@ function patternList(value: unknown, field: string): string[] {
 
 /** True when `tool` matches a pattern; `*` matches any run of characters. */
 export function matchesPattern(tool: string, pattern: string): boolean {
-  const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
-  return new RegExp(`^${source}$`).test(tool);
+  return globMatch(tool, pattern);
 }
 
 /** Whether an upstream's include/exclude lists let this tool through. */
 export function toolAllowed(upstream: Pick<UpstreamConfig, "include" | "exclude">, tool: string): boolean {
   if (upstream.exclude.some((pattern) => matchesPattern(tool, pattern))) return false;
   return upstream.include.length === 0 || upstream.include.some((pattern) => matchesPattern(tool, pattern));
+}
+
+/** Placeholder in `fallback_arguments` that stands for the page URL. */
+export const FALLBACK_URL_PLACEHOLDER = "{url}";
+
+function containsPlaceholder(value: unknown): boolean {
+  if (typeof value === "string") return value.includes(FALLBACK_URL_PLACEHOLDER);
+  if (Array.isArray(value)) return value.some(containsPlaceholder);
+  if (value && typeof value === "object") return Object.values(value).some(containsPlaceholder);
+  return false;
+}
+
+function wholeNumber(value: unknown, fallback: number, max: number, field: string): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    throw new Error(`[gateway] ${field} must be a whole number from 0 to ${max}`);
+  }
+  return value;
+}
+
+/** Read `[gateway.native]`. `upstreams` is the set of configured upstream names, to check `fallback` against. */
+function resolveNativeConfig(raw: unknown, upstreams: Set<string>): NativeConfig {
+  if (raw !== undefined && (raw === null || typeof raw !== "object" || Array.isArray(raw))) {
+    throw new Error("[gateway] native must be a table");
+  }
+  const section = (raw ?? {}) as Record<string, unknown>;
+  if (section.enabled !== undefined && typeof section.enabled !== "boolean") {
+    throw new Error("[gateway] native.enabled must be true or false");
+  }
+
+  const fallback = asString(section.fallback, "native.fallback");
+  if (fallback !== undefined) {
+    const split = fallback.indexOf("__");
+    const upstream = split > 0 ? fallback.slice(0, split) : "";
+    if (!upstream || split + 2 >= fallback.length) {
+      throw new Error(`[gateway] native.fallback must be a gateway tool name, <upstream>__<tool>; got "${fallback}"`);
+    }
+    if (!upstreams.has(upstream)) {
+      throw new Error(`[gateway] native.fallback names upstream "${upstream}", which has no [gateway.upstreams.${upstream}] block`);
+    }
+  }
+
+  const rawArguments = section.fallback_arguments;
+  if (rawArguments !== undefined) {
+    if (fallback === undefined) {
+      throw new Error("[gateway] native.fallback_arguments is set but native.fallback is not");
+    }
+    if (rawArguments === null || typeof rawArguments !== "object" || Array.isArray(rawArguments)) {
+      throw new Error("[gateway] native.fallback_arguments must be a table");
+    }
+    if (!containsPlaceholder(rawArguments)) {
+      throw new Error(
+        `[gateway] native.fallback_arguments must contain the string "${FALLBACK_URL_PLACEHOLDER}" where the page URL goes`
+      );
+    }
+  }
+
+  return {
+    enabled: section.enabled !== false,
+    fallback,
+    fallbackArguments: (rawArguments as Record<string, unknown> | undefined) ?? { url: FALLBACK_URL_PLACEHOLDER },
+    delayMs: wholeNumber(section.delay_ms, 500, 60_000, "native.delay_ms"),
+    maxPaidPages: wholeNumber(section.max_paid_pages, 10, 500, "native.max_paid_pages"),
+  };
 }
 
 /**
@@ -181,6 +261,9 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
   for (const [name, value] of Object.entries(rawUpstreams as Record<string, unknown>)) {
     if (!UPSTREAM_NAME.test(name)) {
       throw new Error(`[gateway] upstream name "${name}" must be lowercase letters and digits, at most 24 characters`);
+    }
+    if (name === RESERVED_UPSTREAM_NAME) {
+      throw new Error(`[gateway] upstream name "${name}" is taken by the gateway's own tools; pick another`);
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(`[gateway] upstreams.${name} must be a table`);
@@ -253,5 +336,6 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
     exhaustedCooldownMs: parseDurationMs(section.exhausted_cooldown, 6 * 3_600_000, "exhausted_cooldown"),
     toolListTtlMs: parseDurationMs(section.tool_list_ttl, 10 * 60_000, "tool_list_ttl"),
     upstreams,
+    native: resolveNativeConfig(section.native, new Set(upstreams.map((upstream) => upstream.name))),
   };
 }

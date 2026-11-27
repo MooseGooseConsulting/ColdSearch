@@ -28,6 +28,8 @@ export interface LedgerEntry {
   cost?: CallCost;
   /** File holding this attempt's full request and response, relative to the payload directory. */
   payload?: string;
+  /** Native tools only: pages this call read without a provider. Each is a page no provider was paid for. */
+  pages?: number;
 }
 
 const ARGS_LIMIT = 2000;

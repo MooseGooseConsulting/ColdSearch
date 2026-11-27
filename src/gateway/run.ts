@@ -183,7 +183,7 @@ export async function runGatewayCli(args: string[]): Promise<void> {
   const skills = loadSkills(config.skillsDir);
   // stdout carries the protocol in stdio mode, so all operator output is stderr.
   const note = (message: string) => process.stderr.write(`coldsearch gateway: ${message}\n`);
-  const summary = `${config.upstreams.length} upstreams (${config.upstreams.map((u) => u.name).join(", ")}), ${skills.length} skills, mode ${config.mode}, ledger ${config.ledgerPath}`;
+  const summary = `${config.upstreams.length} upstreams (${config.upstreams.map((u) => u.name).join(", ")}), ${skills.length} skills, mode ${config.mode}, native tools ${config.native.enabled ? "on" : "off"}, ledger ${config.ledgerPath}`;
 
   if (options.http) {
     const token = process.env.COLDSEARCH_GATEWAY_TOKEN?.trim() || undefined;
