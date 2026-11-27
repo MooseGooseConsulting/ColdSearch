@@ -193,6 +193,17 @@ check.
 Rotation is a command. Nothing here runs on a schedule; run it by hand or from
 whatever scheduler you already have.
 
+## From the gateway dashboard
+
+A gateway in HTTP mode whose config also has a `[keys]` section shows these
+pools on its dashboard and serves `keys status --json` at `GET /api/keys`.
+Started with `--allow-rotate`, it also offers `keys rotate` as a button and as
+`POST /api/keys/rotate`, with a dry-run preview first. The gateway process
+then needs the `doppler` CLI and access to the project, as these commands do.
+A `[keys]` section that is present but invalid stops the HTTP gateway from
+starting, with the same message `keys status` gives. See
+[the gateway's Dashboard section](gateway.md#dashboard).
+
 ## Key handling
 
 - Secrets are reached through the `doppler` CLI as a child process, with no

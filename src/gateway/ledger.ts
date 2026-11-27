@@ -1,5 +1,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 /** What one upstream call cost, in whichever unit the vendor reported. */
 export interface CallCost {
@@ -100,6 +102,26 @@ export interface LedgerSummaryRow {
   last_call: string;
 }
 
+/** Which entries `Ledger.recent` returns. */
+export interface LedgerQuery {
+  /** Only entries whose `ts` is within this long before `now`. */
+  sinceMs: number;
+  /** Only entries for this upstream; every upstream when undefined. */
+  upstream?: string;
+  /** Return at most this many entries, the newest ones. */
+  limit: number;
+  now?: number;
+}
+
+export interface LedgerPage {
+  /** Newest first by `ts`; entries with the same `ts` in reverse file order. */
+  entries: LedgerEntry[];
+  /** How many entries matched the query before `limit` was applied. */
+  matched: number;
+}
+
+const READ_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Append-only JSONL record of every call the gateway forwards. The file is
  * created 0600 because arguments can hold queries the operator considers
@@ -174,6 +196,71 @@ export class Ledger {
     } catch (error) {
       process.stderr.write(`coldsearch gateway: ledger write failed (${(error as Error).message})\n`);
     }
+  }
+
+  /**
+   * The newest entries matching `query`, newest first.
+   *
+   * Reads ledger lines only. An entry's `payload` field is returned as the
+   * file name it is; the payload files themselves are never opened. The
+   * ledger is read in fixed-size pieces and at most `2 * limit` entries are
+   * held at a time, so memory does not grow with the file. Order comes from
+   * `ts`, not line position: a line is written when its call ends, so a long
+   * call sits below shorter ones that started after it.
+   *
+   * A ledger that does not exist yet is an empty page, because the gateway
+   * creates the file with its first call. Any other read failure throws,
+   * naming the path. Lines that are not ledger entries are skipped.
+   */
+  async recent(query: LedgerQuery): Promise<LedgerPage> {
+    const cutoff = (query.now ?? Date.now()) - query.sinceMs;
+    const limit = Math.max(1, Math.floor(query.limit));
+    let kept: Array<{ at: number; line: number; entry: LedgerEntry }> = [];
+    let matched = 0;
+    let lineNumber = 0;
+    const newestFirst = (a: { at: number; line: number }, b: { at: number; line: number }) => b.at - a.at || b.line - a.line;
+
+    const consider = (line: string): void => {
+      lineNumber += 1;
+      if (!line) return;
+      let entry: LedgerEntry | null;
+      try {
+        entry = JSON.parse(line) as LedgerEntry | null;
+      } catch {
+        return;
+      }
+      if (!entry || typeof entry !== "object" || typeof entry.upstream !== "string" || typeof entry.tool !== "string") return;
+      const at = typeof entry.ts === "string" ? Date.parse(entry.ts) : Number.NaN;
+      if (!Number.isFinite(at) || at < cutoff) return;
+      if (query.upstream !== undefined && entry.upstream !== query.upstream) return;
+      matched += 1;
+      kept.push({ at, line: lineNumber, entry });
+      if (kept.length >= limit * 2) kept = kept.sort(newestFirst).slice(0, limit);
+    };
+
+    try {
+      const handle = await open(this.path, "r");
+      try {
+        const decoder = new StringDecoder("utf8");
+        const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+        let rest = "";
+        for (;;) {
+          const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+          if (bytesRead === 0) break;
+          const lines = (rest + decoder.write(chunk.subarray(0, bytesRead))).split("\n");
+          rest = lines.pop() ?? "";
+          for (const line of lines) consider(line);
+        }
+        consider(rest + decoder.end());
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === "ENOENT") return { entries: [], matched: 0 };
+      throw new Error(`the ledger at ${this.path} could not be read (${err.code ?? err.message})`);
+    }
+    return { entries: kept.sort(newestFirst).slice(0, limit).map((item) => item.entry), matched };
   }
 
   /** Totals per upstream and key for entries newer than `sinceMs` ago. */
