@@ -101,6 +101,20 @@ coldsearch mcp --http --port 8787   # HTTP at /mcp, many agents
 
 See [the gateway component doc](docs/components/gateway.md) for configuration.
 
+## Key pools
+
+With several accounts per provider, keep each account's key as its own Doppler
+secret and make the one name every tool reads a reference to one of them.
+`coldsearch keys` shows what each account has left and re-points that name.
+
+```bash
+coldsearch keys status                       # remaining, limit and period end per account
+coldsearch keys rotate firecrawl --dry-run   # say which account it would move to, and why
+coldsearch keys rotate firecrawl             # move
+```
+
+See [the keys component doc](docs/components/keys.md) for configuration.
+
 ## Batch runs
 
 `coldsearch batch` is a resumable JSONL runner for `search`, `extract`, `crawl`,

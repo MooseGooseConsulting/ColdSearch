@@ -168,4 +168,5 @@ descriptions are also sent in the server instructions at connect time.
 - A long-running provider job (a crawl, a research agent run) started with one
   key cannot be polled after the gateway moves to another key.
 - The gateway reads what a call cost when the provider says so. It does not
-  ask providers how much allowance each account has left.
+  ask providers how much allowance each account has left; `coldsearch keys
+  status` does (`docs/components/keys.md`).
