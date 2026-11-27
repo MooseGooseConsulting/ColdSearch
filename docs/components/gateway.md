@@ -29,13 +29,15 @@ servers stay reachable under the presets `examcp`, `firecrawlmcp`,
 # One agent, over stdio
 coldsearch mcp --config ~/.config/coldsearch/config.toml
 
-# Many agents, over HTTP at /mcp
+# Many agents, over HTTP at /mcp, with a dashboard at /dashboard
 COLDSEARCH_GATEWAY_TOKEN=... coldsearch mcp --http --host 0.0.0.0 --port 8787
 ```
 
 HTTP mode binds to `127.0.0.1` by default. It refuses any other bind address
 unless `COLDSEARCH_GATEWAY_TOKEN` is set; clients then send
-`Authorization: Bearer <token>`. `GET /healthz` answers without a token.
+`Authorization: Bearer <token>`. `GET /healthz` answers without a token. HTTP
+mode also serves the [dashboard](#dashboard), whose data needs the token on
+every bind address, `127.0.0.1` included.
 
 Operator messages go to stderr. In stdio mode stdout carries the protocol.
 
@@ -153,6 +155,135 @@ Each attempt's complete request and response is saved as its own file under
 ledger line's `payload` field names it. Keeping bodies out of the ledger keeps
 the ledger quick to scan; a crawl result can be megabytes. Key values are
 redacted in these files too. Nothing prunes them yet.
+
+## Dashboard
+
+HTTP mode serves one page at `/dashboard` that shows what the gateway and the
+key pools are doing:
+
+| Section | Shows |
+|---------|-------|
+| Key pools | Per provider with a `[keys.<provider>]` block: each account's remaining allowance as a bar against its limit, when its period ends, which account the slot points at, and a Rotate button when rotation is enabled. The same reading as `coldsearch keys status` |
+| Upstreams | Per upstream and per key: calls, errors, quota errors and cost for the last 24 hours and 7 days, and each key's state (`active`, `standby`, or `skipped` with the reason and retry time) |
+| Recent calls | The newest 200 ledger entries of the last 24 hours: time, client, upstream, tool, key reference, result, duration, cost. The filter box matches any of those plus the error text and arguments; the arrow beside a time opens that call's error, arguments, session and payload file name |
+
+Status: first version (2026-11-27). The endpoints are tested against a
+stand-in upstream, a stand-in secret store and a stand-in usage endpoint. The
+page was opened in Chromium with stand-in data, in light and dark, and its
+rotate flow was clicked through against those stand-ins. It has not been run
+against a real Doppler workplace or a live provider account.
+
+The page is a single HTML document with its stylesheet and script inline. It
+loads nothing from anywhere else, and a Content-Security-Policy header allows
+only that script and stylesheet and forbids framing the page. It is light or
+dark by the browser's setting.
+
+### Token
+
+`/dashboard` itself is served without the token, so the page can ask for it.
+The page holds no data: the same bytes are served by every gateway. It asks
+for the bearer token once, keeps it in the tab's `sessionStorage` (gone when
+the tab closes; "Forget token" removes it sooner), and sends it as
+`Authorization` on its requests to this gateway's `/api/` endpoints.
+
+The `/api/` endpoints answer only to the token. A gateway started without
+`COLDSEARCH_GATEWAY_TOKEN` (possible on `127.0.0.1` only) still serves `/mcp`
+and the page, but every `/api/` request gets a 403 that says to set the
+token, with the header `X-Coldsearch-Api: token-required`, and the page shows
+that message instead of asking for a token. This is stricter than `/mcp` on
+purpose. `/api/ledger` returns every agent's call arguments from a file the
+gateway keeps at mode 0600, and `/api/keys` returns secret names and account
+balances. Without a token, any account on the machine could read those over
+HTTP, and so could a web page that gets a browser to resolve its own hostname
+to `127.0.0.1`.
+
+The page never receives a key value. The endpoints return key references
+(`doppler:NAME`) and secret names, and what they return about key pools passes
+through the same redaction as the `keys` commands.
+
+### Endpoints
+
+All take the same bearer token as `/mcp`, answer JSON, and report a refusal as
+`{"error": "..."}`. All answer 403 on a gateway started without a token.
+
+| Request | Answer |
+|---------|--------|
+| `GET /api/status` | What `coldsearch_status` returns: upstreams, key states, totals per key for 24 hours and 7 days. When the ledger cannot be read, the totals are empty and `ledger_error` says why; the key states are still returned |
+| `GET /api/ledger?since=&upstream=&limit=` | `{since, upstream, limit, matched, entries}`. `entries` are ledger lines, newest first by start time. `since` is a duration (`90s`, `30m`, `24h`, `7d`; default `24h`), `upstream` an upstream name, `limit` 1 to 1000 (default 200). `matched` counts every entry in the window before `limit` |
+| `GET /api/keys?provider=` | What `coldsearch keys status --json` prints (`docs/components/keys.md`). 404 when the config has no `[keys]` section. The response header `X-Coldsearch-Rotate` is `enabled` or `disabled` |
+| `POST /api/keys/rotate` | Does what `coldsearch keys rotate` does; see below |
+
+`/api/ledger` reads ledger lines only. An entry's `payload` field names its
+payload file; the file is not opened and no request or response body is
+returned.
+
+### Rotating from the page
+
+Rotation over HTTP is off unless the gateway is started with `--allow-rotate`:
+
+```bash
+COLDSEARCH_GATEWAY_TOKEN=... coldsearch mcp --http --allow-rotate
+```
+
+`--allow-rotate` needs `COLDSEARCH_GATEWAY_TOKEN` and a `[keys]` section; the
+gateway refuses to start without either. Then:
+
+```
+POST /api/keys/rotate
+Authorization: Bearer <token>
+X-Coldsearch-Confirm: rotate
+Content-Type: application/json
+
+{"provider": "firecrawl", "to": "FIRECRAWL_API_KEY_2", "dry_run": true}
+```
+
+`to` and `dry_run` are optional and mean what `--to` and `--dry-run` mean.
+The answer is `{provider, slot, outcome, before, after, reason, dry_run}`:
+`before` is what the slot pointed at, `after` the pool secret it points at now
+(or would, for a dry run), `reason` why. `outcome` is `rotated`, `dry-run`,
+`unchanged` or `refused`. A refused rotation is HTTP 409 with `after` null and
+nothing written. Every request that reaches the rotation, dry runs included,
+writes one line to the gateway's stderr.
+
+On the page, Rotate opens a panel. Preview sends a dry run and shows the
+before, after and reason. The button that then appears sends the write, with
+`to` set to the previewed target, so what is written is what was shown.
+
+Why the extra switch and header. This is the one endpoint that changes a
+secret, and a rotation moves every consumer of the slot to another account. A
+browser will send a request from any page a person has open, so the endpoint
+must not be reachable by accident:
+
+- With the switch off, which is the default, the endpoint refuses everything.
+  A gateway started to serve agents and show status cannot rotate.
+- `X-Coldsearch-Confirm` cannot be set by an HTML form or a plain link, and a
+  script on another site that tries to set it is stopped by the browser,
+  because the gateway answers no cross-origin preflight.
+- The token is required even on loopback, as for every `/api/` endpoint,
+  because without one a page that got a browser to treat the gateway's port
+  as its own origin could send the header too.
+- The page cannot be framed, so another site cannot overlay it to steer a
+  click onto the button.
+
+### What the dashboard costs
+
+- Status and recent calls are refreshed every 30 seconds while the tab is
+  visible. Each refresh reads the whole ledger file twice: once for the
+  24-hour and 7-day totals together, which `coldsearch_status` also does, and
+  once for the recent calls. Both reads take the file in 64 KB pieces and let
+  other requests run between pieces, so memory does not grow with the file
+  and agents are not held up for the length of a read. Nothing trims the
+  ledger, so each refresh still costs more as the file grows. Measured on one
+  machine with generated ledgers (2026-11-27): 216 MB and 260,000 lines took
+  0.35 s for the totals and 0.30 s for the recent calls; 607 MB and 730,000
+  lines took 0.87 s and 0.76 s. The longest the gateway's thread was held at
+  a stretch was 1.3 ms in both.
+- The key pools are read when the page opens, on Refresh, and after a
+  rotation; never on a timer. Each read is one `keys status`: one Doppler read
+  per pool key plus one for the slot, and one usage request per pool key.
+- Anyone with the gateway token can read every agent's calls through
+  `/api/ledger`, arguments included. Set `log_arguments = false` to keep
+  arguments out of the ledger.
 
 ## Skills
 

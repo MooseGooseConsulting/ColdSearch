@@ -3,6 +3,9 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "../config.js";
+import { resolveKeysConfig, type KeysConfig } from "../keys/config.js";
+import type { KeysDeps } from "../keys/status.js";
+import { createGatewayApi, refuseApiWithoutToken, serveDashboard } from "./api.js";
 import { resolveGatewayConfig, type GatewayConfig, type GatewayMode } from "./config.js";
 import { GatewayCore } from "./core.js";
 import { createGatewayServer } from "./server.js";
@@ -12,7 +15,8 @@ export const GATEWAY_HELP = `coldsearch mcp - MCP gateway in front of search pro
 
 Usage:
   coldsearch mcp [options]            Serve one agent over stdio
-  coldsearch mcp --http [options]     Serve many agents over HTTP at /mcp
+  coldsearch mcp --http [options]     Serve many agents over HTTP at /mcp,
+                                      and a dashboard at /dashboard
 
 Options:
   -c, --config PATH   Config file with a [gateway] section
@@ -21,10 +25,14 @@ Options:
   --http              Serve streamable HTTP instead of stdio
   --host HOST         HTTP bind address (default: 127.0.0.1)
   --port N            HTTP port (default: 8787)
+  --allow-rotate      With --http: let the dashboard and POST /api/keys/rotate
+                      re-point a provider's key slot. Off by default; needs
+                      COLDSEARCH_GATEWAY_TOKEN and a [keys] section
   -h, --help          Show this help
 
 HTTP mode requires COLDSEARCH_GATEWAY_TOKEN when the bind address is not
-loopback; clients then send "Authorization: Bearer <token>".
+loopback; clients then send "Authorization: Bearer <token>". The dashboard's
+data (/api/) needs the token on every bind address, loopback included.
 `;
 
 interface GatewayCliOptions {
@@ -33,11 +41,12 @@ interface GatewayCliOptions {
   http: boolean;
   host: string;
   port: number;
+  allowRotate: boolean;
   help: boolean;
 }
 
 export function parseGatewayArgs(args: string[]): GatewayCliOptions {
-  const options: GatewayCliOptions = { http: false, host: "127.0.0.1", port: 8787, help: false };
+  const options: GatewayCliOptions = { http: false, host: "127.0.0.1", port: 8787, allowRotate: false, help: false };
   const value = (index: number, flag: string): string => {
     const next = args[index + 1];
     if (next === undefined || next.startsWith("-")) throw new Error(`${flag} requires a value`);
@@ -68,6 +77,9 @@ export function parseGatewayArgs(args: string[]): GatewayCliOptions {
         options.port = port;
         break;
       }
+      case "--allow-rotate":
+        options.allowRotate = true;
+        break;
       case "-h":
       case "--help":
         options.help = true;
@@ -75,6 +87,9 @@ export function parseGatewayArgs(args: string[]): GatewayCliOptions {
       default:
         throw new Error(`Unknown option for mcp: ${arg}`);
     }
+  }
+  if (options.allowRotate && !options.http && !options.help) {
+    throw new Error("--allow-rotate applies to --http only: it enables rotation through the HTTP dashboard and API");
   }
   return options;
 }
@@ -90,21 +105,54 @@ function tokenMatches(header: string | undefined, token: string): boolean {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
+export interface HttpGatewayOptions {
+  host: string;
+  port: number;
+  token?: string;
+  /** The config's `[keys]` section, for the dashboard's key pools. Undefined when the config has none. */
+  keys?: KeysConfig;
+  /** Enable `POST /api/keys/rotate`. Requires `token` and `keys`. */
+  allowRotate?: boolean;
+  /** How the key endpoints reach secrets; tests supply a stand-in. */
+  keysDeps?: KeysDeps;
+  /** Where operator lines about rotation requests go. Default: stderr. */
+  note?: (message: string) => void;
+}
+
 /**
- * Serve the gateway over streamable HTTP. One MCP session per connected
- * agent, all sharing `core`. Resolves once the server is listening.
+ * Serve the gateway over HTTP. `/mcp` is streamable HTTP, one MCP session per
+ * connected agent, all sharing `core`. `/api/*` is the JSON behind the
+ * dashboard and takes the same bearer token as `/mcp`. `/dashboard` is the
+ * page shell and `/healthz` a liveness answer; neither holds data, so both
+ * are served without the token. Resolves once the server is listening.
+ *
+ * `/mcp` may run without a token on loopback. `/api/*` may not: started
+ * without a token it refuses every request (see `refuseApiWithoutToken`),
+ * and `allowRotate` without a token stops the start.
  */
 export async function startHttpGateway(
   core: GatewayCore,
   skills: GatewaySkill[],
-  options: { host: string; port: number; token?: string }
+  options: HttpGatewayOptions
 ): Promise<HttpServer> {
   if (!options.token && !isLoopback(options.host)) {
     throw new Error(
       `Refusing to serve on ${options.host} without a token: set COLDSEARCH_GATEWAY_TOKEN, or bind to 127.0.0.1`
     );
   }
+  if (options.allowRotate && !options.token) {
+    throw new Error("Refusing --allow-rotate without a token: set COLDSEARCH_GATEWAY_TOKEN");
+  }
+  if (options.allowRotate && !options.keys) {
+    throw new Error("--allow-rotate needs a [keys] section in the config: there is no slot to rotate (see docs/components/keys.md)");
+  }
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const api = createGatewayApi(core, {
+    keys: options.keys,
+    allowRotate: options.allowRotate,
+    keysDeps: options.keysDeps,
+    note: options.note,
+  });
 
   const send = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -112,17 +160,32 @@ export async function startHttpGateway(
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const path = (req.url ?? "/").split("?")[0];
+    const target = req.url ?? "/";
+    const mark = target.indexOf("?");
+    const path = mark === -1 ? target : target.slice(0, mark);
     if (path === "/healthz") {
       send(res, 200, { ok: true });
       return;
     }
-    if (path !== "/mcp") {
-      send(res, 404, { error: "Not found; the MCP endpoint is /mcp" });
+    if (path === "/dashboard") {
+      serveDashboard(req, res);
+      return;
+    }
+    const isApi = path.startsWith("/api/");
+    if (path !== "/mcp" && !isApi) {
+      send(res, 404, { error: "Not found; the MCP endpoint is /mcp and the dashboard is /dashboard" });
+      return;
+    }
+    if (isApi && !options.token) {
+      refuseApiWithoutToken(res);
       return;
     }
     if (options.token && !tokenMatches(req.headers.authorization, options.token)) {
       send(res, 401, { error: "Missing or wrong bearer token" });
+      return;
+    }
+    if (isApi) {
+      await api(req, res, path, new URLSearchParams(mark === -1 ? "" : target.slice(mark + 1)));
       return;
     }
 
@@ -175,8 +238,8 @@ export async function runGatewayCli(args: string[]): Promise<void> {
     return;
   }
 
-  const raw = (loadConfig(options.configPath) as unknown as { gateway?: unknown }).gateway;
-  const config: GatewayConfig = resolveGatewayConfig(raw);
+  const loaded = loadConfig(options.configPath) as unknown as { gateway?: unknown; keys?: unknown };
+  const config: GatewayConfig = resolveGatewayConfig(loaded.gateway);
   if (options.mode) config.mode = options.mode;
 
   const core = new GatewayCore(config);
@@ -187,8 +250,24 @@ export async function runGatewayCli(args: string[]): Promise<void> {
 
   if (options.http) {
     const token = process.env.COLDSEARCH_GATEWAY_TOKEN?.trim() || undefined;
-    const server = await startHttpGateway(core, skills, { host: options.host, port: options.port, token });
-    note(`listening on http://${options.host}:${options.port}/mcp${token ? " (bearer token required)" : ""}; ${summary}`);
+    // A [keys] section is optional here, but one that is present and wrong stops the start, naming the field.
+    const keys = loaded.keys === undefined ? undefined : resolveKeysConfig(loaded.keys);
+    const server = await startHttpGateway(core, skills, {
+      host: options.host,
+      port: options.port,
+      token,
+      keys,
+      allowRotate: options.allowRotate,
+    });
+    const base = `http://${options.host}:${options.port}`;
+    note(`listening on ${base}/mcp${token ? " (bearer token required)" : ""}; ${summary}`);
+    note(
+      `dashboard at ${base}/dashboard; key pools ${keys ? keys.providers.map((item) => item.provider).join(", ") : "not configured"}; ` +
+        `rotation over HTTP ${options.allowRotate ? "enabled" : "disabled"}`
+    );
+    if (!token) {
+      note("no COLDSEARCH_GATEWAY_TOKEN set: /mcp answers anything on this machine without one, and the dashboard's data (/api/) is off until one is set");
+    }
     const stop = () => {
       server.close();
       void core.close().finally(() => process.exit(0));

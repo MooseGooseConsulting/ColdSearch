@@ -59,6 +59,8 @@ export interface GatewayStatus {
   }>;
   last_24h: LedgerSummaryRow[];
   last_7d: LedgerSummaryRow[];
+  /** Set when the ledger could not be read: the totals above are then empty because they are unknown, not zero. */
+  ledger_error?: string;
 }
 
 /** Separator between upstream name and tool name in gateway tool names. */
@@ -374,8 +376,8 @@ export class GatewayCore {
 
   // --- status --------------------------------------------------------------
 
-  status(): GatewayStatus {
-    const day = 86_400_000;
+  /** Mode, ledger path and each upstream's key states: the part of the status that reads no file. */
+  private statusHead(): Pick<GatewayStatus, "mode" | "ledger" | "upstreams"> {
     return {
       mode: this.config.mode,
       ledger: this.ledger.getPath(),
@@ -399,8 +401,38 @@ export class GatewayCore {
           }),
         };
       }),
+    };
+  }
+
+  /**
+   * The status with its ledger totals read synchronously: the whole file is
+   * loaded twice on the calling thread, and a ledger that cannot be read
+   * counts as empty. A process that is serving agents uses `readStatus`.
+   */
+  status(): GatewayStatus {
+    const day = 86_400_000;
+    return {
+      ...this.statusHead(),
       last_24h: this.ledger.summarize(day, this.now()),
       last_7d: this.ledger.summarize(7 * day, this.now()),
     };
+  }
+
+  /**
+   * The status as the gateway serves it (`coldsearch_status`, `/api/status`).
+   * Both totals come from one pass over the ledger, read in pieces so other
+   * requests are served meanwhile. When the ledger cannot be read the totals
+   * are empty and `ledger_error` says why; the upstream and key states are
+   * still returned, because they do not depend on the ledger.
+   */
+  async readStatus(): Promise<GatewayStatus> {
+    const day = 86_400_000;
+    const head = this.statusHead();
+    try {
+      const [last_24h, last_7d] = await this.ledger.totals([day, 7 * day], this.now());
+      return { ...head, last_24h, last_7d };
+    } catch (error) {
+      return { ...head, last_24h: [], last_7d: [], ledger_error: (error as Error).message };
+    }
   }
 }

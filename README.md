@@ -101,6 +101,12 @@ coldsearch mcp --http --port 8787   # HTTP at /mcp, many agents
 
 See [the gateway component doc](docs/components/gateway.md) for configuration.
 
+With `--http` the gateway also serves a dashboard at `/dashboard`: what each
+provider account has left, calls and cost per upstream and key, and the most
+recent calls. The page's data needs `COLDSEARCH_GATEWAY_TOKEN` to be set, on
+`127.0.0.1` too. Started with `--allow-rotate`, the page can also re-point a
+provider's key slot. See [Dashboard](docs/components/gateway.md#dashboard).
+
 ## Key pools
 
 With several accounts per provider, keep each account's key as its own Doppler

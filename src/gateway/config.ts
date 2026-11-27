@@ -93,15 +93,20 @@ export function defaultSkillsDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
 }
 
+/** Milliseconds in a duration such as "90s", "30m", "6h" or "7d"; undefined when the text is not one. */
+export function durationMs(text: string): number | undefined {
+  const match = text.trim().match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) return undefined;
+  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "s" | "m" | "h" | "d"];
+  return Number(match[1]) * unit;
+}
+
 function parseDurationMs(value: unknown, fallbackMs: number, field: string): number {
   if (value === undefined) return fallbackMs;
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value * 1000;
   if (typeof value === "string") {
-    const match = value.trim().match(/^(\d+)\s*(s|m|h|d)$/);
-    if (match) {
-      const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] as "s" | "m" | "h" | "d"];
-      return Number(match[1]) * unit;
-    }
+    const parsed = durationMs(value);
+    if (parsed !== undefined) return parsed;
   }
   throw new Error(`[gateway] ${field} must be seconds or a duration such as "30m", "6h"`);
 }
