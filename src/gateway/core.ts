@@ -121,10 +121,15 @@ function resultText(result: CallToolResult): string {
 }
 
 /**
- * Some upstreams report a failed call as a successful tool result whose text
- * is a small JSON error object (Tavily returns `{"error": ..., "status": 432}`
- * this way when a plan is used up). Returns that text when the result has
- * this shape, so it is handled like any other upstream error.
+ * Some MCP servers report a failed call as a successful tool result whose
+ * text is a small JSON error object (Tavily's returns
+ * `{"error": ..., "status": 432}` this way when a plan is used up). Returns
+ * that text when the result has this shape, so it is handled like any other
+ * upstream error.
+ *
+ * Only for `mcp` upstreams. An `openapi` upstream's failures carry an HTTP
+ * status, and a 2xx body with an `error` field is data: the status of a
+ * failed run, whose message may quote any status or wording.
  */
 function errorPayload(result: CallToolResult): string | undefined {
   const text = resultText(result).trim();
@@ -147,19 +152,26 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The object that holds the last key of a dotted argument path. With `create`
- * a missing step is added as an empty object. Undefined when a step is
- * missing, or is something other than an object.
+ * Find the object that holds the last key of a dotted argument path. With
+ * `create` a missing step is added as an empty object. `parent` is absent
+ * when a step is missing, or holds something other than an object; in the
+ * second case `blocked` is the path to that step.
  */
-function parentOf(args: Record<string, unknown>, keys: string[], create: boolean): Record<string, unknown> | undefined {
+function parentOf(
+  args: Record<string, unknown>,
+  keys: string[],
+  create: boolean
+): { parent?: Record<string, unknown>; blocked?: string } {
   let node = args;
-  for (const key of keys.slice(0, -1)) {
+  for (let depth = 0; depth < keys.length - 1; depth++) {
+    const key = keys[depth];
     if (node[key] === undefined && create) node[key] = {};
     const next = node[key];
-    if (!isPlainObject(next)) return undefined;
+    if (next === undefined) return {};
+    if (!isPlainObject(next)) return { blocked: keys.slice(0, depth + 1).join(".") };
     node = next;
   }
-  return node;
+  return { parent: node };
 }
 
 /**
@@ -170,8 +182,11 @@ function parentOf(args: Record<string, unknown>, keys: string[], create: boolean
  * missing argument. The agent's arguments are not modified; `args` is a copy
  * when any pin matches.
  *
- * `refusal` is set, and the call must not be made, when a capped argument
- * holds something that is not a number: it cannot be compared with the cap.
+ * `refusal` is set, and the call must not be made, when a capped argument is
+ * present and cannot be compared with the cap: it holds something that is
+ * not a number (`null` included), or an argument on its dotted path holds
+ * something that is not an object. Forwarding such a call would hand the
+ * decision to the upstream's own default.
  */
 function applyPins(
   upstream: UpstreamConfig,
@@ -185,32 +200,55 @@ function applyPins(
 
   for (const { path, value } of pins.flatMap((pin) => pin.defaults)) {
     const keys = path.split(".");
-    const parent = parentOf(out, keys, true);
+    const { parent } = parentOf(out, keys, true);
     const key = keys[keys.length - 1];
     if (parent && parent[key] === undefined) parent[key] = structuredClone(value);
   }
+  const target = `${upstream.name}${NAME_SEPARATOR}${tool}`;
   for (const { path, limit } of pins.flatMap((pin) => pin.max)) {
     const keys = path.split(".");
-    const parent = parentOf(out, keys, false);
+    const { parent, blocked } = parentOf(out, keys, false);
+    if (blocked) {
+      return {
+        args: out,
+        notes,
+        refusal: `Argument "${blocked}" must be an object: this gateway allows at most ${limit} for "${path}" of ${target}. Send an object, or leave "${blocked}" out.`,
+      };
+    }
     const key = keys[keys.length - 1];
     const given = parent?.[key];
-    if (!parent || given === undefined || given === null) continue;
+    if (!parent || given === undefined) continue;
     const amount = typeof given === "number" ? given : typeof given === "string" && given.trim() ? Number(given) : Number.NaN;
     if (Number.isNaN(amount)) {
       return {
         args: out,
         notes,
-        refusal: `Argument "${path}" must be a number: this gateway allows at most ${limit} for ${upstream.name}${NAME_SEPARATOR}${tool}.`,
+        refusal: `Argument "${path}" must be a number: this gateway allows at most ${limit} for ${target}. Send a number, or leave the argument out.`,
       };
     }
     if (amount > limit) {
       parent[key] = limit;
-      notes.push(
-        `Gateway note: "${path}" was lowered from ${amount} to ${limit}, the most this gateway allows for ${upstream.name}${NAME_SEPARATOR}${tool}.`
-      );
+      notes.push(`Gateway note: "${path}" was lowered from ${amount} to ${limit}, the most this gateway allows for ${target}.`);
     }
   }
   return { args: out, notes };
+}
+
+/**
+ * `value` with every resolved key value replaced in every string it holds,
+ * at any depth. The same object comes back when nothing was replaced.
+ */
+function redactDeep<T>(value: T, secrets: Iterable<string>): T {
+  if (typeof value === "string") return redact(value, secrets) as T;
+  if (Array.isArray(value)) {
+    const items = value.map((item) => redactDeep(item, secrets));
+    return items.some((item, index) => item !== value[index]) ? (items as T) : value;
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).map(([key, item]) => [key, redactDeep(item, secrets)] as const);
+    return entries.some(([key, item]) => item !== value[key]) ? (Object.fromEntries(entries) as T) : value;
+  }
+  return value;
 }
 
 /** The result with the gateway's notes added after the upstream's own content. */
@@ -401,7 +439,8 @@ export class GatewayCore {
    * the ledger and the upstream both see the arguments as sent. Tries keys in
    * order; an out-of-credit or rejected key is marked and the next one is
    * tried. Any other failure is returned to the agent as the upstream
-   * reported it. Every attempt is one ledger line.
+   * reported it, with resolved key values replaced by `[redacted]` as they
+   * are in every result. Every attempt is one ledger line.
    */
   async callTool(name: string, args: Record<string, unknown> | undefined, context: CallContext): Promise<CallToolResult> {
     const split = name.indexOf(NAME_SEPARATOR);
@@ -441,15 +480,20 @@ export class GatewayCore {
       try {
         const client = await this.connect(upstream, keyRef);
         entry.args = this.ledger.formatArgs(sent, this.secrets);
-        const result = (await client.callTool({ name: tool, arguments: sent }, undefined, {
-          timeout: CALL_TIMEOUT_MS,
-          resetTimeoutOnProgress: true,
-        })) as CallToolResult;
+        // An upstream can echo the key it was sent (in an error message, a
+        // request URL, a dump of request headers). The agent never gets it.
+        const result = redactDeep(
+          (await client.callTool({ name: tool, arguments: sent }, undefined, {
+            timeout: CALL_TIMEOUT_MS,
+            resetTimeoutOnProgress: true,
+          })) as CallToolResult,
+          this.secrets
+        );
         entry.duration_ms = this.now() - started;
         entry.result_bytes = JSON.stringify(result).length;
         last = result;
         response = result;
-        const failure = result.isError ? resultText(result) : errorPayload(result);
+        const failure = result.isError ? resultText(result) : upstream.kind === "mcp" ? errorPayload(result) : undefined;
         if (failure !== undefined) {
           const text = failure;
           fault = classifyFault(text);

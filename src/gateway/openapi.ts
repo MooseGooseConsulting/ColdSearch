@@ -286,27 +286,41 @@ function parseEvent(block: string): StreamEvent | undefined {
 /**
  * Read an event stream until the upstream closes it, `deadline` (epoch ms)
  * passes, or `maxBytes` have arrived. Returns the complete events received;
- * `cut` says which limit stopped the read, and an event still arriving at
+ * `cut` says what stopped the read early, and an event still arriving at
  * that moment is left out.
+ *
+ * A connection that breaks partway is a `dropped` cut, with the transport's
+ * message in `reason`, when at least one complete event arrived: those events
+ * may hold the run id or event `id` the caller needs to poll or resume. A
+ * stream that breaks before its first complete event throws.
  */
 async function readEventStream(
   body: ReadableStream<Uint8Array>,
   deadline: number,
   maxBytes: number
-): Promise<{ events: StreamEvent[]; cut?: "time" | "bytes" }> {
+): Promise<{ events: StreamEvent[]; cut?: "time" | "bytes" | "dropped"; reason?: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const events: StreamEvent[] = [];
   let buffer = "";
   let bytes = 0;
-  let cut: "time" | "bytes" | undefined;
+  let cut: "time" | "bytes" | "dropped" | undefined;
+  let reason: string | undefined;
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<"time">((resolve) => {
     timer = setTimeout(() => resolve("time"), Math.max(0, deadline - Date.now()));
   });
   try {
     while (!cut) {
-      const next = await Promise.race([reader.read(), expired]);
+      let next: Awaited<ReturnType<typeof reader.read>> | "time";
+      try {
+        next = await Promise.race([reader.read(), expired]);
+      } catch (error) {
+        if (events.length === 0) throw error;
+        cut = "dropped";
+        reason = (error as Error).message || String(error);
+        break;
+      }
       if (next === "time") {
         cut = "time";
         break;
@@ -335,7 +349,7 @@ async function readEventStream(
     clearTimeout(timer);
     if (cut) await reader.cancel().catch(() => undefined);
   }
-  return { events, cut };
+  return { events, cut, reason };
 }
 
 const TEXT_TYPE = /^text\/|[/+](?:json|xml)$|^application\/(?:x-ndjson|jsonl|javascript|yaml|x-yaml|x-www-form-urlencoded)$/;
@@ -388,7 +402,8 @@ function binaryNotice(type: string, size: number): string {
  * - A `text/event-stream` response is read to its end, or to the upstream's
  *   `streamTimeoutMs` (counted from when the request was sent) or
  *   `streamMaxBytes`, and returned as a JSON array of `{event, data}`. A
- *   second text item says so when a limit cut it short.
+ *   second text item says so when a limit, or a connection that broke after
+ *   at least one event, cut it short.
  * - A binary response is not returned: the result names its content type and
  *   size.
  * - A non-2xx response comes back as an error result that starts with
@@ -464,17 +479,17 @@ export async function connectOpenApi(upstream: UpstreamConfig, keyValue: string)
 
         if (response.ok && response.body && mediaType(response) === "text/event-stream") {
           clearTimeout(requestTimer);
-          const { events, cut } = await readEventStream(response.body, sent + upstream.streamTimeoutMs, upstream.streamMaxBytes);
+          const { events, cut, reason } = await readEventStream(response.body, sent + upstream.streamTimeoutMs, upstream.streamMaxBytes);
           const content: CallToolResult["content"] = [{ type: "text", text: JSON.stringify(events) }];
           if (cut) {
-            const limit =
+            const arrived = `The ${events.length} event${events.length === 1 ? "" : "s"} above arrived before that`;
+            const notice =
               cut === "time"
-                ? `the gateway reads a stream for at most ${upstream.streamTimeoutMs / 1000} s (stream_timeout)`
-                : `the gateway reads at most ${upstream.streamMaxBytes} bytes of a stream (stream_max_bytes)`;
-            content.push({
-              type: "text",
-              text: `Stream cut short: ${limit}. The ${events.length} event${events.length === 1 ? "" : "s"} above arrived before that; the upstream had more to send.`,
-            });
+                ? `the gateway reads a stream for at most ${upstream.streamTimeoutMs / 1000} s (stream_timeout). ${arrived}; the upstream had more to send.`
+                : cut === "bytes"
+                  ? `the gateway reads at most ${upstream.streamMaxBytes} bytes of a stream (stream_max_bytes). ${arrived}; the upstream had more to send.`
+                  : `the connection broke before the upstream ended the stream (${reason}). ${arrived}; what the upstream sent after them, if anything, is lost.`;
+            content.push({ type: "text", text: `Stream cut short: ${notice}` });
           }
           return { content };
         }

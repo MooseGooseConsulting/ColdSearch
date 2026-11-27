@@ -204,10 +204,12 @@ test("when every key is out of credit the agent gets one clear error; an ordinar
   assert.match(unknown.content[0].text, /Unknown tool/);
 });
 
-test("an error object returned as a successful result still moves the call to the next key", async () => {
+test("an error object an MCP server returns as a successful result still moves the call to the next key", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "cs-gw-"));
+  // `tavilymcp` is the hosted MCP server, which reports a used-up plan this
+  // way. The `tavily` preset is the HTTP API, whose failures carry a status.
   const { connector } = fakeUpstreams({
-    tavily: {
+    tavilymcp: {
       tools: [tool("tavily_search")],
       call: async (keyValue) =>
         keyValue === SECRETS["env:KEY_A"]
@@ -215,9 +217,9 @@ test("an error object returned as a successful result still moves the call to th
           : ok({ results: [{ url: "https://example.com", title: "an error occurred in 1402" }] }),
     },
   });
-  const core = new GatewayCore(makeConfig(dir, { tavily: { keys: ["env:KEY_A", "env:KEY_B"] } }), { connector, resolveKey });
+  const core = new GatewayCore(makeConfig(dir, { tavilymcp: { keys: ["env:KEY_A", "env:KEY_B"] } }), { connector, resolveKey });
 
-  const result = await core.callTool("tavily__tavily_search", { query: "x" }, ctx);
+  const result = await core.callTool("tavilymcp__tavily_search", { query: "x" }, ctx);
   assert.match(result.content[0].text, /example\.com/);
   assert.deepEqual(
     readLedger(dir).map((entry) => [entry.key, entry.ok, entry.error_class ?? null]),

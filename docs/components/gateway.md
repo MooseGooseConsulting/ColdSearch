@@ -202,6 +202,13 @@ complete events it has, and adds a second text item that starts
 `Stream cut short:` and names the limit. That result is not an error. An
 event still arriving at that moment is left out.
 
+A connection that breaks partway through a stream is handled the same way
+once at least one complete event has arrived: those events are returned, and
+the `Stream cut short:` item says the connection broke and gives the
+transport's message. The events are what the agent has to go on to poll or
+resume the run, so they are not thrown away. A stream that breaks before its
+first complete event is an ordinary failed call.
+
 This applies to whatever answers with an event stream: an events endpoint, or
 an operation called with `stream: true`. The gateway does not ask for a stream
 itself.
@@ -247,7 +254,12 @@ keys = ["doppler:EXA_API_KEY"]
 - When several patterns match one tool, all apply in the order written: the
   first `default` for an argument wins, and the lowest `max` wins.
 - A capped argument that is neither a number nor a numeric string is refused
-  before any call, because it cannot be compared with the cap.
+  before any call, because it cannot be compared with the cap. That includes
+  `null`: the API would read it as "use your own default", which is what the
+  cap is there to prevent. A call is refused the same way when an argument on
+  the way to a dotted name is present but is not an object, such as
+  `budget: null` or a list under a `"budget.maxCostDollars"` cap. The error
+  names the argument; leaving it out is always accepted.
 
 The ledger line and the payload file record the arguments as sent. A pin
 table that is not shaped like this stops the gateway at start with an error
@@ -288,7 +300,10 @@ errors are free text, the status numbers are looked for anywhere in the text,
 and a failure is also recognized in a small JSON object with a non-empty
 `error` field returned as a successful result, which is how Tavily's MCP
 server reports an exhausted plan. Any other successful result is never
-examined, whatever numbers or words it contains.
+examined, whatever numbers or words it contains. A 2xx response from an
+`openapi` upstream is always a successful call: the status poll of a failed
+run, with an `error` field that quotes the target site's `402`, is returned as
+it is and the key stays in use.
 
 A rate-limit error (HTTP 429, or rate-limit wording from an `mcp` upstream) is
 passed back to the agent and does not skip a key. The one exception is a 429
@@ -311,7 +326,11 @@ One JSON line per attempt, in a file created with mode 0600:
 ```
 
 `key` is the reference, never the value, and resolved key values are replaced
-with `[redacted]` in `args` and `error`. `error_class` is `quota`, `auth` or
+with `[redacted]` in `args` and `error`. The same replacement is made in every
+tool result before it reaches the agent, so an upstream that echoes the key it
+was sent (in an error message, a request URL or a dump of request headers)
+does not hand it to the agent. A value shorter than six characters is not
+replaced. `error_class` is `quota`, `auth` or
 `upstream`. `cost` holds `usd`, `credits` or both when the provider reports
 one in the response. The two units are recorded as given and never converted:
 

@@ -513,3 +513,209 @@ test("a malformed pin is rejected with the pattern and setting named", () => {
   ]);
   assert.deepEqual(resolveGatewayConfig({ upstreams: { exa: { keys: ["env:X"] } } }).upstreams[0].pins, []);
 });
+
+test("a cap refuses an argument it cannot compare: null, or a dotted name that runs through something that is not an object", async () => {
+  const dir = tempDir();
+  const received = [];
+  const connector = async () => ({
+    listTools: async () => ({ tools: [] }),
+    callTool: async ({ arguments: args }) => {
+      received.push(args);
+      return ok({ fine: true });
+    },
+    close: async () => undefined,
+  });
+  const core = new GatewayCore(
+    makeConfig(dir, {
+      exa: {
+        url: "https://mcp.example.com/mcp",
+        keys: ["env:KEY_A"],
+        pin: {
+          createAgentRun: {
+            default: { "budget.maxCostDollars": 0.5, maxCredits: 10 },
+            max: { "budget.maxCostDollars": 1, maxCredits: 100, "limits.depth.max": 3 },
+          },
+        },
+      },
+    }),
+    { connector, resolveKey }
+  );
+
+  // Each of these would otherwise reach the upstream with the capped argument
+  // unset, leaving the amount to the upstream's own default.
+  for (const [args, message] of [
+    [{ maxCredits: null }, /^Argument "maxCredits" must be a number: this gateway allows at most 100 for exa__createAgentRun\. Send a number, or leave the argument out\.$/],
+    [{ budget: { maxCostDollars: null } }, /^Argument "budget\.maxCostDollars" must be a number: this gateway allows at most 1 for exa__createAgentRun/],
+    [{ maxCredits: true }, /^Argument "maxCredits" must be a number/],
+    [{ maxCredits: [5000] }, /^Argument "maxCredits" must be a number/],
+    [{ budget: null }, /^Argument "budget" must be an object: this gateway allows at most 1 for "budget\.maxCostDollars" of exa__createAgentRun\. Send an object, or leave "budget" out\.$/],
+    [{ budget: [{ maxCostDollars: 500 }] }, /^Argument "budget" must be an object/],
+    [{ budget: '{"maxCostDollars":500}' }, /^Argument "budget" must be an object/],
+    [{ limits: { depth: 9 } }, /^Argument "limits\.depth" must be an object: this gateway allows at most 3 for "limits\.depth\.max"/],
+  ]) {
+    const refused = await core.callTool("exa__createAgentRun", args, ctx);
+    assert.equal(refused.isError, true, JSON.stringify(args));
+    assert.equal(refused.content.length, 1);
+    assert.match(refused.content[0].text, message);
+  }
+  assert.deepEqual(received, [], "a refused call is not forwarded");
+
+  // Leaving the argument, or the object that holds it, out is still accepted.
+  await core.callTool("exa__createAgentRun", { query: "q" }, ctx);
+  await core.callTool("exa__createAgentRun", { query: "q", limits: {} }, ctx);
+  assert.deepEqual(received, [
+    { query: "q", budget: { maxCostDollars: 0.5 }, maxCredits: 10 },
+    { query: "q", limits: {}, budget: { maxCostDollars: 0.5 }, maxCredits: 10 },
+  ]);
+});
+
+test("a 2xx response from an openapi upstream is a successful call, whatever its error field says", async () => {
+  const dir = tempDir();
+  const used = [];
+  const run = { id: "run_1", status: "failed", error: "target site answered 402 Payment Required: unauthorized" };
+  const server = await listen((req, res) => {
+    used.push(req.headers["x-api-key"] === SECRETS["env:KEY_A"] ? "A" : "B");
+    res.setHeader("Content-Type", "application/json");
+    // Only the key that started the run can read it.
+    if (req.headers["x-api-key"] !== SECRETS["env:KEY_A"]) res.statusCode = 404;
+    res.end(req.headers["x-api-key"] === SECRETS["env:KEY_A"] ? JSON.stringify(run) : '{"error":"run not found"}');
+  });
+  try {
+    const spec = writeSpec(dir, "spec.json", {
+      paths: { "/runs/{id}": { get: { operationId: "getRun", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }] } } },
+    });
+    const core = new GatewayCore(makeConfig(dir, { api: api(server.url, spec) }), { resolveKey });
+
+    const polled = await core.callTool("api__getRun", { id: "run_1" }, ctx);
+    assert.equal(polled.isError, undefined);
+    assert.deepEqual(JSON.parse(polled.content[0].text), run);
+    assert.deepEqual(used, ["A"], "the poll is not re-sent with a key that does not own the run");
+    assert.deepEqual(readLedger(dir).map((entry) => [entry.key, entry.ok, entry.error_class ?? null]), [["env:KEY_A", true, null]]);
+    assert.deepEqual(core.status().upstreams[0].keys.map((key) => key.state), ["active", "standby"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a stream whose connection breaks returns the events that arrived, and fails only when none did", async () => {
+  const dir = tempDir();
+  const server = await listen((req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    const body =
+      req.url === "/dropped"
+        ? 'event: started\nid: 1\ndata: {"runId":"run_9"}\n\nevent: progress\nid: 2\ndata: {"step":1}\n\nevent: progress\nid: 3\ndata: {"st'
+        : 'event: started\nid: 1\ndata: {"runId":"ru';
+    // The body is on the wire before the socket goes, as with a proxy's idle timeout.
+    res.write(body, () => setTimeout(() => res.socket?.destroy(), 100));
+  });
+  try {
+    const spec = writeSpec(dir, "spec.json", { paths: { "/dropped": { post: { operationId: "dropped" } }, "/dead": { post: { operationId: "dead" } } } });
+    const core = new GatewayCore(makeConfig(dir, { api: api(server.url, spec) }), { resolveKey });
+
+    const dropped = await core.callTool("api__dropped", {}, ctx);
+    assert.equal(dropped.isError, undefined);
+    assert.deepEqual(JSON.parse(dropped.content[0].text), [
+      { event: "started", data: { runId: "run_9" }, id: "1" },
+      { event: "progress", data: { step: 1 }, id: "2" },
+    ]);
+    assert.match(dropped.content[1].text, /^Stream cut short: the connection broke before the upstream ended the stream \(.+\)\. The 2 events above arrived before that/);
+
+    const dead = await core.callTool("api__dead", {}, ctx);
+    assert.equal(dead.isError, true);
+    assert.match(dead.content[0].text, /^api dead failed: /);
+
+    const entries = readLedger(dir);
+    assert.deepEqual(entries.map((entry) => [entry.tool, entry.key, entry.ok]), [["dropped", "env:KEY_A", true], ["dead", "env:KEY_A", false]]);
+    const payload = readFileSync(path.join(dir, "gateway-payloads", entries[0].payload), "utf8");
+    assert.ok(payload.includes("run_9") && payload.includes("Stream cut short"), "the payload file keeps the events and the notice");
+    assert.equal(core.status().upstreams[0].keys[0].state, "active", "a broken connection is not held against the key");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a key value the upstream echoes is replaced in the tool result, as it is in the ledger", async () => {
+  const dir = tempDir();
+  const sentKeys = [];
+  const server = await listen((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    sentKeys.push(req.headers["x-api-key"] ?? url.searchParams.get("token"));
+    if (url.pathname === "/rejected") {
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: `Invalid API key: ${req.headers["x-api-key"]}` }));
+    } else if (url.pathname === "/missing") {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "text/plain");
+      res.end(`Cannot GET ${req.url}`);
+    } else if (url.pathname === "/stream") {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.end(`data: {"authorizedWith":"${req.headers["x-api-key"]}"}\n\n`);
+    } else {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ headers: req.headers }));
+    }
+  });
+  try {
+    const paths = Object.fromEntries(["rejected", "missing", "stream", "echo"].map((name) => [`/${name}`, { get: { operationId: name } }]));
+    const spec = writeSpec(dir, "spec.json", { paths });
+    const fresh = (name, extra) => new GatewayCore(makeConfig(path.join(dir, name), { api: api(server.url, spec, extra) }), { resolveKey });
+    const values = Object.values(SECRETS);
+    const results = [];
+
+    const rejected = await fresh("one").callTool("api__rejected", {}, ctx);
+    results.push(rejected);
+    assert.equal(rejected.isError, true);
+    assert.equal(
+      rejected.content[0].text,
+      'api: all 2 configured keys failed (out of credit or rejected). Last error: HTTP 401: {"error":"Invalid API key: [redacted]"}'
+    );
+
+    const missing = await fresh("two", { auth: "query", auth_name: "token" }).callTool("api__missing", {}, ctx);
+    results.push(missing);
+    assert.equal(missing.content[0].text, "HTTP 404: Cannot GET /missing?token=[redacted]");
+
+    const stream = await fresh("three").callTool("api__stream", {}, ctx);
+    results.push(stream);
+    assert.deepEqual(JSON.parse(stream.content[0].text), [{ event: "message", data: { authorizedWith: "[redacted]" } }]);
+
+    const echo = await fresh("four").callTool("api__echo", {}, ctx);
+    results.push(echo);
+    assert.equal(echo.isError, undefined);
+    assert.equal(JSON.parse(echo.content[0].text).headers["x-api-key"], "[redacted]");
+
+    assert.deepEqual(sentKeys, [values[0], values[1], values[0], values[0], values[0]], "the upstream itself was sent the real key");
+
+    // An MCP server's result is covered too, wherever in it the value sits.
+    const connector = async (_upstream, keyValue) => ({
+      listTools: async () => ({ tools: [] }),
+      callTool: async () => ({
+        content: [{ type: "text", text: `called with ${keyValue}` }, { type: "resource", resource: { uri: "memo://1", text: `key=${keyValue}` } }],
+        structuredContent: { request: { headers: [{ name: "authorization", value: `Bearer ${keyValue}` }] }, count: 2 },
+      }),
+      close: async () => undefined,
+    });
+    const mcp = new GatewayCore(
+      makeConfig(path.join(dir, "five"), { hosted: { url: "https://mcp.example.com/mcp", keys: ["env:KEY_A"] } }),
+      { connector, resolveKey }
+    );
+    const hosted = await mcp.callTool("hosted__search", {}, ctx);
+    results.push(hosted);
+    assert.deepEqual(hosted, {
+      content: [{ type: "text", text: "called with [redacted]" }, { type: "resource", resource: { uri: "memo://1", text: "key=[redacted]" } }],
+      structuredContent: { request: { headers: [{ name: "authorization", value: "Bearer [redacted]" }] }, count: 2 },
+    });
+
+    for (const result of results) {
+      for (const value of values) assert.equal(JSON.stringify(result).includes(value), false);
+    }
+    for (const name of ["one", "two", "three", "four", "five"]) {
+      for (const entry of readLedger(path.join(dir, name))) {
+        const payload = readFileSync(path.join(dir, name, "gateway-payloads", entry.payload), "utf8");
+        for (const value of values) assert.equal((JSON.stringify(entry) + payload).includes(value), false);
+      }
+    }
+  } finally {
+    await server.close();
+  }
+});
