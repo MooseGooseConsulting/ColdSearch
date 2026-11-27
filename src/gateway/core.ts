@@ -91,6 +91,23 @@ function resultText(result: CallToolResult): string {
 }
 
 /**
+ * A copy of `value` with every known key value replaced in each string it
+ * holds, property names included. A provider can echo the credential it was
+ * sent (in an error body, or a URL that carries it as a query parameter), and
+ * the result is about to be handed to an agent.
+ */
+function withoutSecrets<T>(value: T, secrets: Set<string>): T {
+  if (typeof value === "string") return redact(value, secrets) as T;
+  if (Array.isArray(value)) return value.map((item) => withoutSecrets(item, secrets)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [redact(key, secrets), withoutSecrets(item, secrets)])
+    ) as T;
+  }
+  return value;
+}
+
+/**
  * Some upstreams report a failed call as a successful tool result whose text
  * is a small JSON error object (Tavily returns `{"error": ..., "status": 432}`
  * this way when a plan is used up). Returns that text when the result has
@@ -334,7 +351,7 @@ export class GatewayCore {
         })) as CallToolResult;
         entry.duration_ms = this.now() - started;
         entry.result_bytes = JSON.stringify(result).length;
-        last = result;
+        last = withoutSecrets(result, this.secrets);
         response = result;
         const failure = result.isError ? resultText(result) : errorPayload(result);
         if (failure !== undefined) {

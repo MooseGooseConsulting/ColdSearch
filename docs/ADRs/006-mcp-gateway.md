@@ -16,11 +16,16 @@ bugs:
 
 - **Agents cannot connect to it.** It has no server. Each agent has to shell
   out to a CLI that needs a hand-written config on that host.
-- **Key rotation restarts on every call.** `KeyPoolManager.register` sets the
-  round-robin index to 0, and each CLI process builds a new pool, so a
-  multi-key pool always uses its first key. On an out-of-credit error the
-  legacy commands move to another provider, never to the same provider's next
-  key, and nothing remembers the exhausted key for the next process.
+- **Key rotation does not outlive a process.** A legacy key pool is built in
+  each CLI process and nothing about it is saved. Under the default
+  `round-robin` strategy `KeyPoolManager.register` sets the index to 0, so
+  every one-shot command starts again at the pool's first key; the pool is
+  walked only by a process that makes several calls to one provider, such as
+  `coldsearch batch`. `strategy = "random"` picks any key on each call, which
+  spreads use but takes no account of which keys are spent. On an
+  out-of-credit error the legacy commands move to another provider, never to
+  the same provider's next key, and nothing remembers the exhausted key for
+  the next process.
 - **Provider detail is dropped on the main path.** A normalized search result
   has five fields, and the execution records written by `search`, `extract`
   and `crawl` set `raw_available: false`.
@@ -59,22 +64,30 @@ them.
    own parameters. An `mcp` upstream passes a provider's hosted MCP tools
    through unchanged, for providers that publish no API document or for tools
    only their MCP server has. Tools are named `<upstream>__<tool>`. Results
-   are returned as the provider sent them. A new operation in a provider's
+   are returned as the provider sent them, except that a key value the
+   provider echoes is replaced (item 4). A new operation in a provider's
    document appears without a ColdSearch change.
 
 3. **Ordered key lists with failover.** Each upstream has a `keys` list, which
    is the order keys are drained in. When a call fails because the account is
    out of credit or the key is rejected, the gateway marks that key skipped
    for a cooldown, retries the same call on the next key, and saves the
-   skipped set so a restart does not return to an empty key. A rate limit does
-   not skip a key. When every key is skipped the call is still attempted.
+   skipped set so a restart does not return to an empty key. Any other error,
+   a rate limit included, is returned to the agent and skips no key. The
+   gateway recognises the two faults by matching the text of the provider's
+   error (the numbers 402, 432 and 401 and vendor wording), so the rule is as
+   exact as that matching; see the known gaps. When every key is skipped the
+   call is still attempted.
 
 4. **A full request and response ledger.** Every attempt writes one ledger
    line (upstream, tool, key reference, attempt number, duration, error class,
    cost when the provider reports one) and one payload file holding the
-   complete request and response. The key value never reaches disk: the ledger
-   holds the reference, and resolved values are redacted from arguments,
-   errors and payloads.
+   complete request and response. The key value never reaches disk. A `keys`
+   entry must be a reference (`doppler:NAME` or `env:NAME`); a key written as
+   a value is refused when the config is read. The ledger and the saved
+   skipped set hold the reference. Each key value the gateway has resolved is
+   replaced with `[redacted]` in arguments, errors and payloads before they
+   are written, and in every result and error returned to an agent.
 
 5. **Curated skills are served by the gateway.** Each `skills/<name>/SKILL.md`
    is offered as a tool, an MCP prompt and an MCP resource, and skill names
@@ -149,7 +162,8 @@ GET and a sitemap read on most sites. Providers remain the fallback per page.
   skipped across restarts.
 - Every call is inspectable afterwards, including what was sent and what came
   back.
-- Keys live in one place and never reach an agent.
+- Keys live in one place. An agent is never given one, and a key value a
+  provider echoes in a result is replaced before the agent sees it.
 
 **Negative / known gaps:**
 - **The model picks the tool.** Routing quality depends on the skills. The one
@@ -172,6 +186,19 @@ GET and a sitemap read on most sites. Providers remain the fallback per page.
   allowance is not read at all.
 - **A long-running provider job** started with one key cannot be polled after
   the gateway moves to another key.
+- **A key's fault is recognised from error text.** The patterns look for the
+  numbers 402, 432 and 401 and for vendor wording anywhere in the provider's
+  error, and an `openapi` upstream's error carries up to 4,000 characters of
+  the response body. They can be wrong both ways. An error of another kind
+  that contains such a number or phrase (a rate limit worded "quota
+  exceeded", a validation message that quotes the number 402, a server error
+  reporting that a fetched page answered 401) skips a working key for the
+  cooldown, and the call is repeated on every key. An out-of-credit error in
+  wording the patterns do not know is returned without trying the next key.
+- **Redaction matches key values exactly.** A key a provider returns in
+  another form, for example percent-encoded inside a URL, is not recognised,
+  and neither is a key value shorter than six characters. Tool lists are
+  passed on without this check.
 - **Two surfaces coexist until the legacy one is removed.** They have separate
   logs (`usage.jsonl` and `history.jsonl` against the gateway ledger),
   separate key handling (per-process pools against ordered lists), and
@@ -210,8 +237,8 @@ becomes superseded when its code is removed.
 - `src/engine/keypool.ts` (`resolveRef`), `src/logging/usage.ts`
   (`safeKeyRef`), `src/config.ts` (`loadConfig`) — the pre-gateway modules the
   gateway uses at run time
-- `test/gateway.test.mjs` — gateway tests, with fake upstreams and temp
-  directories
+- `test/gateway.test.mjs`, `test/gateway-keys.test.mjs` — gateway tests, with
+  fake upstreams and temp directories
 - Not implemented: gateway-native fetch, map and crawl; hosted deployment and
   OAuth; remaining-allowance reads; the configured-key rotator and dashboard;
   payload pruning

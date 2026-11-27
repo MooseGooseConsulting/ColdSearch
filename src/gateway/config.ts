@@ -79,6 +79,8 @@ export const UPSTREAM_PRESETS: Record<string, Preset> = {
 };
 
 const UPSTREAM_NAME = /^[a-z][a-z0-9]{0,23}$/;
+/** The two reference forms the gateway resolves: a secret-store name or an environment variable name. */
+const KEY_REFERENCE = /^(?:doppler|env):\s*\S+\s*$/;
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
@@ -215,6 +217,15 @@ export function resolveGatewayConfig(raw: unknown): GatewayConfig {
     const keys = block.keys ?? [];
     if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string" || !key.trim())) {
       throw new Error(`[gateway] upstreams.${name}.keys must be a list of key references`);
+    }
+    // A key value written here would be the name the state file saves a
+    // skipped key under, and every such key would share one ledger label.
+    // The message gives the position only: the entry may be a credential.
+    const literal = (keys as string[]).findIndex((key) => !KEY_REFERENCE.test(key));
+    if (literal !== -1) {
+      throw new Error(
+        `[gateway] upstreams.${name}.keys[${literal}] must be a key reference (doppler:NAME or env:NAME), not the key itself`
+      );
     }
     if (auth !== "none" && keys.length === 0) {
       throw new Error(`[gateway] upstreams.${name} needs at least one entry in keys (or auth = "none")`);
