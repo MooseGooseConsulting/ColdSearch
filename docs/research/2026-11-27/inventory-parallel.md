@@ -194,6 +194,8 @@ Sources: <https://docs.parallel.ai/integrations/mcp/quickstart.md>, <https://doc
 
 Legacy Task MCP tools map to `POST /v1/tasks/runs`, `POST /v1/tasks/groups` plus `.../runs`, and the run or group status and result routes; `getResultMarkdown` adds a markdown rendering that REST does not return.
 
+The `flight_search` and `product_search` descriptions mention `show_flight_card` and `show_product_card` for clients with MCP Apps UI. Neither appeared in any list obtained and neither is a valid `?tools=` name; whether they are served to UI-capable clients is UNCONFIRMED.
+
 No MCP tool exists for: hotels, direct places search, FindAll, Entity Search, task runs and groups (on the current server), Memory, monitor update, trigger, retrieve and stats, or anything in the Account API.
 
 Argument differences with and without a key (LIVE vs DUMP): without a key `web_search`, `web_fetch` and `image_search` also take `client_model` and `session_id`. With a key those two arguments are absent.
@@ -217,7 +219,7 @@ Every one of those hidden fields can be set, or handed to the model, through `x-
 | No credential | Free. 7 default tools. Search pinned to `fast`. No usage reported | LIVE, DOCS |
 | `Authorization: Bearer <key>` or `x-api-key: <key>` | Adds `web_research` and `advanced` image mode; billed at API rates; each result carries `_meta["parallel/usage"]` with `name`, `count`, `cost_usd` per SKU | DOCS, DUMP |
 | `?login` | Forces OAuth sign-in | DOCS, LIVE |
-| `?tools=a,b` | Replaces the default list. Names the server's own 400 message advertises: `default`, `web_search`, `web_fetch`, `web_research`, `web_decisions`, `find_verticals`, `search_vertical`, `image_search`, `send_feedback`. Also accepted (HTTP 200 on `initialize`) though not advertised: `flight_search`, `product_search`, `monitors`, `web_monitor_create`, `web_monitor_list`. Rejected with 400: `hotel_search`, `place_search`, `verticals`, `all`. Without a key `?tools=web_research` lists zero tools and `?tools=default,monitors` lists only the default 7 | LIVE |
+| `?tools=a,b` | Replaces the default list. Names the server's own 400 message advertises: `default`, `web_search`, `web_fetch`, `web_research`, `web_decisions`, `find_verticals`, `search_vertical`, `image_search`, `send_feedback`. Also accepted (HTTP 200 on `initialize`) though not advertised: `flight_search`, `product_search`, `monitors`, and each of the four `web_monitor_*` names. Rejected with 400: `hotel_search`, `place_search`, `verticals`, `all`, `show_flight_card`, `show_product_card`. Without a key `?tools=web_research` lists zero tools and `?tools=default,monitors` lists only the default 7 | LIVE |
 | `x-parallel-mcp-config: <JSON>` | Per tool: `override` (a JSON Merge Patch applied last to the API request, so the model cannot change it) and `model_choice` (dotted field paths exposed to the model as arguments). Needs a key; without one the server returns 401. Example value: `{"web_search":{"override":{"mode":"basic"},"model_choice":["advanced_settings.source_policy.include_domains"]}}` | DOCS |
 | Other URL query parameters | Ignored by the current server ("ignores URL query parameters other than `login` and `tools`") | DOCS |
 | Legacy Search MCP only | Any Search API field as a dotted query parameter, e.g. `?mode=fast&advanced_settings.location=gb`, or the `x-parallel-search-config` header. Authenticated connections only | DOCS |
@@ -325,6 +327,7 @@ Default rate limits (DOCS, <https://docs.parallel.ai/getting-started/rate-limits
 - Whether the three oldest `parallel-beta` values still change behaviour.
 - Prices for Monitor `core`, Memory, Ingest and each vertical.
 - Path and status of the old Chat API.
+- Whether `show_flight_card` and `show_product_card` exist as tools for clients that declare MCP Apps UI support.
 - What `search-mcp.parallel.ai` and `/mcp/chatgpt` are for, and whether other client-specific paths exist (`/mcp/codex`, `/mcp/cursor`, `/mcp/openai` return 404).
 - The numeric free-tier MCP rate limit.
 
