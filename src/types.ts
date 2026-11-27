@@ -123,6 +123,8 @@ export interface CapabilityConfig {
 export interface Config {
   capabilities: Record<string, CapabilityConfig>;
   providers: Record<string, ProviderConfig>;
+  /** MCP gateway settings; validated by `resolveGatewayConfig`. */
+  gateway?: unknown;
   logging?: {
     usage?: {
       path?: string;
